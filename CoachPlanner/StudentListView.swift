@@ -63,13 +63,17 @@ private struct StudentRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "person.crop.circle.fill")
+            Image(systemName: student.gender == .male ? "person.crop.circle.fill" : "person.crop.circle")
                 .font(.title)
                 .foregroundStyle(.tint)
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(student.name)
                     .font(.headline)
+
+                Text(student.gender.rawValue)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 if !student.notes.isEmpty {
                     Text(student.notes)

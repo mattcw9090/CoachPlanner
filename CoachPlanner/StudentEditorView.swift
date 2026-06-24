@@ -17,11 +17,13 @@ struct StudentEditorView: View {
     let editor: StudentEditor
 
     @State private var name: String
+    @State private var gender: Gender
     @State private var notes: String
 
     init(editor: StudentEditor) {
         self.editor = editor
         _name = State(initialValue: editor.student?.name ?? "")
+        _gender = State(initialValue: editor.student?.gender ?? .male)
         _notes = State(initialValue: editor.student?.notes ?? "")
     }
 
@@ -39,6 +41,13 @@ struct StudentEditorView: View {
                 Section("Student Details") {
                     TextField("Name", text: $name)
                         .textContentType(.name)
+
+                    Picker("Gender", selection: $gender) {
+                        ForEach(Gender.allCases, id: \.self) { gender in
+                            Text(gender.rawValue).tag(gender)
+                        }
+                    }
+                    .pickerStyle(.segmented)
 
                     TextField("Notes (optional)", text: $notes, axis: .vertical)
                         .lineLimit(3...6)
@@ -74,16 +83,19 @@ struct StudentEditorView: View {
 
     private var hasUnsavedChanges: Bool {
         name != (editor.student?.name ?? "") ||
+            gender != (editor.student?.gender ?? .male) ||
             notes != (editor.student?.notes ?? "")
     }
 
     private func save() {
         if let student = editor.student {
             student.name = trimmedName
+            student.gender = gender
             student.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
             let student = Student(
                 name: trimmedName,
+                gender: gender,
                 notes: notes.trimmingCharacters(in: .whitespacesAndNewlines)
             )
             modelContext.insert(student)
