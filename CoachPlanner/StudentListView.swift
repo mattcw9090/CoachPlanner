@@ -156,7 +156,7 @@ private struct StudentRow: View {
                 HStack(spacing: 5) {
                     Image(systemName: student.contactPreferenceValue.iconName)
                         .font(.caption2)
-                    Text("\(student.contactPreferenceValue.rawValue): \(student.contactDetail)")
+                    Text("\(student.contactPreferenceValue.rawValue): \(student.displayContactDetail)")
                         .font(.caption)
                         .lineLimit(1)
                 }

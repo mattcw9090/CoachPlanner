@@ -49,7 +49,7 @@ struct StudentEditorView: View {
     }
 
     private var isContactValid: Bool {
-        !trimmedContactDetail.isEmpty
+        usesPhoneContactPicker ? !Self.australianLocalDigits(from: contactDetail).isEmpty : !trimmedContactDetail.isEmpty
     }
 
     private var usesPhoneContactPicker: Bool {
@@ -89,11 +89,21 @@ struct StudentEditorView: View {
                     }
 
                     HStack {
-                        TextField(contactPreference.placeholder, text: $contactDetail)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .keyboardType(keyboardType)
-                            .textContentType(textContentType)
+                        if usesPhoneContactPicker {
+                            Text("+61")
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+
+                            TextField("412 345 678", text: contactDetailBinding)
+                                .keyboardType(keyboardType)
+                                .textContentType(textContentType)
+                        } else {
+                            TextField(contactPreference.placeholder, text: contactDetailBinding)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(keyboardType)
+                                .textContentType(textContentType)
+                        }
 
                         if usesPhoneContactPicker {
                             Button {
@@ -140,13 +150,16 @@ struct StudentEditorView: View {
                     .disabled(trimmedName.isEmpty || gender.isEmpty || !isContactValid)
                 }
             }
+            .onChange(of: contactPreference) { _, _ in
+                normalizeContactDetailForPreference()
+            }
         }
         .interactiveDismissDisabled(hasUnsavedChanges)
         .background(
             PhoneContactPickerPresenter(
                 isPresented: $isContactPickerPresented
             ) { phone in
-                contactDetail = phone
+                contactDetail = Self.formattedAustralianPhoneNumber(phone)
             }
         )
     }
@@ -157,6 +170,24 @@ struct StudentEditorView: View {
             contactPreference != (editor.student?.contactPreferenceValue ?? .instagram) ||
             contactDetail != (editor.student?.contactDetail ?? "") ||
             sessionsDemand != (editor.student?.sessionsDemand ?? 1)
+    }
+
+    private var contactDetailBinding: Binding<String> {
+        Binding(
+            get: {
+                if usesPhoneContactPicker {
+                    return Self.formattedAustralianLocalNumber(contactDetail)
+                }
+                return contactDetail
+            },
+            set: { newValue in
+                if usesPhoneContactPicker {
+                    contactDetail = Self.formattedAustralianPhoneNumber(newValue)
+                } else {
+                    contactDetail = newValue
+                }
+            }
+        )
     }
 
     private var keyboardType: UIKeyboardType {
@@ -181,19 +212,78 @@ struct StudentEditorView: View {
         }
     }
 
+    private func normalizeContactDetailForPreference() {
+        if usesPhoneContactPicker {
+            contactDetail = Self.formattedAustralianPhoneNumber(contactDetail)
+        } else if contactDetail == "+61" || contactDetail == "+61 " {
+            contactDetail = ""
+        }
+    }
+
+    private static func formattedAustralianPhoneNumber(_ value: String) -> String {
+        let localDigits = australianLocalDigits(from: value)
+        guard !localDigits.isEmpty else { return "" }
+        return "+61" + localDigits
+    }
+
+    private static func formattedAustralianLocalNumber(_ value: String) -> String {
+        groupedAustralianLocalDigits(australianLocalDigits(from: value))
+    }
+
+    private static func australianLocalDigits(from value: String) -> String {
+        let digits = value.filter(\.isNumber)
+
+        var localDigits: String
+        if digits.hasPrefix("61") {
+            localDigits = String(digits.dropFirst(2))
+            if localDigits.hasPrefix("0") {
+                localDigits.removeFirst()
+            }
+        } else if digits.hasPrefix("0") {
+            localDigits = String(digits.dropFirst())
+        } else {
+            localDigits = digits
+        }
+
+        return String(localDigits.prefix(9))
+    }
+
+    private static func groupedAustralianLocalDigits(_ localDigits: String) -> String {
+        guard !localDigits.isEmpty else { return "" }
+        var groups: [String] = []
+        groups.append(String(localDigits.prefix(3)))
+
+        if localDigits.count > 3 {
+            let start = localDigits.index(localDigits.startIndex, offsetBy: 3)
+            let end = localDigits.index(start, offsetBy: min(3, localDigits.distance(from: start, to: localDigits.endIndex)))
+            groups.append(String(localDigits[start..<end]))
+        }
+
+        if localDigits.count > 6 {
+            let start = localDigits.index(localDigits.startIndex, offsetBy: 6)
+            groups.append(String(localDigits[start...]))
+        }
+
+        return groups.joined(separator: " ")
+    }
+
     private func save() {
+        let savedContactDetail = usesPhoneContactPicker
+            ? Self.formattedAustralianPhoneNumber(contactDetail)
+            : trimmedContactDetail
+
         if let student = editor.student {
             student.name = trimmedName
             student.gender = gender
             student.contactPreference = contactPreference.rawValue
-            student.contactDetail = trimmedContactDetail
+            student.contactDetail = savedContactDetail
             student.sessionsDemand = sessionsDemand
         } else {
             let student = Student(
                 name: trimmedName,
                 gender: gender,
                 contactPreference: contactPreference,
-                contactDetail: trimmedContactDetail,
+                contactDetail: savedContactDetail,
                 sessionsDemand: sessionsDemand
             )
             modelContext.insert(student)

@@ -76,4 +76,41 @@ final class Student {
     var contactPreferenceValue: ContactPreference {
         ContactPreference(rawValue: contactPreference) ?? .instagram
     }
+
+    var displayContactDetail: String {
+        switch contactPreferenceValue {
+        case .whatsApp, .sms:
+            return Self.displayAustralianPhoneNumber(contactDetail)
+        case .instagram, .fbMessenger:
+            return contactDetail
+        }
+    }
+
+    private static func displayAustralianPhoneNumber(_ value: String) -> String {
+        let digits = value.filter(\.isNumber)
+
+        let localDigits: String
+        if digits.hasPrefix("61") {
+            localDigits = String(digits.dropFirst(2).prefix(9))
+        } else if digits.hasPrefix("0") {
+            localDigits = String(digits.dropFirst().prefix(9))
+        } else {
+            localDigits = String(digits.prefix(9))
+        }
+
+        guard !localDigits.isEmpty else { return "" }
+
+        var groups: [String] = [String(localDigits.prefix(3))]
+        if localDigits.count > 3 {
+            let start = localDigits.index(localDigits.startIndex, offsetBy: 3)
+            let end = localDigits.index(start, offsetBy: min(3, localDigits.distance(from: start, to: localDigits.endIndex)))
+            groups.append(String(localDigits[start..<end]))
+        }
+        if localDigits.count > 6 {
+            let start = localDigits.index(localDigits.startIndex, offsetBy: 6)
+            groups.append(String(localDigits[start...]))
+        }
+
+        return "+61 " + groups.joined(separator: " ")
+    }
 }
