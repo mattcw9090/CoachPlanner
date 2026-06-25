@@ -97,9 +97,8 @@ struct SessionEditorView: View {
                         }
                     }
 
-                    DatePicker(
-                        "Start Time",
-                        selection: Binding(
+                    LabeledContent("Start Time") {
+                        HalfHourTimePicker(selection: Binding(
                             get: { startTime },
                             set: { newValue in
                                 startTime = newValue
@@ -109,21 +108,18 @@ struct SessionEditorView: View {
                                     endTime = autoEnd
                                 }
                             }
-                        ),
-                        displayedComponents: .hourAndMinute
-                    )
+                        ))
+                    }
 
-                    DatePicker(
-                        "End Time",
-                        selection: Binding(
+                    LabeledContent("End Time") {
+                        HalfHourTimePicker(selection: Binding(
                             get: { endTime },
                             set: { newValue in
                                 endTime = newValue
                                 hasUserAdjustedEnd = true
                             }
-                        ),
-                        displayedComponents: .hourAndMinute
-                    )
+                        ))
+                    }
 
                     Picker("Venue", selection: Binding(
                         get: { venue },
@@ -344,6 +340,49 @@ struct SessionEditorView: View {
         guard let session = editor.session else { return }
         modelContext.delete(session)
         dismiss()
+    }
+}
+
+private struct HalfHourTimePicker: View {
+    @Binding var selection: Date
+
+    private var minutesBinding: Binding<Int> {
+        Binding(
+            get: {
+                let comps = Calendar.current.dateComponents([.hour, .minute], from: selection)
+                let raw = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+                return (raw / 30) * 30
+            },
+            set: { newMinutes in
+                let calendar = Calendar.current
+                if let newDate = calendar.date(
+                    bySettingHour: newMinutes / 60,
+                    minute: newMinutes % 60,
+                    second: 0,
+                    of: selection
+                ) {
+                    selection = newDate
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        Picker("", selection: minutesBinding) {
+            ForEach(Array(stride(from: 0, to: 24 * 60, by: 30)), id: \.self) { totalMinutes in
+                Text(label(for: totalMinutes)).tag(totalMinutes)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+    }
+
+    private func label(for totalMinutes: Int) -> String {
+        let hour = totalMinutes / 60
+        let minute = totalMinutes % 60
+        let calendar = Calendar.current
+        let date = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: .now) ?? .now
+        return date.formatted(.dateTime.hour().minute())
     }
 }
 

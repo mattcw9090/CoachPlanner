@@ -18,6 +18,7 @@ struct StudentEditorView: View {
 
     @State private var name: String
     @State private var gender: String
+    @State private var sessionsDemand: Int
 
     private let genderOptions = ["Male", "Female"]
 
@@ -25,6 +26,7 @@ struct StudentEditorView: View {
         self.editor = editor
         _name = State(initialValue: editor.student?.name ?? "")
         _gender = State(initialValue: editor.student?.gender ?? "")
+        _sessionsDemand = State(initialValue: editor.student?.sessionsDemand ?? 1)
     }
 
     private var isEditing: Bool {
@@ -48,6 +50,15 @@ struct StudentEditorView: View {
                         }
                     }
                     .pickerStyle(.segmented)
+
+                    Stepper(value: $sessionsDemand, in: 0...7) {
+                        HStack {
+                            Text("Sessions per week")
+                            Spacer()
+                            Text("\(sessionsDemand)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 if isEditing {
@@ -80,17 +91,20 @@ struct StudentEditorView: View {
 
     private var hasUnsavedChanges: Bool {
         name != (editor.student?.name ?? "") ||
-            gender != (editor.student?.gender ?? "")
+            gender != (editor.student?.gender ?? "") ||
+            sessionsDemand != (editor.student?.sessionsDemand ?? 1)
     }
 
     private func save() {
         if let student = editor.student {
             student.name = trimmedName
             student.gender = gender
+            student.sessionsDemand = sessionsDemand
         } else {
             let student = Student(
                 name: trimmedName,
-                gender: gender
+                gender: gender,
+                sessionsDemand: sessionsDemand
             )
             modelContext.insert(student)
         }

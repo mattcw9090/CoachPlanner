@@ -1,10 +1,11 @@
 import SwiftData
 import SwiftUI
 
-private enum GenderFilter: String, CaseIterable, Identifiable {
+private enum StudentFilter: String, CaseIterable, Identifiable {
     case all = "All"
     case male = "Male"
     case female = "Female"
+    case underallocated = "Underallocated"
 
     var id: String { rawValue }
 }
@@ -12,31 +13,44 @@ private enum GenderFilter: String, CaseIterable, Identifiable {
 struct StudentListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Student.name) private var students: [Student]
+    @Query private var sessions: [CoachingSession]
 
     @State private var editor: StudentEditor?
-    @State private var filter: GenderFilter = .all
+    @State private var filter: StudentFilter = .all
 
-    private var femaleCount: Int {
-        students.filter { $0.gender == "Female" }.count
+    private var sessionCountByStudent: [PersistentIdentifier: Int] {
+        var counts: [PersistentIdentifier: Int] = [:]
+        for session in sessions {
+            for student in session.students {
+                counts[student.persistentModelID, default: 0] += 1
+            }
+        }
+        return counts
     }
 
-    private var maleCount: Int {
-        students.filter { $0.gender == "Male" }.count
+    private func sessionCount(for student: Student) -> Int {
+        sessionCountByStudent[student.persistentModelID] ?? 0
     }
 
-    private func count(for filter: GenderFilter) -> Int {
+    private func isUnderallocated(_ student: Student) -> Bool {
+        sessionCount(for: student) < student.sessionsDemand
+    }
+
+    private func count(for filter: StudentFilter) -> Int {
         switch filter {
         case .all: return students.count
-        case .female: return femaleCount
-        case .male: return maleCount
+        case .male: return students.filter { $0.gender == "Male" }.count
+        case .female: return students.filter { $0.gender == "Female" }.count
+        case .underallocated: return students.filter(isUnderallocated).count
         }
     }
 
     private var filteredStudents: [Student] {
         switch filter {
         case .all: return students
-        case .female: return students.filter { $0.gender == "Female" }
         case .male: return students.filter { $0.gender == "Male" }
+        case .female: return students.filter { $0.gender == "Female" }
+        case .underallocated: return students.filter(isUnderallocated)
         }
     }
 
@@ -58,7 +72,7 @@ struct StudentListView: View {
                     List {
                         Section {
                             Picker("Filter", selection: $filter) {
-                                ForEach(GenderFilter.allCases) { option in
+                                ForEach(StudentFilter.allCases) { option in
                                     Text("\(option.rawValue) (\(count(for: option)))")
                                         .tag(option)
                                 }
@@ -73,7 +87,11 @@ struct StudentListView: View {
                                 Button {
                                     editor = StudentEditor(student: student)
                                 } label: {
-                                    StudentRow(student: student)
+                                    StudentRow(
+                                        student: student,
+                                        sessionCount: sessionCount(for: student),
+                                        demand: student.sessionsDemand
+                                    )
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -110,6 +128,8 @@ struct StudentListView: View {
 
 private struct StudentRow: View {
     let student: Student
+    let sessionCount: Int
+    let demand: Int
 
     private var iconColor: Color {
         switch student.gender {
@@ -117,6 +137,10 @@ private struct StudentRow: View {
         case "Male": return .blue
         default: return .gray
         }
+    }
+
+    private var badgeColor: Color {
+        sessionCount < demand ? .red : .secondary
     }
 
     var body: some View {
@@ -130,6 +154,19 @@ private struct StudentRow: View {
 
             Spacer()
 
+            HStack(spacing: 4) {
+                Image(systemName: "calendar")
+                    .font(.caption)
+                Text("\(sessionCount) / \(demand)")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .foregroundStyle(badgeColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(badgeColor.opacity(0.12))
+            )
+
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.tertiary)
@@ -141,5 +178,5 @@ private struct StudentRow: View {
 
 #Preview {
     StudentListView()
-        .modelContainer(for: Student.self, inMemory: true)
+        .modelContainer(for: [Student.self, CoachingSession.self], inMemory: true)
 }
