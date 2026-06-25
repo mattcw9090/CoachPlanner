@@ -1,3 +1,4 @@
+import ContactsUI
 import SwiftData
 import SwiftUI
 import UIKit
@@ -22,6 +23,7 @@ struct StudentEditorView: View {
     @State private var contactPreference: ContactPreference
     @State private var contactDetail: String
     @State private var sessionsDemand: Int
+    @State private var isContactPickerPresented = false
 
     private let genderOptions = ["Male", "Female"]
 
@@ -48,6 +50,10 @@ struct StudentEditorView: View {
 
     private var isContactValid: Bool {
         !trimmedContactDetail.isEmpty
+    }
+
+    private var usesPhoneContactPicker: Bool {
+        contactPreference == .whatsApp || contactPreference == .sms
     }
 
     var body: some View {
@@ -82,11 +88,25 @@ struct StudentEditorView: View {
                         }
                     }
 
-                    TextField(contactPreference.placeholder, text: $contactDetail)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(keyboardType)
-                        .textContentType(textContentType)
+                    HStack {
+                        TextField(contactPreference.placeholder, text: $contactDetail)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .keyboardType(keyboardType)
+                            .textContentType(textContentType)
+
+                        if usesPhoneContactPicker {
+                            Button {
+                                isContactPickerPresented = true
+                            } label: {
+                                Image(systemName: "person.crop.circle.badge.plus")
+                                    .font(.title3)
+                                    .foregroundStyle(.tint)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Pick from Contacts")
+                        }
+                    }
                 } header: {
                     Text("Contact")
                 } footer: {
@@ -122,6 +142,13 @@ struct StudentEditorView: View {
             }
         }
         .interactiveDismissDisabled(hasUnsavedChanges)
+        .background(
+            PhoneContactPickerPresenter(
+                isPresented: $isContactPickerPresented
+            ) { phone in
+                contactDetail = phone
+            }
+        )
     }
 
     private var hasUnsavedChanges: Bool {
@@ -179,5 +206,75 @@ struct StudentEditorView: View {
         guard let student = editor.student else { return }
         modelContext.delete(student)
         dismiss()
+    }
+}
+
+private struct PhoneContactPickerPresenter: UIViewControllerRepresentable {
+    @Binding var isPresented: Bool
+    var onPick: (String) -> Void
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        UIViewController()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        context.coordinator.parent = self
+
+        guard isPresented else {
+            if let picker = context.coordinator.presentedPicker {
+                picker.dismiss(animated: true)
+                context.coordinator.presentedPicker = nil
+            }
+            return
+        }
+
+        guard context.coordinator.presentedPicker == nil,
+              uiViewController.presentedViewController == nil else { return }
+
+        let picker = CNContactPickerViewController()
+        picker.displayedPropertyKeys = [CNContactPhoneNumbersKey]
+        picker.predicateForEnablingContact = NSPredicate(format: "phoneNumbers.@count > 0")
+        picker.predicateForSelectionOfContact = NSPredicate(format: "phoneNumbers.@count == 1")
+        picker.predicateForSelectionOfProperty = NSPredicate(format: "key == 'phoneNumbers'")
+        picker.delegate = context.coordinator
+
+        context.coordinator.presentedPicker = picker
+        uiViewController.present(picker, animated: true)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class Coordinator: NSObject, CNContactPickerDelegate {
+        var parent: PhoneContactPickerPresenter
+        weak var presentedPicker: CNContactPickerViewController?
+
+        init(parent: PhoneContactPickerPresenter) {
+            self.parent = parent
+        }
+
+        func contactPicker(_ picker: CNContactPickerViewController, didSelect contact: CNContact) {
+            if let number = contact.phoneNumbers.first?.value.stringValue {
+                parent.onPick(number)
+            }
+            dismissPicker()
+        }
+
+        func contactPicker(_ picker: CNContactPickerViewController, didSelect contactProperty: CNContactProperty) {
+            if let phone = contactProperty.value as? CNPhoneNumber {
+                parent.onPick(phone.stringValue)
+            }
+            dismissPicker()
+        }
+
+        func contactPickerDidCancel(_ picker: CNContactPickerViewController) {
+            dismissPicker()
+        }
+
+        private func dismissPicker() {
+            presentedPicker = nil
+            parent.isPresented = false
+        }
     }
 }
