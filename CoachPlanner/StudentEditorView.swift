@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UIKit
 
 struct StudentEditor: Identifiable {
     let id = UUID()
@@ -18,6 +19,8 @@ struct StudentEditorView: View {
 
     @State private var name: String
     @State private var gender: String
+    @State private var contactPreference: ContactPreference
+    @State private var contactDetail: String
     @State private var sessionsDemand: Int
 
     private let genderOptions = ["Male", "Female"]
@@ -26,6 +29,8 @@ struct StudentEditorView: View {
         self.editor = editor
         _name = State(initialValue: editor.student?.name ?? "")
         _gender = State(initialValue: editor.student?.gender ?? "")
+        _contactPreference = State(initialValue: editor.student?.contactPreferenceValue ?? .instagram)
+        _contactDetail = State(initialValue: editor.student?.contactDetail ?? "")
         _sessionsDemand = State(initialValue: editor.student?.sessionsDemand ?? 1)
     }
 
@@ -35,6 +40,14 @@ struct StudentEditorView: View {
 
     private var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedContactDetail: String {
+        contactDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isContactValid: Bool {
+        !trimmedContactDetail.isEmpty
     }
 
     var body: some View {
@@ -61,6 +74,28 @@ struct StudentEditorView: View {
                     }
                 }
 
+                Section {
+                    Picker("Preferred Contact", selection: $contactPreference) {
+                        ForEach(ContactPreference.allCases) { preference in
+                            Label(preference.rawValue, systemImage: preference.iconName)
+                                .tag(preference)
+                        }
+                    }
+
+                    TextField(contactPreference.placeholder, text: $contactDetail)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(keyboardType)
+                        .textContentType(textContentType)
+                } header: {
+                    Text("Contact")
+                } footer: {
+                    if !isContactValid {
+                        Text("\(contactPreference.detailLabel) is required for \(contactPreference.rawValue).")
+                            .foregroundStyle(.red)
+                    }
+                }
+
                 if isEditing {
                     Section {
                         Button("Delete Student", role: .destructive) {
@@ -82,7 +117,7 @@ struct StudentEditorView: View {
                     Button("Save") {
                         save()
                     }
-                    .disabled(trimmedName.isEmpty || gender.isEmpty)
+                    .disabled(trimmedName.isEmpty || gender.isEmpty || !isContactValid)
                 }
             }
         }
@@ -92,18 +127,46 @@ struct StudentEditorView: View {
     private var hasUnsavedChanges: Bool {
         name != (editor.student?.name ?? "") ||
             gender != (editor.student?.gender ?? "") ||
+            contactPreference != (editor.student?.contactPreferenceValue ?? .instagram) ||
+            contactDetail != (editor.student?.contactDetail ?? "") ||
             sessionsDemand != (editor.student?.sessionsDemand ?? 1)
+    }
+
+    private var keyboardType: UIKeyboardType {
+        switch contactPreference {
+        case .instagram:
+            return .twitter
+        case .whatsApp, .sms:
+            return .phonePad
+        case .fbMessenger:
+            return .URL
+        }
+    }
+
+    private var textContentType: UITextContentType? {
+        switch contactPreference {
+        case .instagram:
+            return .username
+        case .whatsApp, .sms:
+            return .telephoneNumber
+        case .fbMessenger:
+            return .URL
+        }
     }
 
     private func save() {
         if let student = editor.student {
             student.name = trimmedName
             student.gender = gender
+            student.contactPreference = contactPreference.rawValue
+            student.contactDetail = trimmedContactDetail
             student.sessionsDemand = sessionsDemand
         } else {
             let student = Student(
                 name: trimmedName,
                 gender: gender,
+                contactPreference: contactPreference,
+                contactDetail: trimmedContactDetail,
                 sessionsDemand: sessionsDemand
             )
             modelContext.insert(student)

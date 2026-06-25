@@ -149,8 +149,19 @@ private struct StudentRow: View {
                 .font(.title)
                 .foregroundStyle(iconColor)
 
-            Text(student.name)
-                .font(.headline)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(student.name)
+                    .font(.headline)
+
+                HStack(spacing: 5) {
+                    Image(systemName: student.contactPreferenceValue.iconName)
+                        .font(.caption2)
+                    Text("\(student.contactPreferenceValue.rawValue): \(student.contactDetail)")
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.secondary)
+            }
 
             Spacer()
 

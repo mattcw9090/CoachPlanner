@@ -60,6 +60,8 @@ final class CoachingSession {
     var endTime: Date
     var venue: String
     var status: String
+    var courtNumber: String = ""
+    var sessionFee: Double = 0
     var createdAt: Date
 
     @Relationship(deleteRule: .nullify)
@@ -71,6 +73,8 @@ final class CoachingSession {
         endTime: Date,
         venue: Venue,
         status: SessionStatus = .unscheduled,
+        courtNumber: String = "",
+        sessionFee: Double = 0,
         students: [Student] = [],
         createdAt: Date = .now
     ) {
@@ -79,6 +83,8 @@ final class CoachingSession {
         self.endTime = endTime
         self.venue = venue.rawValue
         self.status = status.rawValue
+        self.courtNumber = courtNumber
+        self.sessionFee = sessionFee
         self.students = students
         self.createdAt = createdAt
     }

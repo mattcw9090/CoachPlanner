@@ -490,6 +490,24 @@ private struct SessionBlock: View {
             .joined(separator: ", ")
     }
 
+    private var courtNumber: String {
+        session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var sessionMetadata: String {
+        var parts: [String] = []
+
+        if !courtNumber.isEmpty {
+            parts.append("Court \(courtNumber)")
+        }
+
+        if session.sessionFee > 0 {
+            parts.append(session.sessionFee.formatted(.currency(code: Locale.current.currency?.identifier ?? "AUD")))
+        }
+
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(studentNames.isEmpty ? "No students" : studentNames)
@@ -503,6 +521,14 @@ private struct SessionBlock: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+
+            if !sessionMetadata.isEmpty {
+                Text(sessionMetadata)
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
         }
         .padding(.leading, 6)
         .padding(.trailing, 3)

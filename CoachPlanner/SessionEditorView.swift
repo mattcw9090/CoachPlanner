@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UIKit
 
 struct SessionEditor: Identifiable {
     let id = UUID()
@@ -24,6 +25,7 @@ struct SessionEditor: Identifiable {
 struct SessionEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openURL) private var openURL
 
     @Query(sort: \Student.name) private var students: [Student]
     @Query private var existingSessions: [CoachingSession]
@@ -35,11 +37,15 @@ struct SessionEditorView: View {
     @State private var endTime: Date
     @State private var venue: Venue
     @State private var status: SessionStatus
+    @State private var isCourtBooked: Bool
+    @State private var courtNumber: String
+    @State private var sessionFeeText: String
     @State private var selectedStudentIDs: Set<PersistentIdentifier>
     @State private var studentSearch: String = ""
     @State private var hasUserAdjustedStart: Bool = false
     @State private var hasUserAdjustedEnd: Bool = false
     @State private var hasUserAdjustedVenue: Bool = false
+    @State private var contactNotice: ContactNotice?
     @FocusState private var isSearchFocused: Bool
 
     init(editor: SessionEditor) {
@@ -55,6 +61,12 @@ struct SessionEditorView: View {
         _endTime = State(initialValue: editor.session?.endTime ?? editor.preselectedEndTime ?? defaultEnd)
         _venue = State(initialValue: editor.session?.venueValue ?? .pbaMalaga)
         _status = State(initialValue: editor.session?.statusValue ?? .unscheduled)
+        let existingCourtNumber = editor.session?.courtNumber ?? ""
+        _isCourtBooked = State(
+            initialValue: !existingCourtNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        )
+        _courtNumber = State(initialValue: existingCourtNumber)
+        _sessionFeeText = State(initialValue: Self.feeText(for: editor.session?.sessionFee ?? 0))
         _selectedStudentIDs = State(
             initialValue: Set(editor.session?.students.map(\.persistentModelID) ?? [])
         )
@@ -68,6 +80,18 @@ struct SessionEditorView: View {
 
     private var isTimeRangeValid: Bool {
         minutes(of: endTime) > minutes(of: startTime)
+    }
+
+    private var trimmedCourtNumber: String {
+        courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isCourtValid: Bool {
+        !isCourtBooked || !trimmedCourtNumber.isEmpty
+    }
+
+    private var sessionFeeValue: Double {
+        Double(sessionFeeText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
     private var overlappingSession: CoachingSession? {
@@ -84,7 +108,7 @@ struct SessionEditorView: View {
     }
 
     private var canSave: Bool {
-        isTimeRangeValid && overlappingSession == nil && !selectedStudentIDs.isEmpty
+        isTimeRangeValid && overlappingSession == nil && !selectedStudentIDs.isEmpty && isCourtValid
     }
 
     private var selectedStudentsList: [Student] {
@@ -173,6 +197,41 @@ struct SessionEditorView: View {
                     }
                 }
 
+                if isEditing && !selectedStudentsList.isEmpty {
+                    Section {
+                        ForEach(selectedStudentsList) { student in
+                            Button {
+                                contact(student)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: student.contactPreferenceValue.iconName)
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(.tint)
+                                        .frame(width: 24)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Ask \(student.name)")
+                                            .foregroundStyle(.primary)
+                                        Text(student.contactPreferenceValue.rawValue)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    Spacer()
+
+                                    Image(systemName: "paperplane.fill")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Contact")
+                    } footer: {
+                        Text("Opens the student's preferred contact app with an availability message for this session.")
+                    }
+                }
+
                 Section {
                     Picker("Venue", selection: Binding(
                         get: { venue },
@@ -198,6 +257,36 @@ struct SessionEditorView: View {
                     }
                 } header: {
                     Text("Session Details")
+                }
+
+                Section {
+                    Toggle("Court Booked", isOn: $isCourtBooked)
+
+                    if isCourtBooked {
+                        TextField("Court number", text: $courtNumber)
+                            .keyboardType(.numbersAndPunctuation)
+                            .textInputAutocapitalization(.never)
+                    }
+
+                    HStack {
+                        Text("Session Fee")
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Text(currencySymbol)
+                                .foregroundStyle(.secondary)
+                            TextField("0.00", text: $sessionFeeText)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 96)
+                        }
+                    }
+                } header: {
+                    Text("Booking & Fee")
+                } footer: {
+                    if isCourtBooked && trimmedCourtNumber.isEmpty {
+                        Text("Court number is required when a court has been booked.")
+                            .foregroundStyle(.red)
+                    }
                 }
 
                 Section {
@@ -272,6 +361,13 @@ struct SessionEditorView: View {
                     .disabled(!canSave)
                 }
             }
+            .alert(item: $contactNotice) { notice in
+                Alert(
+                    title: Text(notice.title),
+                    message: Text(notice.message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
         }
     }
 
@@ -316,12 +412,89 @@ struct SessionEditorView: View {
         return "\(session.startTime.formatted(formatter))–\(session.endTime.formatted(formatter))"
     }
 
+    private var currencySymbol: String {
+        Locale.current.currencySymbol ?? "$"
+    }
+
+    private static func feeText(for amount: Double) -> String {
+        amount == 0 ? "" : String(format: "%.2f", amount)
+    }
+
     private func iconColor(for student: Student) -> Color {
         switch student.gender {
         case "Female": return .pink
         case "Male": return .blue
         default: return .gray
         }
+    }
+
+    private func contact(_ student: Student) {
+        let message = availabilityMessage(for: student)
+        let preference = student.contactPreferenceValue
+
+        if preference.requiresClipboardMessage {
+            UIPasteboard.general.string = message
+            contactNotice = ContactNotice(
+                title: "Message Copied",
+                message: "Paste the copied availability message into \(preference.rawValue)."
+            )
+        }
+
+        guard let url = contactURL(for: student, message: message) else {
+            contactNotice = ContactNotice(
+                title: "Contact Unavailable",
+                message: "The contact detail for \(student.name) does not look usable."
+            )
+            return
+        }
+
+        openURL(url)
+    }
+
+    private func availabilityMessage(for student: Student) -> String {
+        let formatter = Date.FormatStyle.dateTime.hour().minute()
+        let start = startTime.formatted(formatter)
+        let end = endTime.formatted(formatter)
+        return "Hi \(student.name), are you available to train on \(dayOfWeek.name), \(start)-\(end) at \(venue.rawValue)?"
+    }
+
+    private func contactURL(for student: Student, message: String) -> URL? {
+        let detail = student.contactDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let encodedMessage = message.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? message
+
+        switch student.contactPreferenceValue {
+        case .instagram:
+            let handle = detail
+                .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !handle.isEmpty else { return nil }
+            return URL(string: "https://ig.me/m/\(handle)")
+        case .whatsApp:
+            let phone = phoneDigits(from: detail)
+            guard !phone.isEmpty else { return nil }
+            return URL(string: "https://wa.me/\(phone)?text=\(encodedMessage)")
+        case .fbMessenger:
+            if let url = URL(string: detail), url.scheme != nil {
+                return url
+            }
+            let profile = detail.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !profile.isEmpty else { return nil }
+            return URL(string: "https://m.me/\(profile)")
+        case .sms:
+            let phone = smsPhoneNumber(from: detail)
+            guard !phone.isEmpty else { return nil }
+            return URL(string: "sms:\(phone)&body=\(encodedMessage)")
+        }
+    }
+
+    private func phoneDigits(from value: String) -> String {
+        value.filter(\.isNumber)
+    }
+
+    private func smsPhoneNumber(from value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = trimmed.hasPrefix("+") ? "+" : ""
+        return prefix + trimmed.filter(\.isNumber)
     }
 
     private func save() {
@@ -335,6 +508,8 @@ struct SessionEditorView: View {
             session.endTime = endTime
             session.venue = venue.rawValue
             session.status = status.rawValue
+            session.courtNumber = isCourtBooked ? trimmedCourtNumber : ""
+            session.sessionFee = sessionFeeValue
             session.students = selectedStudents
         } else {
             let session = CoachingSession(
@@ -343,6 +518,8 @@ struct SessionEditorView: View {
                 endTime: endTime,
                 venue: venue,
                 status: status,
+                courtNumber: isCourtBooked ? trimmedCourtNumber : "",
+                sessionFee: sessionFeeValue,
                 students: selectedStudents
             )
             modelContext.insert(session)
@@ -355,6 +532,23 @@ struct SessionEditorView: View {
         guard let session = editor.session else { return }
         modelContext.delete(session)
         dismiss()
+    }
+}
+
+private struct ContactNotice: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
+private extension ContactPreference {
+    var requiresClipboardMessage: Bool {
+        switch self {
+        case .instagram, .fbMessenger:
+            return true
+        case .whatsApp, .sms:
+            return false
+        }
     }
 }
 
