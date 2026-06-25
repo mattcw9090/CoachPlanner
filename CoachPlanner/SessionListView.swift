@@ -434,12 +434,7 @@ struct SessionListView: View {
     }
 
     private func prepareWeeklySessionsAPIFile() -> URL? {
-        let object = weeklySessionsAPIObject()
-        guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(
-                withJSONObject: object,
-                options: [.prettyPrinted, .sortedKeys]
-              ) else { return nil }
+        guard let data = weeklySessionsAPIData(options: [.prettyPrinted, .sortedKeys]) else { return nil }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("CoachPlanner-WeeklySessions.json")
@@ -449,6 +444,12 @@ struct SessionListView: View {
         } catch {
             return nil
         }
+    }
+
+    private func weeklySessionsAPIData(options: JSONSerialization.WritingOptions) -> Data? {
+        let object = weeklySessionsAPIObject()
+        guard JSONSerialization.isValidJSONObject(object) else { return nil }
+        return try? JSONSerialization.data(withJSONObject: object, options: options)
     }
 
     private func weeklySessionsAPIObject() -> [[String: Any]] {
