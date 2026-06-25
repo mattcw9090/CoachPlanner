@@ -15,6 +15,16 @@ struct SessionListView: View {
     @State private var editor: SessionEditor?
     @State private var isWeekPickerPresented = false
 
+    private let dayStartHour = 6
+    private let dayEndHour = 23
+    private let hourHeight: CGFloat = 64
+    private let timeAxisWidth: CGFloat = 42
+    private let dayHeaderHeight: CGFloat = 46
+    private let calendarHorizontalPadding: CGFloat = 12
+
+    private var visibleHours: Range<Int> { dayStartHour..<dayEndHour }
+    private var totalGridHeight: CGFloat { CGFloat(visibleHours.count) * hourHeight }
+
     private var weekStart: Date {
         if weekStartTimestamp == 0 {
             return Self.monday(of: .now)
@@ -35,96 +45,42 @@ struct SessionListView: View {
         Calendar.current.date(byAdding: .day, value: day.rawValue - 1, to: weekStart) ?? weekStart
     }
 
-    private func dateLabel(for day: Weekday) -> String {
-        date(for: day).formatted(.dateTime.month(.abbreviated).day())
+    private func dayOfMonth(for day: Weekday) -> Int {
+        Calendar.current.component(.day, from: date(for: day))
     }
 
-    private var groupedSessions: [(day: Weekday, sessions: [CoachingSession])] {
-        let groups = Dictionary(grouping: sessions, by: { $0.weekday })
-        return Weekday.allCases.compactMap { day in
-            guard let daySessions = groups[day], !daySessions.isEmpty else { return nil }
-            return (day, daySessions)
-        }
+    private func isToday(_ day: Weekday) -> Bool {
+        Calendar.current.isDateInToday(date(for: day))
+    }
+
+    private func sessions(for day: Weekday) -> [CoachingSession] {
+        sessions.filter { $0.weekday == day }
+    }
+
+    private func minutesOfDay(_ date: Date) -> Int {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
     }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if sessions.isEmpty {
-                    ContentUnavailableView {
-                        Label("No Sessions Yet", systemImage: "calendar.badge.plus")
-                    } description: {
-                        Text("Add a session and choose which students will attend.")
-                    } actions: {
-                        Button("Add Session") {
-                            editor = SessionEditor()
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                } else {
-                    List {
-                        Section {
-                            Button {
-                                isWeekPickerPresented = true
-                            } label: {
-                                HStack {
-                                    Image(systemName: "calendar")
-                                        .foregroundStyle(.tint)
-                                    Text(weekRangeText)
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                    Image(systemName: "pencil")
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
+            VStack(spacing: 0) {
+                weekBanner
+                    .padding(.horizontal, calendarHorizontalPadding)
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
 
-                        ForEach(groupedSessions, id: \.day) { group in
-                            Section {
-                                ForEach(group.sessions) { session in
-                                    Button {
-                                        editor = SessionEditor(session: session)
-                                    } label: {
-                                        SessionRow(session: session)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                                .onDelete { offsets in
-                                    delete(from: group.sessions, at: offsets)
-                                }
-                            } header: {
-                                HStack(spacing: 8) {
-                                    Text(group.day.name)
-                                        .font(.headline)
-                                        .foregroundStyle(.primary)
-                                        .textCase(nil)
+                dayHeaderRow
+                    .padding(.horizontal, calendarHorizontalPadding)
 
-                                    Text(dateLabel(for: group.day))
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                        .textCase(nil)
-
-                                    Spacer()
-
-                                    Text("\(group.sessions.count) \(group.sessions.count == 1 ? "session" : "sessions")")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .textCase(nil)
-
-                                    Button {
-                                        editor = SessionEditor(preselectedDay: group.day)
-                                    } label: {
-                                        Image(systemName: "plus.circle.fill")
-                                            .foregroundStyle(.tint)
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                            }
-                        }
-                    }
-                    .listStyle(.insetGrouped)
+                ScrollView(.vertical) {
+                    grid
+                        .frame(maxWidth: .infinity)
+                    .padding(.horizontal, calendarHorizontalPadding)
+                    .padding(.bottom, 28)
                 }
             }
+            .background(Color(.systemGroupedBackground))
             .navigationTitle("Sessions")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -154,10 +110,148 @@ struct SessionListView: View {
         }
     }
 
-    private func delete(from daySessions: [CoachingSession], at offsets: IndexSet) {
-        for index in offsets {
-            modelContext.delete(daySessions[index])
+    private var weekBanner: some View {
+        Button {
+            isWeekPickerPresented = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "calendar")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.tint)
+
+                Text(weekRangeText)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(.secondarySystemGroupedBackground))
+            )
         }
+        .buttonStyle(.plain)
+    }
+
+    private var dayHeaderRow: some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: timeAxisWidth, height: dayHeaderHeight)
+            ForEach(Weekday.allCases) { day in
+                Button {
+                    editor = SessionEditor(preselectedDay: day)
+                } label: {
+                    VStack(spacing: 2) {
+                        Text(String(day.name.prefix(3)))
+                            .font(.caption2.weight(.bold))
+                            .textCase(.uppercase)
+                            .foregroundStyle(isToday(day) ? Color.accentColor : Color.secondary)
+                        Text("\(dayOfMonth(for: day))")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(isToday(day) ? .white : .primary)
+                            .frame(width: 28, height: 28)
+                            .background {
+                                if isToday(day) {
+                                    Circle().fill(Color.accentColor)
+                                }
+                            }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: dayHeaderHeight)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.bottom, 6)
+        .background(Color(.systemGroupedBackground))
+    }
+
+    private var grid: some View {
+        HStack(alignment: .top, spacing: 0) {
+            timeAxis
+
+            ForEach(Weekday.allCases) { day in
+                dayColumn(for: day)
+                    .overlay(alignment: .leading) {
+                        Rectangle()
+                            .fill(Color(.separator).opacity(0.4))
+                            .frame(width: 0.5)
+                    }
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(.separator).opacity(0.25), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var timeAxis: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.clear.frame(width: timeAxisWidth, height: totalGridHeight)
+            ForEach(visibleHours, id: \.self) { hour in
+                Text(hourLabel(hour))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.trailing, 6)
+                    .offset(y: CGFloat(hour - dayStartHour) * hourHeight - 7)
+            }
+        }
+        .frame(width: timeAxisWidth)
+        .background(Color(.secondarySystemGroupedBackground))
+    }
+
+    private func dayColumn(for day: Weekday) -> some View {
+        ZStack(alignment: .topLeading) {
+            VStack(spacing: 0) {
+                ForEach(visibleHours, id: \.self) { _ in
+                    Rectangle()
+                        .fill(Color(.separator).opacity(0.22))
+                        .frame(height: 0.5)
+                    Color.clear.frame(height: hourHeight - 0.5)
+                }
+            }
+
+            ForEach(sessions(for: day)) { session in
+                SessionBlock(session: session)
+                    .frame(height: blockHeight(for: session))
+                    .padding(.horizontal, 2)
+                    .offset(y: yOffset(for: session))
+                    .onTapGesture {
+                        editor = SessionEditor(session: session)
+                    }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: totalGridHeight)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipped()
+    }
+
+    private func yOffset(for session: CoachingSession) -> CGFloat {
+        let mins = minutesOfDay(session.startTime) - dayStartHour * 60
+        return CGFloat(mins) / 60.0 * hourHeight
+    }
+
+    private func blockHeight(for session: CoachingSession) -> CGFloat {
+        let duration = minutesOfDay(session.endTime) - minutesOfDay(session.startTime)
+        return max(CGFloat(duration) / 60.0 * hourHeight - 5, 30)
+    }
+
+    private func hourLabel(_ hour: Int) -> String {
+        let cal = Calendar.current
+        let date = cal.date(bySettingHour: hour, minute: 0, second: 0, of: .now) ?? .now
+        return date.formatted(.dateTime.hour())
     }
 
     static func monday(of date: Date) -> Date {
@@ -165,6 +259,59 @@ struct SessionListView: View {
         calendar.firstWeekday = 2
         let comps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
         return calendar.date(from: comps) ?? date
+    }
+}
+
+private struct SessionBlock: View {
+    let session: CoachingSession
+
+    private var color: Color {
+        session.statusValue.color
+    }
+
+    private var timeLabel: String {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: session.startTime)
+        let hour = comps.hour ?? 0
+        let minute = comps.minute ?? 0
+        let displayHour = hour % 12 == 0 ? 12 : hour % 12
+        let suffix = hour < 12 ? "a" : "p"
+
+        if minute == 0 {
+            return "\(displayHour)\(suffix)"
+        }
+
+        return "\(displayHour):\(String(format: "%02d", minute))\(suffix)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(timeLabel)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+            Text(session.venue)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.75)
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 3)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(color.opacity(0.14))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(color)
+                .frame(width: 2)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(color.opacity(0.28), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 }
 
@@ -333,66 +480,6 @@ private struct DayCell: View {
         if !isMonday { return .secondary.opacity(0.4) }
         if isSelected { return .white }
         return .primary
-    }
-}
-
-private struct SessionRow: View {
-    let session: CoachingSession
-
-    private var timeRange: String {
-        let formatter = Date.FormatStyle.dateTime.hour().minute()
-        return "\(session.startTime.formatted(formatter)) – \(session.endTime.formatted(formatter))"
-    }
-
-    private var studentNames: String {
-        session.students
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            .map(\.name)
-            .joined(separator: ", ")
-    }
-
-    var body: some View {
-        HStack(spacing: 14) {
-            VStack(spacing: 4) {
-                Image(systemName: session.statusValue.iconName)
-                    .font(.title3)
-                    .foregroundStyle(session.statusValue.color)
-                Text(session.statusValue.rawValue)
-                    .font(.caption2)
-                    .foregroundStyle(session.statusValue.color)
-            }
-            .frame(width: 64)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(timeRange)
-                    .font(.headline)
-
-                HStack(spacing: 6) {
-                    Image(systemName: "mappin.and.ellipse")
-                        .font(.caption)
-                    Text(session.venue)
-                        .font(.subheadline)
-                }
-                .foregroundStyle(.secondary)
-
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "person.2.fill")
-                        .font(.caption)
-                    Text(studentNames)
-                        .font(.subheadline)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.tertiary)
-        }
-        .contentShape(Rectangle())
-        .padding(.vertical, 4)
     }
 }
 
