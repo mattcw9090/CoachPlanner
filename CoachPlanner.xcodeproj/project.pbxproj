@@ -11,6 +11,10 @@
 		A10000000000000000000002 /* Student.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* Student.swift */; };
 		A10000000000000000000003 /* StudentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* StudentListView.swift */; };
 		A10000000000000000000004 /* StudentEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* StudentEditorView.swift */; };
+		FB9F74242FEC56CC0039EE52 /* SessionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74232FEC56CC0039EE52 /* SessionListView.swift */; };
+		FB9F74252FEC56CC0039EE52 /* SessionEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */; };
+		FB9F74262FEC56CC0039EE52 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74212FEC56CC0039EE52 /* RootTabView.swift */; };
+		FB9F74272FEC56CC0039EE52 /* CoachingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -19,6 +23,10 @@
 		A20000000000000000000003 /* StudentListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudentListView.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* StudentEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudentEditorView.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* CoachPlanner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CoachPlanner.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachingSession.swift; sourceTree = "<group>"; };
+		FB9F74212FEC56CC0039EE52 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionEditorView.swift; sourceTree = "<group>"; };
+		FB9F74232FEC56CC0039EE52 /* SessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -47,6 +55,10 @@
 				A20000000000000000000002 /* Student.swift */,
 				A20000000000000000000003 /* StudentListView.swift */,
 				A20000000000000000000004 /* StudentEditorView.swift */,
+				FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */,
+				FB9F74212FEC56CC0039EE52 /* RootTabView.swift */,
+				FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */,
+				FB9F74232FEC56CC0039EE52 /* SessionListView.swift */,
 			);
 			path = CoachPlanner;
 			sourceTree = "<group>";
@@ -129,6 +141,10 @@
 			files = (
 				A10000000000000000000001 /* CoachPlannerApp.swift in Sources */,
 				A10000000000000000000002 /* Student.swift in Sources */,
+				FB9F74242FEC56CC0039EE52 /* SessionListView.swift in Sources */,
+				FB9F74252FEC56CC0039EE52 /* SessionEditorView.swift in Sources */,
+				FB9F74262FEC56CC0039EE52 /* RootTabView.swift in Sources */,
+				FB9F74272FEC56CC0039EE52 /* CoachingSession.swift in Sources */,
 				A10000000000000000000003 /* StudentListView.swift in Sources */,
 				A10000000000000000000004 /* StudentEditorView.swift in Sources */,
 			);

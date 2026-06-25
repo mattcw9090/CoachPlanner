@@ -17,14 +17,14 @@ struct StudentEditorView: View {
     let editor: StudentEditor
 
     @State private var name: String
-    @State private var gender: Gender
-    @State private var notes: String
+    @State private var gender: String
+
+    private let genderOptions = ["Male", "Female"]
 
     init(editor: StudentEditor) {
         self.editor = editor
         _name = State(initialValue: editor.student?.name ?? "")
-        _gender = State(initialValue: editor.student?.gender ?? .male)
-        _notes = State(initialValue: editor.student?.notes ?? "")
+        _gender = State(initialValue: editor.student?.gender ?? "")
     }
 
     private var isEditing: Bool {
@@ -43,14 +43,11 @@ struct StudentEditorView: View {
                         .textContentType(.name)
 
                     Picker("Gender", selection: $gender) {
-                        ForEach(Gender.allCases, id: \.self) { gender in
-                            Text(gender.rawValue).tag(gender)
+                        ForEach(genderOptions, id: \.self) { option in
+                            Text(option).tag(option)
                         }
                     }
                     .pickerStyle(.segmented)
-
-                    TextField("Notes (optional)", text: $notes, axis: .vertical)
-                        .lineLimit(3...6)
                 }
 
                 if isEditing {
@@ -74,7 +71,7 @@ struct StudentEditorView: View {
                     Button("Save") {
                         save()
                     }
-                    .disabled(trimmedName.isEmpty)
+                    .disabled(trimmedName.isEmpty || gender.isEmpty)
                 }
             }
         }
@@ -83,20 +80,17 @@ struct StudentEditorView: View {
 
     private var hasUnsavedChanges: Bool {
         name != (editor.student?.name ?? "") ||
-            gender != (editor.student?.gender ?? .male) ||
-            notes != (editor.student?.notes ?? "")
+            gender != (editor.student?.gender ?? "")
     }
 
     private func save() {
         if let student = editor.student {
             student.name = trimmedName
             student.gender = gender
-            student.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
         } else {
             let student = Student(
                 name: trimmedName,
-                gender: gender,
-                notes: notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                gender: gender
             )
             modelContext.insert(student)
         }

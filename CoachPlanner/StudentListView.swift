@@ -1,11 +1,44 @@
 import SwiftData
 import SwiftUI
 
+private enum GenderFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case male = "Male"
+    case female = "Female"
+
+    var id: String { rawValue }
+}
+
 struct StudentListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Student.name) private var students: [Student]
 
     @State private var editor: StudentEditor?
+    @State private var filter: GenderFilter = .all
+
+    private var femaleCount: Int {
+        students.filter { $0.gender == "Female" }.count
+    }
+
+    private var maleCount: Int {
+        students.filter { $0.gender == "Male" }.count
+    }
+
+    private func count(for filter: GenderFilter) -> Int {
+        switch filter {
+        case .all: return students.count
+        case .female: return femaleCount
+        case .male: return maleCount
+        }
+    }
+
+    private var filteredStudents: [Student] {
+        switch filter {
+        case .all: return students
+        case .female: return students.filter { $0.gender == "Female" }
+        case .male: return students.filter { $0.gender == "Male" }
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -23,15 +56,31 @@ struct StudentListView: View {
                     }
                 } else {
                     List {
-                        ForEach(students) { student in
-                            Button {
-                                editor = StudentEditor(student: student)
-                            } label: {
-                                StudentRow(student: student)
+                        Section {
+                            Picker("Filter", selection: $filter) {
+                                ForEach(GenderFilter.allCases) { option in
+                                    Text("\(option.rawValue) (\(count(for: option)))")
+                                        .tag(option)
+                                }
                             }
-                            .buttonStyle(.plain)
+                            .pickerStyle(.segmented)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets())
                         }
-                        .onDelete(perform: deleteStudents)
+
+                        Section {
+                            ForEach(filteredStudents) { student in
+                                Button {
+                                    editor = StudentEditor(student: student)
+                                } label: {
+                                    StudentRow(student: student)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .onDelete(perform: deleteStudents)
+                        } header: {
+                            Text("\(filteredStudents.count) \(filteredStudents.count == 1 ? "student" : "students")")
+                        }
                     }
                 }
             }
@@ -52,8 +101,9 @@ struct StudentListView: View {
     }
 
     private func deleteStudents(at offsets: IndexSet) {
-        for index in offsets {
-            modelContext.delete(students[index])
+        let toDelete = offsets.map { filteredStudents[$0] }
+        for student in toDelete {
+            modelContext.delete(student)
         }
     }
 }
@@ -61,27 +111,22 @@ struct StudentListView: View {
 private struct StudentRow: View {
     let student: Student
 
+    private var iconColor: Color {
+        switch student.gender {
+        case "Female": return .pink
+        case "Male": return .blue
+        default: return .gray
+        }
+    }
+
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: student.gender == .male ? "person.crop.circle.fill" : "person.crop.circle")
+            Image(systemName: "person.crop.circle.fill")
                 .font(.title)
-                .foregroundStyle(.tint)
+                .foregroundStyle(iconColor)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(student.name)
-                    .font(.headline)
-
-                Text(student.gender.rawValue)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if !student.notes.isEmpty {
-                    Text(student.notes)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
+            Text(student.name)
+                .font(.headline)
 
             Spacer()
 

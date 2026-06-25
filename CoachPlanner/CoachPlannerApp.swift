@@ -5,8 +5,8 @@ import SwiftUI
 struct CoachPlannerApp: App {
     var body: some Scene {
         WindowGroup {
-            StudentListView()
+            RootTabView()
         }
-        .modelContainer(for: Student.self)
+        .modelContainer(for: [Student.self, CoachingSession.self])
     }
 }
