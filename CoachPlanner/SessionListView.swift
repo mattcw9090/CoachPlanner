@@ -16,6 +16,7 @@ struct SessionListView: View {
     @State private var editor: SessionEditor?
     @State private var isWeekPickerPresented = false
     @State private var draftSelection: DraftSessionSelection?
+    @State private var icsExport: ICSExportItem?
 
     private let dayStartHour = 6
     private let dayEndHour = 23
@@ -121,6 +122,17 @@ struct SessionListView: View {
                     }
                 }
 
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        if let url = prepareICSFile() {
+                            icsExport = ICSExportItem(url: url)
+                        }
+                    } label: {
+                        Label("Export Calendar", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(sessions.isEmpty)
+                }
+
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
                         isWeekPickerPresented = true
@@ -136,6 +148,9 @@ struct SessionListView: View {
                 WeekStartPickerView(currentStart: weekStart) { newStart in
                     weekStartTimestamp = newStart.timeIntervalSince1970
                 }
+            }
+            .sheet(item: $icsExport) { item in
+                ICSShareSheet(url: item.url)
             }
         }
     }
@@ -357,6 +372,141 @@ struct SessionListView: View {
         let comps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
         return calendar.date(from: comps) ?? date
     }
+
+    private func prepareICSFile() -> URL? {
+        let content = generateICSContent()
+        guard let data = content.data(using: .utf8) else { return nil }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CoachPlanner-Schedule.ics")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    private func generateICSContent() -> String {
+        let calendar = Calendar.current
+
+        let localFormatter = DateFormatter()
+        localFormatter.dateFormat = "yyyyMMdd'T'HHmmss"
+        localFormatter.timeZone = .current
+        localFormatter.locale = Locale(identifier: "en_US_POSIX")
+
+        let utcFormatter = DateFormatter()
+        utcFormatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        utcFormatter.timeZone = TimeZone(identifier: "UTC")
+        utcFormatter.locale = Locale(identifier: "en_US_POSIX")
+
+        let stamp = utcFormatter.string(from: .now)
+
+        var lines: [String] = [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//CoachPlanner//Sessions//EN",
+            "CALSCALE:GREGORIAN",
+            "METHOD:PUBLISH"
+        ]
+
+        for session in sessions {
+            guard let eventDate = calendar.date(
+                byAdding: .day,
+                value: session.dayOfWeek - 1,
+                to: weekStart
+            ) else { continue }
+
+            let startComps = calendar.dateComponents([.hour, .minute], from: session.startTime)
+            let endComps = calendar.dateComponents([.hour, .minute], from: session.endTime)
+            let dateComps = calendar.dateComponents([.year, .month, .day], from: eventDate)
+
+            var startBuild = DateComponents()
+            startBuild.year = dateComps.year
+            startBuild.month = dateComps.month
+            startBuild.day = dateComps.day
+            startBuild.hour = startComps.hour
+            startBuild.minute = startComps.minute
+
+            var endBuild = startBuild
+            endBuild.hour = endComps.hour
+            endBuild.minute = endComps.minute
+
+            guard let startDate = calendar.date(from: startBuild),
+                  let endDate = calendar.date(from: endBuild) else { continue }
+
+            let dtStart = localFormatter.string(from: startDate)
+            let dtEnd = localFormatter.string(from: endDate)
+            let uid = "\(Int(session.createdAt.timeIntervalSince1970 * 1000))-coachplanner@local"
+
+            let studentList = session.students
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                .map(\.name)
+                .joined(separator: ", ")
+
+            let trimmedCourt = session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+            let courtInfo = trimmedCourt.isEmpty ? "Court unbooked" : "Court \(trimmedCourt)"
+
+            let summary = studentList.isEmpty
+                ? "Coaching at \(session.venue)"
+                : "Coaching: \(studentList)"
+
+            var descriptionParts: [String] = []
+            if !studentList.isEmpty {
+                descriptionParts.append("Students: \(studentList)")
+            }
+            descriptionParts.append(courtInfo)
+            descriptionParts.append("Status: \(session.statusValue.rawValue)")
+            let description = descriptionParts.joined(separator: "\\n")
+
+            lines += [
+                "BEGIN:VEVENT",
+                "UID:\(uid)",
+                "DTSTAMP:\(stamp)",
+                "DTSTART:\(dtStart)",
+                "DTEND:\(dtEnd)",
+                "RRULE:FREQ=WEEKLY",
+                "SUMMARY:\(icsEscape(summary))",
+                "LOCATION:\(icsEscape(session.venue))",
+                "DESCRIPTION:\(icsEscape(description))",
+                "STATUS:\(icsStatus(session.statusValue))",
+                "END:VEVENT"
+            ]
+        }
+
+        lines.append("END:VCALENDAR")
+        return lines.joined(separator: "\r\n")
+    }
+
+    private func icsEscape(_ string: String) -> String {
+        string
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: ";", with: "\\;")
+            .replacingOccurrences(of: ",", with: "\\,")
+            .replacingOccurrences(of: "\n", with: "\\n")
+    }
+
+    private func icsStatus(_ status: SessionStatus) -> String {
+        switch status {
+        case .unscheduled, .pending: return "TENTATIVE"
+        case .confirmed: return "CONFIRMED"
+        }
+    }
+}
+
+private struct ICSExportItem: Identifiable {
+    let id = UUID()
+    let url: URL
+}
+
+private struct ICSShareSheet: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 private struct TimeSlotLongPressOverlay: UIViewRepresentable {
