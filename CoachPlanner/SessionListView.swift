@@ -494,12 +494,12 @@ private struct SessionBlock: View {
         session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var sessionMetadata: String {
-        var parts: [String] = []
+    private var courtLabel: String {
+        courtNumber.isEmpty ? "Unbooked" : "Court \(courtNumber)"
+    }
 
-        if !courtNumber.isEmpty {
-            parts.append("Court \(courtNumber)")
-        }
+    private var sessionMetadata: String {
+        var parts: [String] = [courtLabel]
 
         if session.sessionFee > 0 {
             parts.append(session.sessionFee.formatted(.currency(code: Locale.current.currency?.identifier ?? "AUD")))

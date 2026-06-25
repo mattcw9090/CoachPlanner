@@ -49,16 +49,19 @@ enum ContactPreference: String, CaseIterable, Identifiable {
 final class Student {
     var name: String
     var gender: String
-    var contactPreference: String = ContactPreference.instagram.rawValue
-    var contactDetail: String = ""
+    var contactPreference: String
+    var contactDetail: String
     var sessionsDemand: Int
     var createdAt: Date
+
+    @Relationship(inverse: \CoachingSession.students)
+    var sessions: [CoachingSession] = []
 
     init(
         name: String,
         gender: String,
-        contactPreference: ContactPreference = .instagram,
-        contactDetail: String = "",
+        contactPreference: ContactPreference,
+        contactDetail: String,
         sessionsDemand: Int = 1,
         createdAt: Date = .now
     ) {
