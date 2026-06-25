@@ -122,7 +122,7 @@ struct SessionListView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        editor = SessionEditor()
+                        editor = SessionEditor(weekStart: weekStart)
                     } label: {
                         Label("Add Session", systemImage: "plus")
                     }
@@ -233,7 +233,7 @@ struct SessionListView: View {
             Color.clear.frame(width: timeAxisWidth, height: dayHeaderHeight)
             ForEach(Weekday.allCases) { day in
                 Button {
-                    editor = SessionEditor(preselectedDay: day)
+                    editor = SessionEditor(preselectedDay: day, weekStart: weekStart)
                 } label: {
                     VStack(spacing: 2) {
                         Text(String(day.name.prefix(3)))
@@ -343,7 +343,7 @@ struct SessionListView: View {
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: session))
                     .onTapGesture {
-                        editor = SessionEditor(session: session)
+                        editor = SessionEditor(session: session, weekStart: weekStart)
                     }
             }
         }
@@ -381,7 +381,8 @@ struct SessionListView: View {
         editor = SessionEditor(
             preselectedDay: selection.day,
             preselectedStartTime: time(for: selection.startMinutes),
-            preselectedEndTime: time(for: selection.endMinutes)
+            preselectedEndTime: time(for: selection.endMinutes),
+            weekStart: weekStart
         )
     }
 
@@ -450,23 +451,14 @@ struct SessionListView: View {
         }
     }
 
-    private func weeklySessionsAPIObject() -> [String: Any] {
-        let dateFormatter = ISO8601DateFormatter()
-        dateFormatter.formatOptions = [.withFullDate]
-
-        let sessionObjects: [[String: Any]] = sessions.map { session in
+    private func weeklySessionsAPIObject() -> [[String: Any]] {
+        sessions.map { session in
             [
                 "sessionName": sessionName(for: session),
                 "dayOfWeek": session.weekday.name,
                 "sessionFee": session.sessionFee
             ]
         }
-
-        return [
-            "weekStart": dateFormatter.string(from: weekStart),
-            "weekEnd": dateFormatter.string(from: weekEnd),
-            "sessions": sessionObjects
-        ]
     }
 
     private func sessionName(for session: CoachingSession) -> String {

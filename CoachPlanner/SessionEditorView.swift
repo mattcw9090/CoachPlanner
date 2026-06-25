@@ -8,17 +8,20 @@ struct SessionEditor: Identifiable {
     let preselectedDay: Weekday?
     let preselectedStartTime: Date?
     let preselectedEndTime: Date?
+    let weekStart: Date?
 
     init(
         session: CoachingSession? = nil,
         preselectedDay: Weekday? = nil,
         preselectedStartTime: Date? = nil,
-        preselectedEndTime: Date? = nil
+        preselectedEndTime: Date? = nil,
+        weekStart: Date? = nil
     ) {
         self.session = session
         self.preselectedDay = preselectedDay
         self.preselectedStartTime = preselectedStartTime
         self.preselectedEndTime = preselectedEndTime
+        self.weekStart = weekStart
     }
 }
 
@@ -120,6 +123,10 @@ struct SessionEditorView: View {
             !selectedStudentIDs.isEmpty &&
             isCourtValid &&
             isSessionFeeValid
+    }
+
+    private var messageWeekStart: Date {
+        editor.weekStart ?? SessionListView.monday(of: .now)
     }
 
     private var selectedStudentsList: [Student] {
@@ -463,7 +470,7 @@ struct SessionEditorView: View {
 
     private func availabilityMessage(for student: Student) -> String {
         let sessionLines = consolidatedSessions(for: student)
-            .map { "- \($0.day.name), \($0.timeRange) at \($0.venue) · \($0.fee)" }
+            .map { "- \($0.dateText), \($0.day.name), \($0.timeRange) at \($0.venue)" }
             .joined(separator: "\n")
 
         guard !sessionLines.isEmpty else {
@@ -474,8 +481,6 @@ struct SessionEditorView: View {
         Hi \(student.name), are you available for these training sessions?
 
         \(sessionLines)
-
-        Please let me know which ones work for you.
         """
     }
 
@@ -488,7 +493,7 @@ struct SessionEditorView: View {
                   session.students.contains(where: { $0.persistentModelID == student.persistentModelID }) else {
                 return nil
             }
-            return ContactSessionSummary(session: session)
+            return ContactSessionSummary(session: session, weekStart: messageWeekStart)
         }
 
         if currentStudentIDs.contains(student.persistentModelID) {
@@ -498,7 +503,7 @@ struct SessionEditorView: View {
                     startTime: startTime,
                     endTime: endTime,
                     venue: venue.rawValue,
-                    sessionFee: sessionFeeValue
+                    weekStart: messageWeekStart
                 )
             )
         }
@@ -513,7 +518,7 @@ struct SessionEditorView: View {
 
     private func contactURL(for student: Student, message: String) -> URL? {
         let detail = student.contactDetail.trimmingCharacters(in: .whitespacesAndNewlines)
-        let encodedMessage = message.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? message
+        let encodedMessage = percentEncodedMessage(message)
 
         switch student.contactPreferenceValue {
         case .instagram:
@@ -538,6 +543,12 @@ struct SessionEditorView: View {
             guard !phone.isEmpty else { return nil }
             return URL(string: "sms:\(phone)&body=\(encodedMessage)")
         }
+    }
+
+    private func percentEncodedMessage(_ message: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return message.addingPercentEncoding(withAllowedCharacters: allowed) ?? message
     }
 
     private func phoneDigits(from value: String) -> String {
@@ -599,31 +610,60 @@ private struct ContactSessionSummary {
     let startTime: Date
     let endTime: Date
     let venue: String
-    let sessionFee: Double
+    let weekStart: Date
 
-    init(session: CoachingSession) {
+    init(session: CoachingSession, weekStart: Date) {
         day = session.weekday
         startTime = session.startTime
         endTime = session.endTime
         venue = session.venue
-        sessionFee = session.sessionFee
+        self.weekStart = weekStart
     }
 
-    init(day: Weekday, startTime: Date, endTime: Date, venue: String, sessionFee: Double) {
+    init(day: Weekday, startTime: Date, endTime: Date, venue: String, weekStart: Date) {
         self.day = day
         self.startTime = startTime
         self.endTime = endTime
         self.venue = venue
-        self.sessionFee = sessionFee
+        self.weekStart = weekStart
     }
 
     var timeRange: String {
-        let formatter = Date.FormatStyle.dateTime.hour().minute()
-        return "\(startTime.formatted(formatter))-\(endTime.formatted(formatter))"
+        Self.compactTimeRange(from: startTime, to: endTime)
     }
 
-    var fee: String {
-        sessionFee.formatted(.currency(code: AppStyle.currencyCode).precision(.fractionLength(0...2)))
+    var dateText: String {
+        let date = Calendar.current.date(
+            byAdding: .day,
+            value: day.rawValue - 1,
+            to: weekStart
+        ) ?? weekStart
+        return date.formatted(.dateTime.day().month(.abbreviated))
+    }
+
+    private static func compactTimeRange(from startTime: Date, to endTime: Date) -> String {
+        let calendar = Calendar.current
+        let startComponents = calendar.dateComponents([.hour, .minute], from: startTime)
+        let endComponents = calendar.dateComponents([.hour, .minute], from: endTime)
+
+        let startHour = startComponents.hour ?? 0
+        let startMinute = startComponents.minute ?? 0
+        let endHour = endComponents.hour ?? 0
+        let endMinute = endComponents.minute ?? 0
+        let startPeriod = startHour < 12 ? "am" : "pm"
+        let endPeriod = endHour < 12 ? "am" : "pm"
+
+        let includeStartPeriod = startPeriod != endPeriod
+        let start = compactTime(hour: startHour, minute: startMinute, period: startPeriod, includePeriod: includeStartPeriod)
+        let end = compactTime(hour: endHour, minute: endMinute, period: endPeriod, includePeriod: true)
+        return "\(start)-\(end)"
+    }
+
+    private static func compactTime(hour: Int, minute: Int, period: String, includePeriod: Bool) -> String {
+        let displayHour = hour % 12 == 0 ? 12 : hour % 12
+        let minuteText = minute == 0 ? "" : ".\(String(format: "%02d", minute))"
+        let periodText = includePeriod ? period : ""
+        return "\(displayHour)\(minuteText)\(periodText)"
     }
 }
 
