@@ -5,10 +5,19 @@ struct SessionEditor: Identifiable {
     let id = UUID()
     let session: CoachingSession?
     let preselectedDay: Weekday?
+    let preselectedStartTime: Date?
+    let preselectedEndTime: Date?
 
-    init(session: CoachingSession? = nil, preselectedDay: Weekday? = nil) {
+    init(
+        session: CoachingSession? = nil,
+        preselectedDay: Weekday? = nil,
+        preselectedStartTime: Date? = nil,
+        preselectedEndTime: Date? = nil
+    ) {
         self.session = session
         self.preselectedDay = preselectedDay
+        self.preselectedStartTime = preselectedStartTime
+        self.preselectedEndTime = preselectedEndTime
     }
 }
 
@@ -42,13 +51,15 @@ struct SessionEditorView: View {
         let defaultStart = calendar.date(bySettingHour: 17, minute: 0, second: 0, of: .now) ?? .now
         let defaultEnd = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: .now) ?? .now
 
-        _startTime = State(initialValue: editor.session?.startTime ?? defaultStart)
-        _endTime = State(initialValue: editor.session?.endTime ?? defaultEnd)
+        _startTime = State(initialValue: editor.session?.startTime ?? editor.preselectedStartTime ?? defaultStart)
+        _endTime = State(initialValue: editor.session?.endTime ?? editor.preselectedEndTime ?? defaultEnd)
         _venue = State(initialValue: editor.session?.venueValue ?? .pbaMalaga)
         _status = State(initialValue: editor.session?.statusValue ?? .unscheduled)
         _selectedStudentIDs = State(
             initialValue: Set(editor.session?.students.map(\.persistentModelID) ?? [])
         )
+        _hasUserAdjustedStart = State(initialValue: editor.preselectedStartTime != nil)
+        _hasUserAdjustedEnd = State(initialValue: editor.preselectedEndTime != nil)
     }
 
     private var isEditing: Bool {
@@ -90,71 +101,6 @@ struct SessionEditorView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Picker("Day of Week", selection: $dayOfWeek) {
-                        ForEach(Weekday.allCases) { day in
-                            Text(day.name).tag(day)
-                        }
-                    }
-
-                    LabeledContent("Start Time") {
-                        HalfHourTimePicker(selection: Binding(
-                            get: { startTime },
-                            set: { newValue in
-                                startTime = newValue
-                                hasUserAdjustedStart = true
-                                if !hasUserAdjustedEnd,
-                                   let autoEnd = Calendar.current.date(byAdding: .hour, value: 1, to: newValue) {
-                                    endTime = autoEnd
-                                }
-                            }
-                        ))
-                    }
-
-                    LabeledContent("End Time") {
-                        HalfHourTimePicker(selection: Binding(
-                            get: { endTime },
-                            set: { newValue in
-                                endTime = newValue
-                                hasUserAdjustedEnd = true
-                            }
-                        ))
-                    }
-
-                    Picker("Venue", selection: Binding(
-                        get: { venue },
-                        set: { newValue in
-                            venue = newValue
-                            hasUserAdjustedVenue = true
-                        }
-                    )) {
-                        ForEach(Venue.allCases) { option in
-                            Text(option.rawValue).tag(option)
-                        }
-                    }
-
-                    Picker("Status", selection: $status) {
-                        ForEach(SessionStatus.allCases) { option in
-                            HStack {
-                                Image(systemName: option.iconName)
-                                    .foregroundStyle(option.color)
-                                Text(option.rawValue)
-                            }
-                            .tag(option)
-                        }
-                    }
-                } header: {
-                    Text("Session Details")
-                } footer: {
-                    if !isTimeRangeValid {
-                        Text("End time must be after start time.")
-                            .foregroundStyle(.red)
-                    } else if let overlap = overlappingSession {
-                        Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(for: overlap)) at \(overlap.venue).")
-                            .foregroundStyle(.red)
-                    }
-                }
-
                 Section {
                     if students.isEmpty {
                         Text("Add students first before assigning them to sessions.")
@@ -224,6 +170,75 @@ struct SessionEditorView: View {
                                 }
                             }
                         }
+                    }
+                }
+
+                Section {
+                    Picker("Venue", selection: Binding(
+                        get: { venue },
+                        set: { newValue in
+                            venue = newValue
+                            hasUserAdjustedVenue = true
+                        }
+                    )) {
+                        ForEach(Venue.allCases) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+
+                    Picker("Status", selection: $status) {
+                        ForEach(SessionStatus.allCases) { option in
+                            HStack {
+                                Image(systemName: option.iconName)
+                                    .foregroundStyle(option.color)
+                                Text(option.rawValue)
+                            }
+                            .tag(option)
+                        }
+                    }
+                } header: {
+                    Text("Session Details")
+                }
+
+                Section {
+                    Picker("Day of Week", selection: $dayOfWeek) {
+                        ForEach(Weekday.allCases) { day in
+                            Text(day.name).tag(day)
+                        }
+                    }
+
+                    LabeledContent("Start Time") {
+                        HalfHourTimePicker(selection: Binding(
+                            get: { startTime },
+                            set: { newValue in
+                                startTime = newValue
+                                hasUserAdjustedStart = true
+                                if !hasUserAdjustedEnd,
+                                   let autoEnd = Calendar.current.date(byAdding: .hour, value: 1, to: newValue) {
+                                    endTime = autoEnd
+                                }
+                            }
+                        ))
+                    }
+
+                    LabeledContent("End Time") {
+                        HalfHourTimePicker(selection: Binding(
+                            get: { endTime },
+                            set: { newValue in
+                                endTime = newValue
+                                hasUserAdjustedEnd = true
+                            }
+                        ))
+                    }
+                } header: {
+                    Text("Schedule")
+                } footer: {
+                    if !isTimeRangeValid {
+                        Text("End time must be after start time.")
+                            .foregroundStyle(.red)
+                    } else if let overlap = overlappingSession {
+                        Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(for: overlap)) at \(overlap.venue).")
+                            .foregroundStyle(.red)
                     }
                 }
 

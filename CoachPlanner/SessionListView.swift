@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UIKit
 
 struct SessionListView: View {
     @Environment(\.modelContext) private var modelContext
@@ -14,6 +15,7 @@ struct SessionListView: View {
 
     @State private var editor: SessionEditor?
     @State private var isWeekPickerPresented = false
+    @State private var draftSelection: DraftSessionSelection?
 
     private let dayStartHour = 6
     private let dayEndHour = 23
@@ -60,6 +62,32 @@ struct SessionListView: View {
     private func minutesOfDay(_ date: Date) -> Int {
         let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
         return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+    }
+
+    private func time(for totalMinutes: Int) -> Date {
+        let clamped = min(max(totalMinutes, 0), 24 * 60 - 1)
+        return Calendar.current.date(
+            bySettingHour: clamped / 60,
+            minute: clamped % 60,
+            second: 0,
+            of: .now
+        ) ?? .now
+    }
+
+    private func snappedStartMinutes(for yPosition: CGFloat) -> Int {
+        let rawMinutes = dayStartHour * 60 + Int((max(yPosition, 0) / hourHeight) * 60)
+        return max(
+            dayStartHour * 60,
+            min((rawMinutes / 30) * 30, dayEndHour * 60 - 30)
+        )
+    }
+
+    private func snappedEndMinutes(for yPosition: CGFloat) -> Int {
+        let rawMinutes = dayStartHour * 60 + Int((max(yPosition, 0) / hourHeight) * 60)
+        return max(
+            dayStartHour * 60 + 30,
+            min(((rawMinutes + 29) / 30) * 30, dayEndHour * 60)
+        )
     }
 
     var body: some View {
@@ -222,6 +250,31 @@ struct SessionListView: View {
                 }
             }
 
+            TimeSlotLongPressOverlay(
+                day: day,
+                onChanged: { day, startY, currentY in
+                    draftSelection = selection(for: day, startY: startY, currentY: currentY)
+                },
+                onEnded: { day, startY, currentY in
+                    let selection = selection(for: day, startY: startY, currentY: currentY)
+                    draftSelection = nil
+                    openEditor(with: selection)
+                },
+                onCancelled: {
+                    draftSelection = nil
+                }
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: totalGridHeight)
+
+            if let draftSelection, draftSelection.day == day {
+                DraftSessionBlock()
+                    .frame(height: height(for: draftSelection))
+                    .padding(.horizontal, 2)
+                    .offset(y: yOffset(for: draftSelection))
+                    .allowsHitTesting(false)
+            }
+
             ForEach(sessions(for: day)) { session in
                 SessionBlock(session: session)
                     .frame(height: blockHeight(for: session))
@@ -238,6 +291,27 @@ struct SessionListView: View {
         .clipped()
     }
 
+    private func selection(for day: Weekday, startY: CGFloat, currentY: CGFloat) -> DraftSessionSelection {
+        let lowerY = min(startY, currentY)
+        let upperY = max(startY, currentY)
+        let startMinutes = snappedStartMinutes(for: lowerY)
+        let endMinutes = max(startMinutes + 30, snappedEndMinutes(for: upperY))
+
+        return DraftSessionSelection(
+            day: day,
+            startMinutes: startMinutes,
+            endMinutes: min(endMinutes, dayEndHour * 60)
+        )
+    }
+
+    private func openEditor(with selection: DraftSessionSelection) {
+        editor = SessionEditor(
+            preselectedDay: selection.day,
+            preselectedStartTime: time(for: selection.startMinutes),
+            preselectedEndTime: time(for: selection.endMinutes)
+        )
+    }
+
     private func yOffset(for session: CoachingSession) -> CGFloat {
         let mins = minutesOfDay(session.startTime) - dayStartHour * 60
         return CGFloat(mins) / 60.0 * hourHeight
@@ -245,6 +319,16 @@ struct SessionListView: View {
 
     private func blockHeight(for session: CoachingSession) -> CGFloat {
         let duration = minutesOfDay(session.endTime) - minutesOfDay(session.startTime)
+        return max(CGFloat(duration) / 60.0 * hourHeight - 5, 30)
+    }
+
+    private func yOffset(for selection: DraftSessionSelection) -> CGFloat {
+        let mins = selection.startMinutes - dayStartHour * 60
+        return CGFloat(mins) / 60.0 * hourHeight
+    }
+
+    private func height(for selection: DraftSessionSelection) -> CGFloat {
+        let duration = selection.endMinutes - selection.startMinutes
         return max(CGFloat(duration) / 60.0 * hourHeight - 5, 30)
     }
 
@@ -262,6 +346,122 @@ struct SessionListView: View {
     }
 }
 
+private struct TimeSlotLongPressOverlay: UIViewRepresentable {
+    let day: Weekday
+    let onChanged: (Weekday, CGFloat, CGFloat) -> Void
+    let onEnded: (Weekday, CGFloat, CGFloat) -> Void
+    let onCancelled: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            day: day,
+            onChanged: onChanged,
+            onEnded: onEnded,
+            onCancelled: onCancelled
+        )
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+
+        let recognizer = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleLongPress(_:))
+        )
+        recognizer.minimumPressDuration = 0.35
+        recognizer.allowableMovement = 12
+        recognizer.cancelsTouchesInView = false
+        recognizer.delaysTouchesBegan = false
+        recognizer.delaysTouchesEnded = false
+        recognizer.delegate = context.coordinator
+
+        view.addGestureRecognizer(recognizer)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.day = day
+        context.coordinator.onChanged = onChanged
+        context.coordinator.onEnded = onEnded
+        context.coordinator.onCancelled = onCancelled
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var day: Weekday
+        var onChanged: (Weekday, CGFloat, CGFloat) -> Void
+        var onEnded: (Weekday, CGFloat, CGFloat) -> Void
+        var onCancelled: () -> Void
+        private var startY: CGFloat?
+
+        init(
+            day: Weekday,
+            onChanged: @escaping (Weekday, CGFloat, CGFloat) -> Void,
+            onEnded: @escaping (Weekday, CGFloat, CGFloat) -> Void,
+            onCancelled: @escaping () -> Void
+        ) {
+            self.day = day
+            self.onChanged = onChanged
+            self.onEnded = onEnded
+            self.onCancelled = onCancelled
+        }
+
+        @objc func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+            let locationY = recognizer.location(in: recognizer.view).y
+
+            switch recognizer.state {
+            case .began:
+                startY = locationY
+                onChanged(day, locationY, locationY)
+            case .changed:
+                guard let startY else { return }
+                onChanged(day, startY, locationY)
+            case .ended:
+                guard let startY else {
+                    onCancelled()
+                    return
+                }
+                onEnded(day, startY, locationY)
+                self.startY = nil
+            case .cancelled, .failed:
+                startY = nil
+                onCancelled()
+            default:
+                break
+            }
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            false
+        }
+    }
+}
+
+private struct DraftSessionSelection {
+    let day: Weekday
+    let startMinutes: Int
+    let endMinutes: Int
+}
+
+private struct DraftSessionBlock: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 5)
+            .fill(Color.accentColor.opacity(0.16))
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(width: 2)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(Color.accentColor.opacity(0.4), lineWidth: 0.75)
+            )
+    }
+}
+
 private struct SessionBlock: View {
     let session: CoachingSession
 
@@ -269,32 +469,25 @@ private struct SessionBlock: View {
         session.statusValue.color
     }
 
-    private var timeLabel: String {
-        let comps = Calendar.current.dateComponents([.hour, .minute], from: session.startTime)
-        let hour = comps.hour ?? 0
-        let minute = comps.minute ?? 0
-        let displayHour = hour % 12 == 0 ? 12 : hour % 12
-        let suffix = hour < 12 ? "a" : "p"
-
-        if minute == 0 {
-            return "\(displayHour)\(suffix)"
-        }
-
-        return "\(displayHour):\(String(format: "%02d", minute))\(suffix)"
+    private var studentNames: String {
+        session.students
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map(\.name)
+            .joined(separator: ", ")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(timeLabel)
+            Text(studentNames.isEmpty ? "No students" : studentNames)
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .lineLimit(2)
+                .minimumScaleFactor(0.75)
 
             Text(session.venue)
                 .font(.system(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .lineLimit(1)
                 .minimumScaleFactor(0.75)
         }
         .padding(.leading, 6)
