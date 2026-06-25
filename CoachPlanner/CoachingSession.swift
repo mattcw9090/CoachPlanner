@@ -1,5 +1,30 @@
 import Foundation
 import SwiftData
+import SwiftUI
+
+enum SessionStatus: String, CaseIterable, Identifiable {
+    case unscheduled = "Unscheduled"
+    case pending = "Pending"
+    case confirmed = "Confirmed"
+
+    var id: String { rawValue }
+
+    var color: Color {
+        switch self {
+        case .unscheduled: return .red
+        case .pending: return .yellow
+        case .confirmed: return .green
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .unscheduled: return "exclamationmark.circle.fill"
+        case .pending: return "clock.fill"
+        case .confirmed: return "checkmark.circle.fill"
+        }
+    }
+}
 
 enum Weekday: Int, CaseIterable, Identifiable {
     case monday = 1, tuesday, wednesday, thursday, friday, saturday, sunday
@@ -34,6 +59,7 @@ final class CoachingSession {
     var startTime: Date
     var endTime: Date
     var venue: String
+    var status: String
     var createdAt: Date
 
     @Relationship(deleteRule: .nullify)
@@ -44,6 +70,7 @@ final class CoachingSession {
         startTime: Date,
         endTime: Date,
         venue: Venue,
+        status: SessionStatus = .unscheduled,
         students: [Student] = [],
         createdAt: Date = .now
     ) {
@@ -51,6 +78,7 @@ final class CoachingSession {
         self.startTime = startTime
         self.endTime = endTime
         self.venue = venue.rawValue
+        self.status = status.rawValue
         self.students = students
         self.createdAt = createdAt
     }
@@ -61,5 +89,9 @@ final class CoachingSession {
 
     var venueValue: Venue {
         Venue(rawValue: venue) ?? .pbaMalaga
+    }
+
+    var statusValue: SessionStatus {
+        SessionStatus(rawValue: status) ?? .unscheduled
     }
 }

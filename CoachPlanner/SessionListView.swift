@@ -110,6 +110,14 @@ struct SessionListView: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .textCase(nil)
+
+                                    Button {
+                                        editor = SessionEditor(preselectedDay: group.day)
+                                    } label: {
+                                        Image(systemName: "plus.circle.fill")
+                                            .foregroundStyle(.tint)
+                                    }
+                                    .buttonStyle(.borderless)
                                 }
                             }
                         }
@@ -345,12 +353,15 @@ private struct SessionRow: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            VStack(spacing: 2) {
-                Image(systemName: "clock.fill")
+            VStack(spacing: 4) {
+                Image(systemName: session.statusValue.iconName)
                     .font(.title3)
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(session.statusValue.color)
+                Text(session.statusValue.rawValue)
+                    .font(.caption2)
+                    .foregroundStyle(session.statusValue.color)
             }
-            .frame(width: 32)
+            .frame(width: 64)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(timeRange)

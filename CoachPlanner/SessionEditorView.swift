@@ -4,9 +4,11 @@ import SwiftUI
 struct SessionEditor: Identifiable {
     let id = UUID()
     let session: CoachingSession?
+    let preselectedDay: Weekday?
 
-    init(session: CoachingSession? = nil) {
+    init(session: CoachingSession? = nil, preselectedDay: Weekday? = nil) {
         self.session = session
+        self.preselectedDay = preselectedDay
     }
 }
 
@@ -23,19 +25,27 @@ struct SessionEditorView: View {
     @State private var startTime: Date
     @State private var endTime: Date
     @State private var venue: Venue
+    @State private var status: SessionStatus
     @State private var selectedStudentIDs: Set<PersistentIdentifier>
+    @State private var studentSearch: String = ""
+    @State private var hasUserAdjustedStart: Bool = false
+    @State private var hasUserAdjustedEnd: Bool = false
+    @State private var hasUserAdjustedVenue: Bool = false
+    @FocusState private var isSearchFocused: Bool
 
     init(editor: SessionEditor) {
         self.editor = editor
-        _dayOfWeek = State(initialValue: editor.session?.weekday ?? .monday)
+        let initialDay = editor.session?.weekday ?? editor.preselectedDay ?? .monday
+        _dayOfWeek = State(initialValue: initialDay)
 
         let calendar = Calendar.current
         let defaultStart = calendar.date(bySettingHour: 17, minute: 0, second: 0, of: .now) ?? .now
-        let defaultEnd = calendar.date(bySettingHour: 19, minute: 0, second: 0, of: .now) ?? .now
+        let defaultEnd = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: .now) ?? .now
 
         _startTime = State(initialValue: editor.session?.startTime ?? defaultStart)
         _endTime = State(initialValue: editor.session?.endTime ?? defaultEnd)
         _venue = State(initialValue: editor.session?.venueValue ?? .pbaMalaga)
+        _status = State(initialValue: editor.session?.statusValue ?? .unscheduled)
         _selectedStudentIDs = State(
             initialValue: Set(editor.session?.students.map(\.persistentModelID) ?? [])
         )
@@ -66,6 +76,17 @@ struct SessionEditorView: View {
         isTimeRangeValid && overlappingSession == nil && !selectedStudentIDs.isEmpty
     }
 
+    private var selectedStudentsList: [Student] {
+        students.filter { selectedStudentIDs.contains($0.persistentModelID) }
+    }
+
+    private var filteredStudentMatches: [Student] {
+        let trimmed = studentSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let unselected = students.filter { !selectedStudentIDs.contains($0.persistentModelID) }
+        guard !trimmed.isEmpty else { return unselected }
+        return unselected.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -78,19 +99,52 @@ struct SessionEditorView: View {
 
                     DatePicker(
                         "Start Time",
-                        selection: $startTime,
+                        selection: Binding(
+                            get: { startTime },
+                            set: { newValue in
+                                startTime = newValue
+                                hasUserAdjustedStart = true
+                                if !hasUserAdjustedEnd,
+                                   let autoEnd = Calendar.current.date(byAdding: .hour, value: 1, to: newValue) {
+                                    endTime = autoEnd
+                                }
+                            }
+                        ),
                         displayedComponents: .hourAndMinute
                     )
 
                     DatePicker(
                         "End Time",
-                        selection: $endTime,
+                        selection: Binding(
+                            get: { endTime },
+                            set: { newValue in
+                                endTime = newValue
+                                hasUserAdjustedEnd = true
+                            }
+                        ),
                         displayedComponents: .hourAndMinute
                     )
 
-                    Picker("Venue", selection: $venue) {
+                    Picker("Venue", selection: Binding(
+                        get: { venue },
+                        set: { newValue in
+                            venue = newValue
+                            hasUserAdjustedVenue = true
+                        }
+                    )) {
                         ForEach(Venue.allCases) { option in
                             Text(option.rawValue).tag(option)
+                        }
+                    }
+
+                    Picker("Status", selection: $status) {
+                        ForEach(SessionStatus.allCases) { option in
+                            HStack {
+                                Image(systemName: option.iconName)
+                                    .foregroundStyle(option.color)
+                                Text(option.rawValue)
+                            }
+                            .tag(option)
                         }
                     }
                 } header: {
@@ -110,22 +164,44 @@ struct SessionEditorView: View {
                         Text("Add students first before assigning them to sessions.")
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(students) { student in
-                            Button {
-                                toggleStudent(student)
-                            } label: {
-                                HStack {
-                                    Image(systemName: "person.crop.circle.fill")
-                                        .foregroundStyle(iconColor(for: student))
+                        HStack {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(.secondary)
+                            TextField("Search students", text: $studentSearch)
+                                .focused($isSearchFocused)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                            if !studentSearch.isEmpty {
+                                Button {
+                                    studentSearch = ""
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
 
-                                    Text(student.name)
-                                        .foregroundStyle(.primary)
-
-                                    Spacer()
-
-                                    if selectedStudentIDs.contains(student.persistentModelID) {
-                                        Image(systemName: "checkmark")
-                                            .font(.body.weight(.semibold))
+                        if !studentSearch.isEmpty {
+                            if filteredStudentMatches.isEmpty {
+                                Text("No matches")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                ForEach(filteredStudentMatches) { student in
+                                    Button {
+                                        selectedStudentIDs.insert(student.persistentModelID)
+                                        studentSearch = ""
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: "person.crop.circle.fill")
+                                                .foregroundStyle(iconColor(for: student))
+                                            Text(student.name)
+                                                .foregroundStyle(.primary)
+                                            Spacer()
+                                            Image(systemName: "plus.circle.fill")
+                                                .foregroundStyle(.tint)
+                                        }
                                     }
                                 }
                             }
@@ -140,6 +216,21 @@ struct SessionEditorView: View {
                     }
                 }
 
+                if !selectedStudentsList.isEmpty {
+                    Section("Selected (\(selectedStudentsList.count))") {
+                        StudentChipFlow(spacing: 6) {
+                            ForEach(selectedStudentsList) { student in
+                                StudentChip(
+                                    name: student.name,
+                                    color: iconColor(for: student)
+                                ) {
+                                    selectedStudentIDs.remove(student.persistentModelID)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if isEditing {
                     Section {
                         Button("Delete Session", role: .destructive) {
@@ -150,6 +241,12 @@ struct SessionEditorView: View {
             }
             .navigationTitle(isEditing ? "Edit Session" : "New Session")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                applyAutoFillIfNeeded()
+            }
+            .onChange(of: dayOfWeek) { _, _ in
+                applyAutoFillIfNeeded()
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -172,6 +269,37 @@ struct SessionEditorView: View {
         return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
     }
 
+    private func applyAutoFillIfNeeded() {
+        guard !isEditing,
+              !hasUserAdjustedStart,
+              !hasUserAdjustedEnd,
+              !hasUserAdjustedVenue else { return }
+
+        let calendar = Calendar.current
+        let sameDaySessions = existingSessions.filter {
+            $0.dayOfWeek == dayOfWeek.rawValue
+        }
+
+        let startMinutes: Int
+        if let latest = sameDaySessions.max(by: { minutes(of: $0.endTime) < minutes(of: $1.endTime) }) {
+            if let latestVenue = Venue(rawValue: latest.venue) {
+                venue = latestVenue
+            }
+            startMinutes = minutes(of: latest.endTime)
+        } else {
+            startMinutes = 17 * 60
+        }
+
+        let clampedStart = min(startMinutes, 23 * 60)
+        let clampedEnd = min(clampedStart + 60, 24 * 60 - 1)
+
+        if let newStart = calendar.date(bySettingHour: clampedStart / 60, minute: clampedStart % 60, second: 0, of: .now),
+           let newEnd = calendar.date(bySettingHour: clampedEnd / 60, minute: clampedEnd % 60, second: 0, of: .now) {
+            startTime = newStart
+            endTime = newEnd
+        }
+    }
+
     private func timeRangeText(for session: CoachingSession) -> String {
         let formatter = Date.FormatStyle.dateTime.hour().minute()
         return "\(session.startTime.formatted(formatter))–\(session.endTime.formatted(formatter))"
@@ -185,16 +313,6 @@ struct SessionEditorView: View {
         }
     }
 
-    private func toggleStudent(_ student: Student) {
-        let id = student.persistentModelID
-
-        if selectedStudentIDs.contains(id) {
-            selectedStudentIDs.remove(id)
-        } else {
-            selectedStudentIDs.insert(id)
-        }
-    }
-
     private func save() {
         let selectedStudents = students.filter { student in
             selectedStudentIDs.contains(student.persistentModelID)
@@ -205,6 +323,7 @@ struct SessionEditorView: View {
             session.startTime = startTime
             session.endTime = endTime
             session.venue = venue.rawValue
+            session.status = status.rawValue
             session.students = selectedStudents
         } else {
             let session = CoachingSession(
@@ -212,6 +331,7 @@ struct SessionEditorView: View {
                 startTime: startTime,
                 endTime: endTime,
                 venue: venue,
+                status: status,
                 students: selectedStudents
             )
             modelContext.insert(session)
@@ -224,5 +344,75 @@ struct SessionEditorView: View {
         guard let session = editor.session else { return }
         modelContext.delete(session)
         dismiss()
+    }
+}
+
+private struct StudentChip: View {
+    let name: String
+    let color: Color
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(name)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            Capsule().fill(color.opacity(0.15))
+        )
+    }
+}
+
+private struct StudentChipFlow: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var totalHeight: CGFloat = 0
+        var currentRowWidth: CGFloat = 0
+        var currentRowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if currentRowWidth + size.width > maxWidth && currentRowWidth > 0 {
+                totalHeight += currentRowHeight + spacing
+                currentRowWidth = size.width + spacing
+                currentRowHeight = size.height
+            } else {
+                currentRowWidth += size.width + spacing
+                currentRowHeight = max(currentRowHeight, size.height)
+            }
+        }
+        totalHeight += currentRowHeight
+        return CGSize(width: maxWidth.isFinite ? maxWidth : currentRowWidth, height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x: CGFloat = bounds.minX
+        var y: CGFloat = bounds.minY
+        var currentRowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x + size.width > bounds.maxX && x > bounds.minX {
+                x = bounds.minX
+                y += currentRowHeight + spacing
+                currentRowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            currentRowHeight = max(currentRowHeight, size.height)
+        }
     }
 }
