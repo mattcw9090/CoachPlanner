@@ -23,6 +23,8 @@ struct SessionListView: View {
     private let timeAxisWidth: CGFloat = 42
     private let dayHeaderHeight: CGFloat = 46
     private let calendarHorizontalPadding: CGFloat = 12
+    private let gridLineOpacity: Double = 0.26
+    private let activeGridLineOpacity: Double = 0.42
 
     private var visibleHours: Range<Int> { dayStartHour..<dayEndHour }
     private var totalGridHeight: CGFloat { CGFloat(visibleHours.count) * hourHeight }
@@ -208,8 +210,8 @@ struct SessionListView: View {
                 dayColumn(for: day)
                     .overlay(alignment: .leading) {
                         Rectangle()
-                            .fill(Color(.separator).opacity(0.4))
-                            .frame(width: 0.5)
+                            .fill(Color(.separator).opacity(isDrafting(day) ? activeGridLineOpacity : gridLineOpacity))
+                            .frame(width: 1)
                     }
             }
         }
@@ -219,7 +221,7 @@ struct SessionListView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(.separator).opacity(0.25), lineWidth: 0.5)
+                .stroke(Color(.separator).opacity(0.34), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
@@ -244,9 +246,9 @@ struct SessionListView: View {
             VStack(spacing: 0) {
                 ForEach(visibleHours, id: \.self) { _ in
                     Rectangle()
-                        .fill(Color(.separator).opacity(0.22))
-                        .frame(height: 0.5)
-                    Color.clear.frame(height: hourHeight - 0.5)
+                        .fill(Color(.separator).opacity(isDrafting(day) ? activeGridLineOpacity : gridLineOpacity))
+                        .frame(height: 0.75)
+                    Color.clear.frame(height: hourHeight - 0.75)
                 }
             }
 
@@ -287,8 +289,19 @@ struct SessionListView: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: totalGridHeight)
-        .background(Color(.secondarySystemGroupedBackground))
+        .background(
+            ZStack {
+                Color(.secondarySystemGroupedBackground)
+                if isDrafting(day) {
+                    Color.accentColor.opacity(0.035)
+                }
+            }
+        )
         .clipped()
+    }
+
+    private func isDrafting(_ day: Weekday) -> Bool {
+        draftSelection?.day == day
     }
 
     private func selection(for day: Weekday, startY: CGFloat, currentY: CGFloat) -> DraftSessionSelection {
@@ -449,16 +462,17 @@ private struct DraftSessionSelection {
 private struct DraftSessionBlock: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 5)
-            .fill(Color.accentColor.opacity(0.16))
+            .fill(Color.accentColor.opacity(0.18))
             .overlay(alignment: .leading) {
                 Rectangle()
                     .fill(Color.accentColor)
-                    .frame(width: 2)
+                    .frame(width: 4)
             }
             .overlay(
                 RoundedRectangle(cornerRadius: 5)
-                    .stroke(Color.accentColor.opacity(0.4), lineWidth: 0.75)
+                    .stroke(Color.accentColor, lineWidth: 1.5)
             )
+            .shadow(color: Color.accentColor.opacity(0.16), radius: 8, x: 0, y: 3)
     }
 }
 
