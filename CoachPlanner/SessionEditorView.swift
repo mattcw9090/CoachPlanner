@@ -15,10 +15,10 @@ struct SessionEditorView: View {
     @Environment(\.modelContext) private var modelContext
 
     @Query(sort: \Student.name) private var students: [Student]
+    @Query private var existingSessions: [CoachingSession]
 
     let editor: SessionEditor
 
-    @State private var title: String
     @State private var dayOfWeek: Weekday
     @State private var startTime: Date
     @State private var endTime: Date
@@ -27,7 +27,6 @@ struct SessionEditorView: View {
 
     init(editor: SessionEditor) {
         self.editor = editor
-        _title = State(initialValue: editor.session?.title ?? "Training Session")
         _dayOfWeek = State(initialValue: editor.session?.weekday ?? .monday)
 
         let calendar = Calendar.current
@@ -46,16 +45,31 @@ struct SessionEditorView: View {
         editor.session != nil
     }
 
-    private var trimmedTitle: String {
-        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var isTimeRangeValid: Bool {
+        minutes(of: endTime) > minutes(of: startTime)
+    }
+
+    private var overlappingSession: CoachingSession? {
+        let editingID = editor.session?.persistentModelID
+        let newStart = minutes(of: startTime)
+        let newEnd = minutes(of: endTime)
+
+        return existingSessions.first { session in
+            session.persistentModelID != editingID &&
+                session.dayOfWeek == dayOfWeek.rawValue &&
+                newStart < minutes(of: session.endTime) &&
+                newEnd > minutes(of: session.startTime)
+        }
+    }
+
+    private var canSave: Bool {
+        isTimeRangeValid && overlappingSession == nil && !selectedStudentIDs.isEmpty
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Session Details") {
-                    TextField("Title", text: $title)
-
+                Section {
                     Picker("Day of Week", selection: $dayOfWeek) {
                         ForEach(Weekday.allCases) { day in
                             Text(day.name).tag(day)
@@ -79,9 +93,19 @@ struct SessionEditorView: View {
                             Text(option.rawValue).tag(option)
                         }
                     }
+                } header: {
+                    Text("Session Details")
+                } footer: {
+                    if !isTimeRangeValid {
+                        Text("End time must be after start time.")
+                            .foregroundStyle(.red)
+                    } else if let overlap = overlappingSession {
+                        Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(for: overlap)) at \(overlap.venue).")
+                            .foregroundStyle(.red)
+                    }
                 }
 
-                Section("Students") {
+                Section {
                     if students.isEmpty {
                         Text("Add students first before assigning them to sessions.")
                             .foregroundStyle(.secondary)
@@ -107,6 +131,13 @@ struct SessionEditorView: View {
                             }
                         }
                     }
+                } header: {
+                    Text("Students")
+                } footer: {
+                    if !students.isEmpty && selectedStudentIDs.isEmpty {
+                        Text("Select at least one student.")
+                            .foregroundStyle(.red)
+                    }
                 }
 
                 if isEditing {
@@ -130,10 +161,20 @@ struct SessionEditorView: View {
                     Button("Save") {
                         save()
                     }
-                    .disabled(trimmedTitle.isEmpty || endTime <= startTime)
+                    .disabled(!canSave)
                 }
             }
         }
+    }
+
+    private func minutes(of date: Date) -> Int {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+    }
+
+    private func timeRangeText(for session: CoachingSession) -> String {
+        let formatter = Date.FormatStyle.dateTime.hour().minute()
+        return "\(session.startTime.formatted(formatter))–\(session.endTime.formatted(formatter))"
     }
 
     private func iconColor(for student: Student) -> Color {
@@ -160,7 +201,6 @@ struct SessionEditorView: View {
         }
 
         if let session = editor.session {
-            session.title = trimmedTitle
             session.dayOfWeek = dayOfWeek.rawValue
             session.startTime = startTime
             session.endTime = endTime
@@ -168,7 +208,6 @@ struct SessionEditorView: View {
             session.students = selectedStudents
         } else {
             let session = CoachingSession(
-                title: trimmedTitle,
                 dayOfWeek: dayOfWeek,
                 startTime: startTime,
                 endTime: endTime,

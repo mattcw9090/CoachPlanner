@@ -30,7 +30,6 @@ enum Venue: String, CaseIterable, Identifiable {
 
 @Model
 final class CoachingSession {
-    var title: String
     var dayOfWeek: Int
     var startTime: Date
     var endTime: Date
@@ -41,7 +40,6 @@ final class CoachingSession {
     var students: [Student]
 
     init(
-        title: String,
         dayOfWeek: Weekday,
         startTime: Date,
         endTime: Date,
@@ -49,7 +47,6 @@ final class CoachingSession {
         students: [Student] = [],
         createdAt: Date = .now
     ) {
-        self.title = title
         self.dayOfWeek = dayOfWeek.rawValue
         self.startTime = startTime
         self.endTime = endTime
