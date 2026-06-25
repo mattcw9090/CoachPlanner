@@ -13,6 +13,7 @@ struct RootTabView: View {
                     Label("Sessions", systemImage: "calendar")
                 }
         }
+        .tint(.blue)
     }
 }
 

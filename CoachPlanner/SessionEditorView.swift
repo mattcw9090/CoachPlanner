@@ -94,6 +94,13 @@ struct SessionEditorView: View {
         Double(sessionFeeText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
     }
 
+    private var isSessionFeeValid: Bool {
+        guard let value = Double(sessionFeeText.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            return false
+        }
+        return value > 0
+    }
+
     private var overlappingSession: CoachingSession? {
         let editingID = editor.session?.persistentModelID
         let newStart = minutes(of: startTime)
@@ -108,7 +115,11 @@ struct SessionEditorView: View {
     }
 
     private var canSave: Bool {
-        isTimeRangeValid && overlappingSession == nil && !selectedStudentIDs.isEmpty && isCourtValid
+        isTimeRangeValid &&
+            overlappingSession == nil &&
+            !selectedStudentIDs.isEmpty &&
+            isCourtValid &&
+            isSessionFeeValid
     }
 
     private var selectedStudentsList: [Student] {
@@ -212,7 +223,7 @@ struct SessionEditorView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("Ask \(student.name)")
                                             .foregroundStyle(.primary)
-                                        Text(student.contactPreferenceValue.rawValue)
+                                        Text("\(student.contactPreferenceValue.rawValue) · all sessions")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
@@ -228,7 +239,7 @@ struct SessionEditorView: View {
                     } header: {
                         Text("Contact")
                     } footer: {
-                        Text("Opens the student's preferred contact app with an availability message for this session.")
+                        Text("Opens the student's preferred contact app with one availability message covering every session assigned to them.")
                     }
                 }
 
@@ -285,6 +296,9 @@ struct SessionEditorView: View {
                 } footer: {
                     if isCourtBooked && trimmedCourtNumber.isEmpty {
                         Text("Court number is required when a court has been booked.")
+                            .foregroundStyle(.red)
+                    } else if !isSessionFeeValid {
+                        Text("Session fee is required and must be greater than zero.")
                             .foregroundStyle(.red)
                     }
                 }
@@ -421,11 +435,7 @@ struct SessionEditorView: View {
     }
 
     private func iconColor(for student: Student) -> Color {
-        switch student.gender {
-        case "Female": return .pink
-        case "Male": return .blue
-        default: return .gray
-        }
+        AppStyle.genderColor(for: student.gender)
     }
 
     private func contact(_ student: Student) {
@@ -452,10 +462,53 @@ struct SessionEditorView: View {
     }
 
     private func availabilityMessage(for student: Student) -> String {
-        let formatter = Date.FormatStyle.dateTime.hour().minute()
-        let start = startTime.formatted(formatter)
-        let end = endTime.formatted(formatter)
-        return "Hi \(student.name), are you available to train on \(dayOfWeek.name), \(start)-\(end) at \(venue.rawValue)?"
+        let sessionLines = consolidatedSessions(for: student)
+            .map { "- \($0.day.name), \($0.timeRange) at \($0.venue) · \($0.fee)" }
+            .joined(separator: "\n")
+
+        guard !sessionLines.isEmpty else {
+            return "Hi \(student.name), are you available to train?"
+        }
+
+        return """
+        Hi \(student.name), are you available for these training sessions?
+
+        \(sessionLines)
+
+        Please let me know which ones work for you.
+        """
+    }
+
+    private func consolidatedSessions(for student: Student) -> [ContactSessionSummary] {
+        let editingID = editor.session?.persistentModelID
+        let currentStudentIDs = Set(selectedStudentsList.map(\.persistentModelID))
+
+        var summaries = existingSessions.compactMap { session -> ContactSessionSummary? in
+            guard session.persistentModelID != editingID,
+                  session.students.contains(where: { $0.persistentModelID == student.persistentModelID }) else {
+                return nil
+            }
+            return ContactSessionSummary(session: session)
+        }
+
+        if currentStudentIDs.contains(student.persistentModelID) {
+            summaries.append(
+                ContactSessionSummary(
+                    day: dayOfWeek,
+                    startTime: startTime,
+                    endTime: endTime,
+                    venue: venue.rawValue,
+                    sessionFee: sessionFeeValue
+                )
+            )
+        }
+
+        return summaries.sorted {
+            if $0.day.rawValue == $1.day.rawValue {
+                return minutes(of: $0.startTime) < minutes(of: $1.startTime)
+            }
+            return $0.day.rawValue < $1.day.rawValue
+        }
     }
 
     private func contactURL(for student: Student, message: String) -> URL? {
@@ -539,6 +592,39 @@ private struct ContactNotice: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+}
+
+private struct ContactSessionSummary {
+    let day: Weekday
+    let startTime: Date
+    let endTime: Date
+    let venue: String
+    let sessionFee: Double
+
+    init(session: CoachingSession) {
+        day = session.weekday
+        startTime = session.startTime
+        endTime = session.endTime
+        venue = session.venue
+        sessionFee = session.sessionFee
+    }
+
+    init(day: Weekday, startTime: Date, endTime: Date, venue: String, sessionFee: Double) {
+        self.day = day
+        self.startTime = startTime
+        self.endTime = endTime
+        self.venue = venue
+        self.sessionFee = sessionFee
+    }
+
+    var timeRange: String {
+        let formatter = Date.FormatStyle.dateTime.hour().minute()
+        return "\(startTime.formatted(formatter))-\(endTime.formatted(formatter))"
+    }
+
+    var fee: String {
+        sessionFee.formatted(.currency(code: AppStyle.currencyCode).precision(.fractionLength(0...2)))
+    }
 }
 
 private extension ContactPreference {

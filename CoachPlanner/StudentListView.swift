@@ -36,6 +36,18 @@ struct StudentListView: View {
         sessionCount(for: student) < student.sessionsDemand
     }
 
+    private var underallocatedCount: Int {
+        students.filter(isUnderallocated).count
+    }
+
+    private var weeklyDemand: Int {
+        students.reduce(0) { $0 + $1.sessionsDemand }
+    }
+
+    private var allocatedSessions: Int {
+        sessionCountByStudent.values.reduce(0, +)
+    }
+
     private func count(for filter: StudentFilter) -> Int {
         switch filter {
         case .all: return students.count
@@ -71,6 +83,31 @@ struct StudentListView: View {
                 } else {
                     List {
                         Section {
+                            HStack(spacing: 8) {
+                                MetricTile(
+                                    title: "Students",
+                                    value: "\(students.count)",
+                                    systemImage: "person.3.fill",
+                                    tint: .blue
+                                )
+                                MetricTile(
+                                    title: "Needs",
+                                    value: "\(underallocatedCount)",
+                                    systemImage: "exclamationmark.circle.fill",
+                                    tint: underallocatedCount == 0 ? .green : .red
+                                )
+                                MetricTile(
+                                    title: "Booked",
+                                    value: "\(allocatedSessions)/\(weeklyDemand)",
+                                    systemImage: "calendar.badge.clock",
+                                    tint: .accentColor
+                                )
+                            }
+                        }
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                        .listRowBackground(Color.clear)
+
+                        Section {
                             Picker("Filter", selection: $filter) {
                                 ForEach(StudentFilter.allCases) { option in
                                     Text("\(option.rawValue) (\(count(for: option)))")
@@ -103,6 +140,8 @@ struct StudentListView: View {
                 }
             }
             .navigationTitle("My Students")
+            .scrollContentBackground(.hidden)
+            .background(AppStyle.background)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -132,11 +171,7 @@ private struct StudentRow: View {
     let demand: Int
 
     private var iconColor: Color {
-        switch student.gender {
-        case "Female": return .pink
-        case "Male": return .blue
-        default: return .gray
-        }
+        AppStyle.genderColor(for: student.gender)
     }
 
     private var badgeColor: Color {
@@ -146,12 +181,15 @@ private struct StudentRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "person.crop.circle.fill")
-                .font(.title)
+                .font(.title.weight(.semibold))
                 .foregroundStyle(iconColor)
+                .frame(width: 40, height: 40)
+                .background(Circle().fill(iconColor.opacity(0.12)))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(student.name)
-                    .font(.headline)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.primary)
 
                 HStack(spacing: 5) {
                     Image(systemName: student.contactPreferenceValue.iconName)
@@ -183,7 +221,7 @@ private struct StudentRow: View {
                 .foregroundStyle(.tertiary)
         }
         .contentShape(Rectangle())
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
     }
 }
 

@@ -11,6 +11,7 @@
 		A10000000000000000000002 /* Student.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* Student.swift */; };
 		A10000000000000000000003 /* StudentListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* StudentListView.swift */; };
 		A10000000000000000000004 /* StudentEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* StudentEditorView.swift */; };
+		A10000000000000000000006 /* AppStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* AppStyle.swift */; };
 		FB3A86F02FED3C2800F18F03 /* AppIcon.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FB3A86EF2FED3C2800F18F03 /* AppIcon.xcassets */; };
 		FB9F74242FEC56CC0039EE52 /* SessionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74232FEC56CC0039EE52 /* SessionListView.swift */; };
 		FB9F74252FEC56CC0039EE52 /* SessionEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */; };
@@ -24,6 +25,7 @@
 		A20000000000000000000003 /* StudentListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudentListView.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* StudentEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudentEditorView.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* CoachPlanner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CoachPlanner.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A20000000000000000000006 /* AppStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStyle.swift; sourceTree = "<group>"; };
 		FB3A86EF2FED3C2800F18F03 /* AppIcon.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = AppIcon.xcassets; sourceTree = "<group>"; };
 		FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachingSession.swift; sourceTree = "<group>"; };
 		FB9F74212FEC56CC0039EE52 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
@@ -55,6 +57,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000001 /* CoachPlannerApp.swift */,
+				A20000000000000000000006 /* AppStyle.swift */,
 				A20000000000000000000002 /* Student.swift */,
 				A20000000000000000000003 /* StudentListView.swift */,
 				A20000000000000000000004 /* StudentEditorView.swift */,
@@ -151,6 +154,7 @@
 				FB9F74252FEC56CC0039EE52 /* SessionEditorView.swift in Sources */,
 				FB9F74262FEC56CC0039EE52 /* RootTabView.swift in Sources */,
 				FB9F74272FEC56CC0039EE52 /* CoachingSession.swift in Sources */,
+				A10000000000000000000006 /* AppStyle.swift in Sources */,
 				A10000000000000000000003 /* StudentListView.swift in Sources */,
 				A10000000000000000000004 /* StudentEditorView.swift in Sources */,
 			);

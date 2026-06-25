@@ -16,7 +16,7 @@ struct SessionListView: View {
     @State private var editor: SessionEditor?
     @State private var isWeekPickerPresented = false
     @State private var draftSelection: DraftSessionSelection?
-    @State private var icsExport: ICSExportItem?
+    @State private var fileExport: FileExportItem?
 
     private let dayStartHour = 6
     private let dayEndHour = 23
@@ -29,6 +29,8 @@ struct SessionListView: View {
 
     private var visibleHours: Range<Int> { dayStartHour..<dayEndHour }
     private var totalGridHeight: CGFloat { CGFloat(visibleHours.count) * hourHeight }
+    private var confirmedSessionCount: Int { sessions.filter { $0.statusValue == .confirmed }.count }
+    private var totalSessionFees: Double { sessions.reduce(0) { $0 + $1.sessionFee } }
 
     private var weekStart: Date {
         if weekStartTimestamp == 0 {
@@ -101,6 +103,10 @@ struct SessionListView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 8)
 
+                weekSummaryStrip
+                    .padding(.horizontal, calendarHorizontalPadding)
+                    .padding(.bottom, 10)
+
                 dayHeaderRow
                     .padding(.horizontal, calendarHorizontalPadding)
 
@@ -111,7 +117,7 @@ struct SessionListView: View {
                     .padding(.bottom, 28)
                 }
             }
-            .background(Color(.systemGroupedBackground))
+            .background(AppStyle.background)
             .navigationTitle("Sessions")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -125,10 +131,21 @@ struct SessionListView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         if let url = prepareICSFile() {
-                            icsExport = ICSExportItem(url: url)
+                            fileExport = FileExportItem(url: url)
                         }
                     } label: {
                         Label("Export Calendar", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(sessions.isEmpty)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        if let url = prepareWeeklySessionsAPIFile() {
+                            fileExport = FileExportItem(url: url)
+                        }
+                    } label: {
+                        Label("Export Weekly API", systemImage: "curlybraces")
                     }
                     .disabled(sessions.isEmpty)
                 }
@@ -149,9 +166,32 @@ struct SessionListView: View {
                     weekStartTimestamp = newStart.timeIntervalSince1970
                 }
             }
-            .sheet(item: $icsExport) { item in
+            .sheet(item: $fileExport) { item in
                 ICSShareSheet(url: item.url)
             }
+        }
+    }
+
+    private var weekSummaryStrip: some View {
+        HStack(spacing: 8) {
+            MetricTile(
+                title: "Sessions",
+                value: "\(sessions.count)",
+                systemImage: "calendar",
+                tint: .blue
+            )
+            MetricTile(
+                title: "Confirmed",
+                value: "\(confirmedSessionCount)",
+                systemImage: "checkmark.circle.fill",
+                tint: .green
+            )
+            MetricTile(
+                title: "Fees",
+                value: totalSessionFees.formatted(.currency(code: AppStyle.currencyCode).precision(.fractionLength(0...2))),
+                systemImage: "dollarsign.circle.fill",
+                tint: .purple
+            )
         }
     }
 
@@ -177,8 +217,12 @@ struct SessionListView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
             .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(.secondarySystemGroupedBackground))
+                RoundedRectangle(cornerRadius: AppStyle.radius)
+                    .fill(AppStyle.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: AppStyle.radius)
+                    .stroke(AppStyle.separator.opacity(0.12), lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)
@@ -214,7 +258,7 @@ struct SessionListView: View {
             }
         }
         .padding(.bottom, 6)
-        .background(Color(.systemGroupedBackground))
+        .background(AppStyle.background)
     }
 
     private var grid: some View {
@@ -231,14 +275,15 @@ struct SessionListView: View {
             }
         }
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(.secondarySystemGroupedBackground))
+            RoundedRectangle(cornerRadius: AppStyle.radius)
+                .fill(AppStyle.surface)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(.separator).opacity(0.34), lineWidth: 1)
+            RoundedRectangle(cornerRadius: AppStyle.radius)
+                .stroke(AppStyle.separator.opacity(0.34), lineWidth: 1)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .shadow(color: .black.opacity(0.04), radius: 10, x: 0, y: 4)
+        .clipShape(RoundedRectangle(cornerRadius: AppStyle.radius))
     }
 
     private var timeAxis: some View {
@@ -253,7 +298,7 @@ struct SessionListView: View {
             }
         }
         .frame(width: timeAxisWidth)
-        .background(Color(.secondarySystemGroupedBackground))
+        .background(AppStyle.surface)
     }
 
     private func dayColumn(for day: Weekday) -> some View {
@@ -306,7 +351,7 @@ struct SessionListView: View {
         .frame(height: totalGridHeight)
         .background(
             ZStack {
-                Color(.secondarySystemGroupedBackground)
+                AppStyle.surface
                 if isDrafting(day) {
                     Color.accentColor.opacity(0.035)
                 }
@@ -385,6 +430,52 @@ struct SessionListView: View {
         } catch {
             return nil
         }
+    }
+
+    private func prepareWeeklySessionsAPIFile() -> URL? {
+        let object = weeklySessionsAPIObject()
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(
+                withJSONObject: object,
+                options: [.prettyPrinted, .sortedKeys]
+              ) else { return nil }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CoachPlanner-WeeklySessions.json")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    private func weeklySessionsAPIObject() -> [String: Any] {
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withFullDate]
+
+        let sessionObjects: [[String: Any]] = sessions.map { session in
+            [
+                "sessionName": sessionName(for: session),
+                "dayOfWeek": session.weekday.name,
+                "sessionFee": session.sessionFee
+            ]
+        }
+
+        return [
+            "weekStart": dateFormatter.string(from: weekStart),
+            "weekEnd": dateFormatter.string(from: weekEnd),
+            "sessions": sessionObjects
+        ]
+    }
+
+    private func sessionName(for session: CoachingSession) -> String {
+        let studentList = session.students
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map(\.name)
+            .joined(separator: ", ")
+
+        return studentList.isEmpty ? "\(session.venue) coaching" : studentList
     }
 
     private func generateICSContent() -> String {
@@ -494,7 +585,7 @@ struct SessionListView: View {
     }
 }
 
-private struct ICSExportItem: Identifiable {
+private struct FileExportItem: Identifiable {
     let id = UUID()
     let url: URL
 }
@@ -644,15 +735,15 @@ private struct SessionBlock: View {
         session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var courtLabel: String {
-        courtNumber.isEmpty ? "Unbooked" : "Court \(courtNumber)"
-    }
-
     private var sessionMetadata: String {
-        var parts: [String] = [courtLabel]
+        var parts: [String] = []
+
+        if !courtNumber.isEmpty {
+            parts.append("Court \(courtNumber)")
+        }
 
         if session.sessionFee > 0 {
-            parts.append(session.sessionFee.formatted(.currency(code: Locale.current.currency?.identifier ?? "AUD")))
+            parts.append(session.sessionFee.formatted(.currency(code: AppStyle.currencyCode)))
         }
 
         return parts.joined(separator: " · ")
@@ -684,17 +775,20 @@ private struct SessionBlock: View {
         .padding(.trailing, 3)
         .padding(.vertical, 5)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(color.opacity(0.14))
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(color.opacity(0.14))
+        )
         .overlay(alignment: .leading) {
             Rectangle()
                 .fill(color)
-                .frame(width: 2)
+                .frame(width: 3)
         }
         .overlay(
-            RoundedRectangle(cornerRadius: 5)
-                .stroke(color.opacity(0.28), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(color.opacity(0.36), lineWidth: 0.75)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
 
