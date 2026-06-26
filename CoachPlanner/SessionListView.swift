@@ -24,7 +24,6 @@ struct SessionListView: View {
     @State private var isWeekPickerPresented = false
     @State private var draftSelection: DraftSessionSelection?
     @State private var pendingDraftSelection: DraftSessionSelection?
-    @State private var isDraftTypeDialogPresented = false
     @State private var fileExport: FileExportItem?
 
     private let dayStartHour = 6
@@ -188,29 +187,6 @@ struct SessionListView: View {
             .sheet(item: $fileExport) { item in
                 ICSShareSheet(url: item.url)
             }
-            .confirmationDialog(
-                "Add to time grid",
-                isPresented: $isDraftTypeDialogPresented,
-                titleVisibility: .visible
-            ) {
-                Button("Session") {
-                    if let pendingDraftSelection {
-                        openSessionEditor(with: pendingDraftSelection)
-                    }
-                    pendingDraftSelection = nil
-                }
-
-                Button("Vacant Court") {
-                    if let pendingDraftSelection {
-                        openCourtBookingEditor(with: pendingDraftSelection)
-                    }
-                    pendingDraftSelection = nil
-                }
-
-                Button("Cancel", role: .cancel) {
-                    pendingDraftSelection = nil
-                }
-            }
         }
     }
 
@@ -320,6 +296,42 @@ struct SessionListView: View {
         )
         .shadow(color: .black.opacity(0.04), radius: 10, x: 0, y: 4)
         .clipShape(RoundedRectangle(cornerRadius: AppStyle.radius))
+        .overlay(alignment: .topLeading) {
+            GeometryReader { proxy in
+                if let pendingDraftSelection {
+                    Color.black.opacity(0.001)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            self.pendingDraftSelection = nil
+                        }
+                        .zIndex(4)
+
+                    DraftTypePopover(
+                        timeRange: draftTimeRangeText(for: pendingDraftSelection),
+                        onSession: {
+                            openSessionEditor(with: pendingDraftSelection)
+                            self.pendingDraftSelection = nil
+                        },
+                        onCourtBooking: {
+                            openCourtBookingEditor(with: pendingDraftSelection)
+                            self.pendingDraftSelection = nil
+                        },
+                        onCancel: {
+                            self.pendingDraftSelection = nil
+                        }
+                    )
+                    .frame(width: DraftTypePopover.width)
+                    .position(
+                        x: draftPopoverX(for: pendingDraftSelection, gridWidth: proxy.size.width),
+                        y: draftPopoverY(for: pendingDraftSelection)
+                    )
+                    .transition(.scale(scale: 0.92, anchor: .center).combined(with: .opacity))
+                    .zIndex(5)
+                }
+            }
+            .allowsHitTesting(pendingDraftSelection != nil)
+        }
+        .animation(.spring(response: 0.24, dampingFraction: 0.86), value: pendingDraftSelection)
     }
 
     private var timeAxis: some View {
@@ -357,7 +369,6 @@ struct SessionListView: View {
                     let selection = selection(for: day, startY: startY, currentY: currentY)
                     draftSelection = nil
                     pendingDraftSelection = selection
-                    isDraftTypeDialogPresented = true
                 },
                 onCancelled: {
                     draftSelection = nil
@@ -366,11 +377,11 @@ struct SessionListView: View {
             .frame(maxWidth: .infinity)
             .frame(height: totalGridHeight)
 
-            if let draftSelection, draftSelection.day == day {
+            if let activeDraftSelection, activeDraftSelection.day == day {
                 DraftSessionBlock()
-                    .frame(height: height(for: draftSelection))
+                    .frame(height: height(for: activeDraftSelection))
                     .padding(.horizontal, 2)
-                    .offset(y: yOffset(for: draftSelection))
+                    .offset(y: yOffset(for: activeDraftSelection))
                     .allowsHitTesting(false)
             }
 
@@ -408,7 +419,11 @@ struct SessionListView: View {
     }
 
     private func isDrafting(_ day: Weekday) -> Bool {
-        draftSelection?.day == day
+        activeDraftSelection?.day == day
+    }
+
+    private var activeDraftSelection: DraftSessionSelection? {
+        draftSelection ?? pendingDraftSelection
     }
 
     private func selection(for day: Weekday, startY: CGFloat, currentY: CGFloat) -> DraftSessionSelection {
@@ -439,6 +454,36 @@ struct SessionListView: View {
             preselectedStartTime: time(for: selection.startMinutes),
             preselectedEndTime: time(for: selection.endMinutes)
         )
+    }
+
+    private func draftPopoverX(for selection: DraftSessionSelection, gridWidth: CGFloat) -> CGFloat {
+        let dayColumnWidth = max((gridWidth - timeAxisWidth) / CGFloat(Weekday.allCases.count), 1)
+        let rawX = timeAxisWidth + (CGFloat(selection.day.rawValue - 1) * dayColumnWidth) + (dayColumnWidth / 2)
+        let horizontalInset = (DraftTypePopover.width / 2) + 8
+        return min(max(rawX, horizontalInset), max(horizontalInset, gridWidth - horizontalInset))
+    }
+
+    private func draftPopoverY(for selection: DraftSessionSelection) -> CGFloat {
+        let selectionTop = yOffset(for: selection)
+        let selectionHeight = height(for: selection)
+        let preferredY = selectionTop - 52
+        if preferredY > 78 {
+            return preferredY
+        }
+        return selectionTop + selectionHeight + 58
+    }
+
+    private func draftTimeRangeText(for selection: DraftSessionSelection) -> String {
+        "\(timeText(for: selection.startMinutes))-\(timeText(for: selection.endMinutes))"
+    }
+
+    private func timeText(for totalMinutes: Int) -> String {
+        let hour = totalMinutes / 60
+        let minute = totalMinutes % 60
+        let period = hour < 12 ? "am" : "pm"
+        let displayHour = hour % 12 == 0 ? 12 : hour % 12
+        let minuteText = minute == 0 ? "" : ".\(String(format: "%02d", minute))"
+        return "\(displayHour)\(minuteText)\(period)"
     }
 
     private func yOffset(for session: CoachingSession) -> CGFloat {
@@ -752,7 +797,7 @@ private struct TimeSlotLongPressOverlay: UIViewRepresentable {
     }
 }
 
-private struct DraftSessionSelection {
+private struct DraftSessionSelection: Equatable {
     let day: Weekday
     let startMinutes: Int
     let endMinutes: Int
@@ -772,6 +817,104 @@ private struct DraftSessionBlock: View {
                     .stroke(Color.accentColor, lineWidth: 1.5)
             )
             .shadow(color: Color.accentColor.opacity(0.16), radius: 8, x: 0, y: 3)
+    }
+}
+
+private struct DraftTypePopover: View {
+    static let width: CGFloat = 226
+
+    let timeRange: String
+    let onSession: () -> Void
+    let onCourtBooking: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Add block")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.primary)
+                    Text(timeRange)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 26, height: 26)
+                        .background(Circle().fill(Color(.tertiarySystemFill)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel")
+            }
+
+            HStack(spacing: 8) {
+                DraftTypeButton(
+                    title: "Session",
+                    systemImage: "person.2.fill",
+                    tint: .accentColor,
+                    action: onSession
+                )
+
+                DraftTypeButton(
+                    title: "Court",
+                    systemImage: "sportscourt.fill",
+                    tint: .gray,
+                    action: onCourtBooking
+                )
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.regularMaterial)
+                .shadow(color: .black.opacity(0.16), radius: 14, x: 0, y: 8)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(AppStyle.separator.opacity(0.18), lineWidth: 0.75)
+        )
+    }
+}
+
+private struct DraftTypeButton: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 32, height: 32)
+                    .background(Circle().fill(tint.opacity(0.14)))
+
+                Text(title)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 9)
+                    .fill(Color(.secondarySystemGroupedBackground).opacity(0.92))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(tint.opacity(0.18), lineWidth: 0.75)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
