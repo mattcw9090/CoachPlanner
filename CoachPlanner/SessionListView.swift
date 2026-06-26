@@ -25,6 +25,7 @@ struct SessionListView: View {
     @State private var draftSelection: DraftSessionSelection?
     @State private var pendingDraftSelection: DraftSessionSelection?
     @State private var fileExport: FileExportItem?
+    @State private var financeSendNotice: FinanceSendNotice?
 
     private let dayStartHour = 6
     private let dayEndHour = 23
@@ -163,11 +164,9 @@ struct SessionListView: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        if let url = prepareWeeklySessionsAPIFile() {
-                            fileExport = FileExportItem(url: url)
-                        }
+                        sendToFinanceTracker()
                     } label: {
-                        Label("Export Weekly API", systemImage: "dollarsign.circle")
+                        Label("Send to Finance Tracker", systemImage: "dollarsign.circle")
                     }
                     .disabled(sessions.isEmpty)
                 }
@@ -186,6 +185,13 @@ struct SessionListView: View {
             }
             .sheet(item: $fileExport) { item in
                 ICSShareSheet(url: item.url)
+            }
+            .alert(item: $financeSendNotice) { notice in
+                Alert(
+                    title: Text(notice.title),
+                    message: Text(notice.message),
+                    dismissButton: .default(Text("OK"))
+                )
             }
         }
     }
@@ -543,32 +549,26 @@ struct SessionListView: View {
         }
     }
 
-    private func prepareWeeklySessionsAPIFile() -> URL? {
-        guard let data = weeklySessionsAPIData(options: [.prettyPrinted, .sortedKeys]) else { return nil }
-
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CoachPlanner-WeeklySessions.json")
-        do {
-            try data.write(to: url, options: .atomic)
-            return url
-        } catch {
-            return nil
+    private func sendToFinanceTracker() {
+        let payloads = sessions.map { session in
+            FinanceBridge.SessionPayload(
+                sessionName: sessionName(for: session),
+                dayOfWeek: session.weekday.name,
+                sessionFee: session.sessionFee
+            )
         }
-    }
 
-    private func weeklySessionsAPIData(options: JSONSerialization.WritingOptions) -> Data? {
-        let object = weeklySessionsAPIObject()
-        guard JSONSerialization.isValidJSONObject(object) else { return nil }
-        return try? JSONSerialization.data(withJSONObject: object, options: options)
-    }
-
-    private func weeklySessionsAPIObject() -> [[String: Any]] {
-        sessions.map { session in
-            [
-                "sessionName": sessionName(for: session),
-                "dayOfWeek": session.weekday.name,
-                "sessionFee": session.sessionFee
-            ]
+        switch FinanceBridge.send(sessions: payloads, exportedAt: .now) {
+        case let .success(count, _):
+            financeSendNotice = FinanceSendNotice(
+                title: "Sent to Finance Tracker",
+                message: "\(count) \(count == 1 ? "session" : "sessions") shared with MyFinanceTracker. Open MyFinanceTracker to import them."
+            )
+        case let .failure(reason):
+            financeSendNotice = FinanceSendNotice(
+                title: "Couldn't Send",
+                message: reason
+            )
         }
     }
 
@@ -691,6 +691,12 @@ struct SessionListView: View {
 private struct FileExportItem: Identifiable {
     let id = UUID()
     let url: URL
+}
+
+private struct FinanceSendNotice: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
 }
 
 private struct ICSShareSheet: UIViewControllerRepresentable {
