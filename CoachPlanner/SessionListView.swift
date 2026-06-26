@@ -10,12 +10,21 @@ struct SessionListView: View {
             SortDescriptor(\CoachingSession.startTime)
         ]
     ) private var sessions: [CoachingSession]
+    @Query(
+        sort: [
+            SortDescriptor(\CourtBooking.dayOfWeek),
+            SortDescriptor(\CourtBooking.startTime)
+        ]
+    ) private var courtBookings: [CourtBooking]
 
     @AppStorage("weekStartTimestamp") private var weekStartTimestamp: Double = 0
 
     @State private var editor: SessionEditor?
+    @State private var courtBookingEditor: CourtBookingEditor?
     @State private var isWeekPickerPresented = false
     @State private var draftSelection: DraftSessionSelection?
+    @State private var pendingDraftSelection: DraftSessionSelection?
+    @State private var isDraftTypeDialogPresented = false
     @State private var fileExport: FileExportItem?
 
     private let dayStartHour = 6
@@ -62,6 +71,10 @@ struct SessionListView: View {
 
     private func sessions(for day: Weekday) -> [CoachingSession] {
         sessions.filter { $0.weekday == day }
+    }
+
+    private func courtBookings(for day: Weekday) -> [CourtBooking] {
+        courtBookings.filter { $0.weekday == day }
     }
 
     private func minutesOfDay(_ date: Date) -> Int {
@@ -121,10 +134,20 @@ struct SessionListView: View {
             .navigationTitle("Sessions")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        editor = SessionEditor(weekStart: weekStart)
+                    Menu {
+                        Button {
+                            editor = SessionEditor(weekStart: weekStart)
+                        } label: {
+                            Label("Session", systemImage: "person.2.fill")
+                        }
+
+                        Button {
+                            courtBookingEditor = CourtBookingEditor()
+                        } label: {
+                            Label("Vacant Court", systemImage: "sportscourt.fill")
+                        }
                     } label: {
-                        Label("Add Session", systemImage: "plus")
+                        Label("Add", systemImage: "plus")
                     }
                 }
 
@@ -154,6 +177,9 @@ struct SessionListView: View {
             .sheet(item: $editor) { editor in
                 SessionEditorView(editor: editor)
             }
+            .sheet(item: $courtBookingEditor) { editor in
+                CourtBookingEditorView(editor: editor)
+            }
             .sheet(isPresented: $isWeekPickerPresented) {
                 WeekStartPickerView(currentStart: weekStart) { newStart in
                     weekStartTimestamp = newStart.timeIntervalSince1970
@@ -161,6 +187,29 @@ struct SessionListView: View {
             }
             .sheet(item: $fileExport) { item in
                 ICSShareSheet(url: item.url)
+            }
+            .confirmationDialog(
+                "Add to time grid",
+                isPresented: $isDraftTypeDialogPresented,
+                titleVisibility: .visible
+            ) {
+                Button("Session") {
+                    if let pendingDraftSelection {
+                        openSessionEditor(with: pendingDraftSelection)
+                    }
+                    pendingDraftSelection = nil
+                }
+
+                Button("Vacant Court") {
+                    if let pendingDraftSelection {
+                        openCourtBookingEditor(with: pendingDraftSelection)
+                    }
+                    pendingDraftSelection = nil
+                }
+
+                Button("Cancel", role: .cancel) {
+                    pendingDraftSelection = nil
+                }
             }
         }
     }
@@ -225,29 +274,23 @@ struct SessionListView: View {
         HStack(spacing: 0) {
             Color.clear.frame(width: timeAxisWidth, height: dayHeaderHeight)
             ForEach(Weekday.allCases) { day in
-                Button {
-                    editor = SessionEditor(preselectedDay: day, weekStart: weekStart)
-                } label: {
-                    VStack(spacing: 2) {
-                        Text(String(day.name.prefix(3)))
-                            .font(.caption2.weight(.bold))
-                            .textCase(.uppercase)
-                            .foregroundStyle(isToday(day) ? Color.accentColor : Color.secondary)
-                        Text("\(dayOfMonth(for: day))")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(isToday(day) ? .white : .primary)
-                            .frame(width: 28, height: 28)
-                            .background {
-                                if isToday(day) {
-                                    Circle().fill(Color.accentColor)
-                                }
+                VStack(spacing: 2) {
+                    Text(String(day.name.prefix(3)))
+                        .font(.caption2.weight(.bold))
+                        .textCase(.uppercase)
+                        .foregroundStyle(isToday(day) ? Color.accentColor : Color.secondary)
+                    Text("\(dayOfMonth(for: day))")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(isToday(day) ? .white : .primary)
+                        .frame(width: 28, height: 28)
+                        .background {
+                            if isToday(day) {
+                                Circle().fill(Color.accentColor)
                             }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: dayHeaderHeight)
-                    .contentShape(Rectangle())
+                        }
                 }
-                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+                .frame(height: dayHeaderHeight)
             }
         }
         .padding(.bottom, 6)
@@ -313,7 +356,8 @@ struct SessionListView: View {
                 onEnded: { day, startY, currentY in
                     let selection = selection(for: day, startY: startY, currentY: currentY)
                     draftSelection = nil
-                    openEditor(with: selection)
+                    pendingDraftSelection = selection
+                    isDraftTypeDialogPresented = true
                 },
                 onCancelled: {
                     draftSelection = nil
@@ -337,6 +381,16 @@ struct SessionListView: View {
                     .offset(y: yOffset(for: session))
                     .onTapGesture {
                         editor = SessionEditor(session: session, weekStart: weekStart)
+                    }
+            }
+
+            ForEach(courtBookings(for: day)) { booking in
+                CourtBookingBlock(booking: booking)
+                    .frame(height: blockHeight(for: booking))
+                    .padding(.horizontal, 2)
+                    .offset(y: yOffset(for: booking))
+                    .onTapGesture {
+                        courtBookingEditor = CourtBookingEditor(booking: booking)
                     }
             }
         }
@@ -370,7 +424,7 @@ struct SessionListView: View {
         )
     }
 
-    private func openEditor(with selection: DraftSessionSelection) {
+    private func openSessionEditor(with selection: DraftSessionSelection) {
         editor = SessionEditor(
             preselectedDay: selection.day,
             preselectedStartTime: time(for: selection.startMinutes),
@@ -379,13 +433,31 @@ struct SessionListView: View {
         )
     }
 
+    private func openCourtBookingEditor(with selection: DraftSessionSelection) {
+        courtBookingEditor = CourtBookingEditor(
+            preselectedDay: selection.day,
+            preselectedStartTime: time(for: selection.startMinutes),
+            preselectedEndTime: time(for: selection.endMinutes)
+        )
+    }
+
     private func yOffset(for session: CoachingSession) -> CGFloat {
         let mins = minutesOfDay(session.startTime) - dayStartHour * 60
         return CGFloat(mins) / 60.0 * hourHeight
     }
 
+    private func yOffset(for booking: CourtBooking) -> CGFloat {
+        let mins = minutesOfDay(booking.startTime) - dayStartHour * 60
+        return CGFloat(mins) / 60.0 * hourHeight
+    }
+
     private func blockHeight(for session: CoachingSession) -> CGFloat {
         let duration = minutesOfDay(session.endTime) - minutesOfDay(session.startTime)
+        return max(CGFloat(duration) / 60.0 * hourHeight - 5, 30)
+    }
+
+    private func blockHeight(for booking: CourtBooking) -> CGFloat {
+        let duration = minutesOfDay(booking.endTime) - minutesOfDay(booking.startTime)
         return max(CGFloat(duration) / 60.0 * hourHeight - 5, 30)
     }
 
@@ -721,6 +793,10 @@ private struct SessionBlock: View {
         session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var isCourtBooked: Bool {
+        !courtNumber.isEmpty
+    }
+
     private var sessionMetadata: String {
         var parts: [String] = []
 
@@ -728,11 +804,15 @@ private struct SessionBlock: View {
             parts.append("Court \(courtNumber)")
         }
 
-        if session.sessionFee > 0 {
-            parts.append(session.sessionFee.formatted(.currency(code: AppStyle.currencyCode)))
-        }
-
         return parts.joined(separator: " · ")
+    }
+
+    private var backgroundOpacity: Double {
+        isCourtBooked ? 0.14 : 0.28
+    }
+
+    private var strokeOpacity: Double {
+        isCourtBooked ? 0.36 : 0.68
     }
 
     var body: some View {
@@ -763,18 +843,268 @@ private struct SessionBlock: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(color.opacity(0.14))
+                .fill(color.opacity(backgroundOpacity))
         )
         .overlay(alignment: .leading) {
             Rectangle()
                 .fill(color)
-                .frame(width: 3)
+                .frame(width: isCourtBooked ? 3 : 4)
         }
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(color.opacity(0.36), lineWidth: 0.75)
+                .stroke(color.opacity(strokeOpacity), lineWidth: isCourtBooked ? 0.75 : 1.1)
+        )
+        .shadow(color: isCourtBooked ? .clear : color.opacity(0.14), radius: 5, x: 0, y: 2)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+private struct CourtBookingBlock: View {
+    let booking: CourtBooking
+
+    private var courtNumber: String {
+        booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(booking.venue)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.75)
+
+            Text("Court \(courtNumber)")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 3)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.gray.opacity(0.16))
+        )
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Color.gray)
+                .frame(width: 4)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.gray.opacity(0.5), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+struct CourtBookingEditor: Identifiable {
+    let id = UUID()
+    let booking: CourtBooking?
+    let preselectedDay: Weekday?
+    let preselectedStartTime: Date?
+    let preselectedEndTime: Date?
+
+    init(
+        booking: CourtBooking? = nil,
+        preselectedDay: Weekday? = nil,
+        preselectedStartTime: Date? = nil,
+        preselectedEndTime: Date? = nil
+    ) {
+        self.booking = booking
+        self.preselectedDay = preselectedDay
+        self.preselectedStartTime = preselectedStartTime
+        self.preselectedEndTime = preselectedEndTime
+    }
+}
+
+private struct CourtBookingEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    @Query private var existingSessions: [CoachingSession]
+    @Query private var existingBookings: [CourtBooking]
+
+    let editor: CourtBookingEditor
+
+    @State private var dayOfWeek: Weekday
+    @State private var startTime: Date
+    @State private var endTime: Date
+    @State private var venue: Venue
+    @State private var courtNumber: String
+
+    init(editor: CourtBookingEditor) {
+        self.editor = editor
+        let calendar = Calendar.current
+        let defaultStart = calendar.date(bySettingHour: 17, minute: 0, second: 0, of: .now) ?? .now
+        let defaultEnd = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: .now) ?? .now
+
+        _dayOfWeek = State(initialValue: editor.booking?.weekday ?? editor.preselectedDay ?? .monday)
+        _startTime = State(initialValue: editor.booking?.startTime ?? editor.preselectedStartTime ?? defaultStart)
+        _endTime = State(initialValue: editor.booking?.endTime ?? editor.preselectedEndTime ?? defaultEnd)
+        _venue = State(initialValue: editor.booking?.venueValue ?? .pbaMalaga)
+        _courtNumber = State(initialValue: editor.booking?.courtNumber ?? "")
+    }
+
+    private var isEditing: Bool {
+        editor.booking != nil
+    }
+
+    private var trimmedCourtNumber: String {
+        courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isTimeRangeValid: Bool {
+        minutes(of: endTime) > minutes(of: startTime)
+    }
+
+    private var overlappingSession: CoachingSession? {
+        let newStart = minutes(of: startTime)
+        let newEnd = minutes(of: endTime)
+
+        return existingSessions.first { session in
+            session.dayOfWeek == dayOfWeek.rawValue &&
+                newStart < minutes(of: session.endTime) &&
+                newEnd > minutes(of: session.startTime)
+        }
+    }
+
+    private var overlappingBooking: CourtBooking? {
+        let editingID = editor.booking?.persistentModelID
+        let newStart = minutes(of: startTime)
+        let newEnd = minutes(of: endTime)
+
+        return existingBookings.first { booking in
+            booking.persistentModelID != editingID &&
+                booking.dayOfWeek == dayOfWeek.rawValue &&
+                newStart < minutes(of: booking.endTime) &&
+                newEnd > minutes(of: booking.startTime)
+        }
+    }
+
+    private var canSave: Bool {
+        isTimeRangeValid &&
+            !trimmedCourtNumber.isEmpty &&
+            overlappingSession == nil &&
+            overlappingBooking == nil
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Picker("Venue", selection: $venue) {
+                        ForEach(Venue.allCases) { option in
+                            Text(option.rawValue).tag(option)
+                        }
+                    }
+
+                    TextField("Court number", text: $courtNumber)
+                        .keyboardType(.numberPad)
+                        .textInputAutocapitalization(.never)
+                } header: {
+                    Text("Court")
+                } footer: {
+                    if trimmedCourtNumber.isEmpty {
+                        Text("Court number is required.")
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                Section {
+                    Picker("Day of Week", selection: $dayOfWeek) {
+                        ForEach(Weekday.allCases) { day in
+                            Text(day.name).tag(day)
+                        }
+                    }
+
+                    LabeledContent("Start Time") {
+                        HalfHourTimePicker(selection: $startTime)
+                    }
+
+                    LabeledContent("End Time") {
+                        HalfHourTimePicker(selection: $endTime)
+                    }
+                } header: {
+                    Text("Schedule")
+                } footer: {
+                    if !isTimeRangeValid {
+                        Text("End time must be after start time.")
+                            .foregroundStyle(.red)
+                    } else if let overlap = overlappingSession {
+                        Text("Overlaps with session at \(overlap.venue), \(timeRangeText(start: overlap.startTime, end: overlap.endTime)).")
+                            .foregroundStyle(.red)
+                    } else if let overlap = overlappingBooking {
+                        Text("Overlaps with Court \(overlap.courtNumber) at \(overlap.venue), \(timeRangeText(start: overlap.startTime, end: overlap.endTime)).")
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                if isEditing {
+                    Section {
+                        Button("Delete Court Booking", role: .destructive) {
+                            deleteBooking()
+                        }
+                    }
+                }
+            }
+            .navigationTitle(isEditing ? "Edit Court Booking" : "New Court Booking")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        save()
+                    }
+                    .disabled(!canSave)
+                }
+            }
+        }
+    }
+
+    private func minutes(of date: Date) -> Int {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+    }
+
+    private func timeRangeText(start: Date, end: Date) -> String {
+        let formatter = Date.FormatStyle.dateTime.hour().minute()
+        return "\(start.formatted(formatter))-\(end.formatted(formatter))"
+    }
+
+    private func save() {
+        if let booking = editor.booking {
+            booking.dayOfWeek = dayOfWeek.rawValue
+            booking.startTime = startTime
+            booking.endTime = endTime
+            booking.venue = venue.rawValue
+            booking.courtNumber = trimmedCourtNumber
+        } else {
+            let booking = CourtBooking(
+                dayOfWeek: dayOfWeek,
+                startTime: startTime,
+                endTime: endTime,
+                venue: venue,
+                courtNumber: trimmedCourtNumber
+            )
+            modelContext.insert(booking)
+        }
+
+        dismiss()
+    }
+
+    private func deleteBooking() {
+        guard let booking = editor.booking else { return }
+        modelContext.delete(booking)
+        dismiss()
     }
 }
 
@@ -948,5 +1278,5 @@ private struct DayCell: View {
 
 #Preview {
     SessionListView()
-        .modelContainer(for: [Student.self, CoachingSession.self], inMemory: true)
+        .modelContainer(for: [Student.self, CoachingSession.self, CourtBooking.self], inMemory: true)
 }

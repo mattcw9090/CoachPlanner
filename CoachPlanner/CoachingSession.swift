@@ -101,3 +101,37 @@ final class CoachingSession {
         SessionStatus(rawValue: status) ?? .unscheduled
     }
 }
+
+@Model
+final class CourtBooking {
+    var dayOfWeek: Int
+    var startTime: Date
+    var endTime: Date
+    var venue: String
+    var courtNumber: String
+    var createdAt: Date
+
+    init(
+        dayOfWeek: Weekday,
+        startTime: Date,
+        endTime: Date,
+        venue: Venue,
+        courtNumber: String,
+        createdAt: Date = .now
+    ) {
+        self.dayOfWeek = dayOfWeek.rawValue
+        self.startTime = startTime
+        self.endTime = endTime
+        self.venue = venue.rawValue
+        self.courtNumber = courtNumber
+        self.createdAt = createdAt
+    }
+
+    var weekday: Weekday {
+        Weekday(rawValue: dayOfWeek) ?? .monday
+    }
+
+    var venueValue: Venue {
+        Venue(rawValue: venue) ?? .pbaMalaga
+    }
+}

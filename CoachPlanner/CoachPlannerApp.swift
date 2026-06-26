@@ -7,6 +7,6 @@ struct CoachPlannerApp: App {
         WindowGroup {
             RootTabView()
         }
-        .modelContainer(for: [Student.self, CoachingSession.self])
+        .modelContainer(for: [Student.self, CoachingSession.self, CourtBooking.self])
     }
 }

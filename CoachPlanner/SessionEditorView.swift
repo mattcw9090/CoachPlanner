@@ -32,6 +32,7 @@ struct SessionEditorView: View {
 
     @Query(sort: \Student.name) private var students: [Student]
     @Query private var existingSessions: [CoachingSession]
+    @Query private var existingCourtBookings: [CourtBooking]
 
     let editor: SessionEditor
 
@@ -117,9 +118,21 @@ struct SessionEditorView: View {
         }
     }
 
+    private var overlappingCourtBooking: CourtBooking? {
+        let newStart = minutes(of: startTime)
+        let newEnd = minutes(of: endTime)
+
+        return existingCourtBookings.first { booking in
+            booking.dayOfWeek == dayOfWeek.rawValue &&
+                newStart < minutes(of: booking.endTime) &&
+                newEnd > minutes(of: booking.startTime)
+        }
+    }
+
     private var canSave: Bool {
         isTimeRangeValid &&
             overlappingSession == nil &&
+            overlappingCourtBooking == nil &&
             !selectedStudentIDs.isEmpty &&
             isCourtValid &&
             isSessionFeeValid
@@ -349,6 +362,9 @@ struct SessionEditorView: View {
                     } else if let overlap = overlappingSession {
                         Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(for: overlap)) at \(overlap.venue).")
                             .foregroundStyle(.red)
+                    } else if let overlap = overlappingCourtBooking {
+                        Text("Overlaps with vacant Court \(overlap.courtNumber) at \(overlap.venue), \(timeRangeText(start: overlap.startTime, end: overlap.endTime)).")
+                            .foregroundStyle(.red)
                     }
                 }
 
@@ -431,6 +447,11 @@ struct SessionEditorView: View {
     private func timeRangeText(for session: CoachingSession) -> String {
         let formatter = Date.FormatStyle.dateTime.hour().minute()
         return "\(session.startTime.formatted(formatter))–\(session.endTime.formatted(formatter))"
+    }
+
+    private func timeRangeText(start: Date, end: Date) -> String {
+        let formatter = Date.FormatStyle.dateTime.hour().minute()
+        return "\(start.formatted(formatter))–\(end.formatted(formatter))"
     }
 
     private var currencySymbol: String {
@@ -692,7 +713,7 @@ private extension ContactPreference {
     }
 }
 
-private struct HalfHourTimePicker: View {
+struct HalfHourTimePicker: View {
     @Binding var selection: Date
 
     private var minutesBinding: Binding<Int> {
