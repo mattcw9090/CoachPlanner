@@ -26,6 +26,7 @@ struct SessionListView: View {
     @State private var pendingDraftSelection: DraftSessionSelection?
     @State private var fileExport: FileExportItem?
     @State private var financeSendNotice: FinanceSendNotice?
+    @State private var selectedCourtBooking: CourtBooking?
 
     private let dayStartHour = 6
     private let dayEndHour = 23
@@ -322,14 +323,17 @@ struct SessionListView: View {
         .clipShape(RoundedRectangle(cornerRadius: AppStyle.radius))
         .overlay(alignment: .topLeading) {
             GeometryReader { proxy in
-                if let pendingDraftSelection {
+                if pendingDraftSelection != nil || selectedCourtBooking != nil {
                     Color.black.opacity(0.001)
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            self.pendingDraftSelection = nil
+                            pendingDraftSelection = nil
+                            selectedCourtBooking = nil
                         }
                         .zIndex(4)
+                }
 
+                if let pendingDraftSelection {
                     DraftTypePopover(
                         timeRange: draftTimeRangeText(for: pendingDraftSelection),
                         onSession: {
@@ -352,10 +356,36 @@ struct SessionListView: View {
                     .transition(.scale(scale: 0.92, anchor: .center).combined(with: .opacity))
                     .zIndex(5)
                 }
+
+                if let selectedCourtBooking {
+                    VacantCourtPopover(
+                        title: "Vacant court",
+                        detail: vacantCourtDetail(for: selectedCourtBooking),
+                        canAddSession: canTakeSession(from: selectedCourtBooking),
+                        onSession: {
+                            openSessionEditor(from: selectedCourtBooking)
+                        },
+                        onEdit: {
+                            courtBookingEditor = CourtBookingEditor(booking: selectedCourtBooking)
+                            self.selectedCourtBooking = nil
+                        },
+                        onCancel: {
+                            self.selectedCourtBooking = nil
+                        }
+                    )
+                    .frame(width: VacantCourtPopover.width)
+                    .position(
+                        x: courtBookingPopoverX(for: selectedCourtBooking, gridWidth: proxy.size.width),
+                        y: courtBookingPopoverY(for: selectedCourtBooking)
+                    )
+                    .transition(.scale(scale: 0.92, anchor: .center).combined(with: .opacity))
+                    .zIndex(5)
+                }
             }
-            .allowsHitTesting(pendingDraftSelection != nil)
+            .allowsHitTesting(pendingDraftSelection != nil || selectedCourtBooking != nil)
         }
         .animation(.spring(response: 0.24, dampingFraction: 0.86), value: pendingDraftSelection)
+        .animation(.spring(response: 0.24, dampingFraction: 0.86), value: selectedCourtBooking?.persistentModelID)
     }
 
     private var timeAxis: some View {
@@ -425,7 +455,8 @@ struct SessionListView: View {
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: booking))
                     .onTapGesture {
-                        courtBookingEditor = CourtBookingEditor(booking: booking)
+                        pendingDraftSelection = nil
+                        selectedCourtBooking = booking
                     }
             }
         }
@@ -480,10 +511,48 @@ struct SessionListView: View {
         )
     }
 
+    private func openSessionEditor(from booking: CourtBooking) {
+        guard canTakeSession(from: booking),
+              let venue = Venue(rawValue: booking.venue),
+              let endTime = Calendar.current.date(byAdding: .minute, value: suggestedSessionDurationMinutes(for: booking), to: booking.startTime) else {
+            return
+        }
+
+        editor = SessionEditor(
+            preselectedDay: booking.weekday,
+            preselectedStartTime: booking.startTime,
+            preselectedEndTime: endTime,
+            preselectedVenue: venue,
+            preselectedCourtNumber: booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines),
+            consumedCourtBooking: booking,
+            weekStart: weekStart
+        )
+        selectedCourtBooking = nil
+    }
+
+    private func canTakeSession(from booking: CourtBooking) -> Bool {
+        durationMinutes(for: booking) >= 30
+    }
+
+    private func suggestedSessionDurationMinutes(for booking: CourtBooking) -> Int {
+        min(durationMinutes(for: booking), 60)
+    }
+
+    private func durationMinutes(for booking: CourtBooking) -> Int {
+        minutesOfDay(booking.endTime) - minutesOfDay(booking.startTime)
+    }
+
     private func draftPopoverX(for selection: DraftSessionSelection, gridWidth: CGFloat) -> CGFloat {
         let dayColumnWidth = max((gridWidth - timeAxisWidth) / CGFloat(Weekday.allCases.count), 1)
         let rawX = timeAxisWidth + (CGFloat(selection.day.rawValue - 1) * dayColumnWidth) + (dayColumnWidth / 2)
         let horizontalInset = (DraftTypePopover.width / 2) + 8
+        return min(max(rawX, horizontalInset), max(horizontalInset, gridWidth - horizontalInset))
+    }
+
+    private func courtBookingPopoverX(for booking: CourtBooking, gridWidth: CGFloat) -> CGFloat {
+        let dayColumnWidth = max((gridWidth - timeAxisWidth) / CGFloat(Weekday.allCases.count), 1)
+        let rawX = timeAxisWidth + (CGFloat(booking.dayOfWeek - 1) * dayColumnWidth) + (dayColumnWidth / 2)
+        let horizontalInset = (VacantCourtPopover.width / 2) + 8
         return min(max(rawX, horizontalInset), max(horizontalInset, gridWidth - horizontalInset))
     }
 
@@ -497,8 +566,22 @@ struct SessionListView: View {
         return selectionTop + selectionHeight + 58
     }
 
+    private func courtBookingPopoverY(for booking: CourtBooking) -> CGFloat {
+        let bookingTop = yOffset(for: booking)
+        let bookingHeight = blockHeight(for: booking)
+        let preferredY = bookingTop - 52
+        if preferredY > 78 {
+            return preferredY
+        }
+        return bookingTop + bookingHeight + 58
+    }
+
     private func draftTimeRangeText(for selection: DraftSessionSelection) -> String {
         "\(timeText(for: selection.startMinutes))-\(timeText(for: selection.endMinutes))"
+    }
+
+    private func vacantCourtDetail(for booking: CourtBooking) -> String {
+        "Court \(booking.courtNumber) · \(timeText(for: minutesOfDay(booking.startTime)))-\(timeText(for: minutesOfDay(booking.endTime)))"
     }
 
     private func timeText(for totalMinutes: Int) -> String {
@@ -921,10 +1004,78 @@ private struct DraftTypePopover: View {
     }
 }
 
+private struct VacantCourtPopover: View {
+    static let width: CGFloat = 226
+
+    let title: String
+    let detail: String
+    let canAddSession: Bool
+    let onSession: () -> Void
+    let onEdit: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.primary)
+                    Text(detail)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+
+                Spacer()
+
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 26, height: 26)
+                        .background(Circle().fill(Color(.tertiarySystemFill)))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel")
+            }
+
+            HStack(spacing: 8) {
+                DraftTypeButton(
+                    title: "Session",
+                    systemImage: "person.2.fill",
+                    tint: .accentColor,
+                    isEnabled: canAddSession,
+                    action: onSession
+                )
+
+                DraftTypeButton(
+                    title: "Edit",
+                    systemImage: "pencil",
+                    tint: .gray,
+                    action: onEdit
+                )
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.regularMaterial)
+                .shadow(color: .black.opacity(0.16), radius: 14, x: 0, y: 8)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(AppStyle.separator.opacity(0.18), lineWidth: 0.75)
+        )
+    }
+}
+
 private struct DraftTypeButton: View {
     let title: String
     let systemImage: String
     let tint: Color
+    var isEnabled: Bool = true
     let action: () -> Void
 
     var body: some View {
@@ -954,6 +1105,8 @@ private struct DraftTypeButton: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.45)
     }
 }
 

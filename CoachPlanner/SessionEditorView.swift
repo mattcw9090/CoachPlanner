@@ -8,6 +8,9 @@ struct SessionEditor: Identifiable {
     let preselectedDay: Weekday?
     let preselectedStartTime: Date?
     let preselectedEndTime: Date?
+    let preselectedVenue: Venue?
+    let preselectedCourtNumber: String?
+    let consumedCourtBooking: CourtBooking?
     let weekStart: Date?
 
     init(
@@ -15,12 +18,18 @@ struct SessionEditor: Identifiable {
         preselectedDay: Weekday? = nil,
         preselectedStartTime: Date? = nil,
         preselectedEndTime: Date? = nil,
+        preselectedVenue: Venue? = nil,
+        preselectedCourtNumber: String? = nil,
+        consumedCourtBooking: CourtBooking? = nil,
         weekStart: Date? = nil
     ) {
         self.session = session
         self.preselectedDay = preselectedDay
         self.preselectedStartTime = preselectedStartTime
         self.preselectedEndTime = preselectedEndTime
+        self.preselectedVenue = preselectedVenue
+        self.preselectedCourtNumber = preselectedCourtNumber
+        self.consumedCourtBooking = consumedCourtBooking
         self.weekStart = weekStart
     }
 }
@@ -63,9 +72,9 @@ struct SessionEditorView: View {
 
         _startTime = State(initialValue: editor.session?.startTime ?? editor.preselectedStartTime ?? defaultStart)
         _endTime = State(initialValue: editor.session?.endTime ?? editor.preselectedEndTime ?? defaultEnd)
-        _venue = State(initialValue: editor.session?.venueValue ?? .pbaMalaga)
+        _venue = State(initialValue: editor.session?.venueValue ?? editor.preselectedVenue ?? .pbaMalaga)
         _status = State(initialValue: editor.session?.statusValue ?? .unscheduled)
-        let existingCourtNumber = editor.session?.courtNumber ?? ""
+        let existingCourtNumber = editor.session?.courtNumber ?? editor.preselectedCourtNumber ?? ""
         _isCourtBooked = State(
             initialValue: !existingCourtNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
@@ -119,20 +128,37 @@ struct SessionEditorView: View {
     }
 
     private var overlappingCourtBooking: CourtBooking? {
+        let consumedBookingID = editor.consumedCourtBooking?.persistentModelID
         let newStart = minutes(of: startTime)
         let newEnd = minutes(of: endTime)
 
         return existingCourtBookings.first { booking in
-            booking.dayOfWeek == dayOfWeek.rawValue &&
+            booking.persistentModelID != consumedBookingID &&
+                booking.dayOfWeek == dayOfWeek.rawValue &&
                 newStart < minutes(of: booking.endTime) &&
                 newEnd > minutes(of: booking.startTime)
         }
+    }
+
+    private var isUsingSelectedCourtBooking: Bool {
+        guard let booking = editor.consumedCourtBooking else { return true }
+        let bookingStart = minutes(of: booking.startTime)
+        let bookingEnd = minutes(of: booking.endTime)
+        let selectedStart = minutes(of: startTime)
+        let selectedEnd = minutes(of: endTime)
+
+        return dayOfWeek.rawValue == booking.dayOfWeek &&
+            selectedStart >= bookingStart &&
+            selectedEnd <= bookingEnd &&
+            venue.rawValue == booking.venue &&
+            trimmedCourtNumber == booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var canSave: Bool {
         isTimeRangeValid &&
             overlappingSession == nil &&
             overlappingCourtBooking == nil &&
+            isUsingSelectedCourtBooking &&
             !selectedStudentIDs.isEmpty &&
             isCourtValid &&
             isSessionFeeValid
@@ -358,6 +384,9 @@ struct SessionEditorView: View {
                 } footer: {
                     if !isTimeRangeValid {
                         Text("End time must be after start time.")
+                            .foregroundStyle(.red)
+                    } else if !isUsingSelectedCourtBooking {
+                        Text("Use a time inside the selected vacant court booking, keeping the same venue and court number.")
                             .foregroundStyle(.red)
                     } else if let overlap = overlappingSession {
                         Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(for: overlap)) at \(overlap.venue).")
@@ -617,6 +646,7 @@ struct SessionEditorView: View {
                 students: selectedStudents
             )
             modelContext.insert(session)
+            consumeCourtBookingIfNeeded()
         }
 
         dismiss()
@@ -624,8 +654,102 @@ struct SessionEditorView: View {
 
     private func deleteSession() {
         guard let session = editor.session else { return }
+        let trimmedCourtNumber = session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedCourtNumber.isEmpty,
+           let venue = Venue(rawValue: session.venue) {
+            restoreVacantCourtBooking(
+                for: session,
+                venue: venue,
+                courtNumber: trimmedCourtNumber
+            )
+        }
         modelContext.delete(session)
         dismiss()
+    }
+
+    private func restoreVacantCourtBooking(
+        for session: CoachingSession,
+        venue: Venue,
+        courtNumber: String
+    ) {
+        var mergedStart = session.startTime
+        var mergedEnd = session.endTime
+        var absorbedBookingIDs = Set<PersistentIdentifier>()
+        var didAbsorbBooking = true
+
+        while didAbsorbBooking {
+            didAbsorbBooking = false
+            let mergedStartMinutes = minutes(of: mergedStart)
+            let mergedEndMinutes = minutes(of: mergedEnd)
+
+            for booking in existingCourtBookings {
+                guard !absorbedBookingIDs.contains(booking.persistentModelID),
+                      booking.dayOfWeek == session.dayOfWeek,
+                      booking.venue == venue.rawValue,
+                      booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines) == courtNumber else {
+                    continue
+                }
+
+                let bookingStartMinutes = minutes(of: booking.startTime)
+                let bookingEndMinutes = minutes(of: booking.endTime)
+                let touchesOrOverlaps = bookingStartMinutes <= mergedEndMinutes &&
+                    bookingEndMinutes >= mergedStartMinutes
+
+                guard touchesOrOverlaps else { continue }
+
+                if bookingStartMinutes < mergedStartMinutes {
+                    mergedStart = booking.startTime
+                }
+                if bookingEndMinutes > mergedEndMinutes {
+                    mergedEnd = booking.endTime
+                }
+                absorbedBookingIDs.insert(booking.persistentModelID)
+                didAbsorbBooking = true
+            }
+        }
+
+        for booking in existingCourtBookings where absorbedBookingIDs.contains(booking.persistentModelID) {
+            modelContext.delete(booking)
+        }
+
+        let booking = CourtBooking(
+            dayOfWeek: session.weekday,
+            startTime: mergedStart,
+            endTime: mergedEnd,
+            venue: venue,
+            courtNumber: courtNumber
+        )
+        modelContext.insert(booking)
+    }
+
+    private func consumeCourtBookingIfNeeded() {
+        guard let booking = editor.consumedCourtBooking else { return }
+
+        let bookingStart = minutes(of: booking.startTime)
+        let bookingEnd = minutes(of: booking.endTime)
+        let selectedStart = minutes(of: startTime)
+        let selectedEnd = minutes(of: endTime)
+        let originalEndTime = booking.endTime
+
+        if selectedStart <= bookingStart && selectedEnd >= bookingEnd {
+            modelContext.delete(booking)
+        } else if selectedStart <= bookingStart {
+            booking.startTime = endTime
+        } else if selectedEnd >= bookingEnd {
+            booking.endTime = startTime
+        } else {
+            booking.endTime = startTime
+            if let venue = Venue(rawValue: booking.venue) {
+                let trailingBooking = CourtBooking(
+                    dayOfWeek: booking.weekday,
+                    startTime: endTime,
+                    endTime: originalEndTime,
+                    venue: venue,
+                    courtNumber: booking.courtNumber
+                )
+                modelContext.insert(trailingBooking)
+            }
+        }
     }
 }
 
