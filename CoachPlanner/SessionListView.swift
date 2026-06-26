@@ -38,8 +38,32 @@ struct SessionListView: View {
 
     private var visibleHours: Range<Int> { dayStartHour..<dayEndHour }
     private var totalGridHeight: CGFloat { CGFloat(visibleHours.count) * hourHeight }
-    private var confirmedSessionCount: Int { sessions.filter { $0.statusValue == .confirmed }.count }
-    private var totalSessionFees: Double { sessions.reduce(0) { $0 + $1.sessionFee } }
+
+    private var scheduleSummary: ScheduleSummary {
+        var sessionsByDay = Dictionary(uniqueKeysWithValues: Weekday.allCases.map { ($0, [CoachingSession]()) })
+        var courtBookingsByDay = Dictionary(uniqueKeysWithValues: Weekday.allCases.map { ($0, [CourtBooking]()) })
+        var confirmedSessionCount = 0
+        var totalSessionFees = 0.0
+
+        for session in sessions {
+            sessionsByDay[session.weekday, default: []].append(session)
+            if session.statusValue == .confirmed {
+                confirmedSessionCount += 1
+            }
+            totalSessionFees += session.sessionFee
+        }
+
+        for booking in courtBookings {
+            courtBookingsByDay[booking.weekday, default: []].append(booking)
+        }
+
+        return ScheduleSummary(
+            sessionsByDay: sessionsByDay,
+            courtBookingsByDay: courtBookingsByDay,
+            confirmedSessionCount: confirmedSessionCount,
+            totalSessionFees: totalSessionFees
+        )
+    }
 
     private var weekStart: Date {
         if weekStartTimestamp == 0 {
@@ -67,14 +91,6 @@ struct SessionListView: View {
 
     private func isToday(_ day: Weekday) -> Bool {
         Calendar.current.isDateInToday(date(for: day))
-    }
-
-    private func sessions(for day: Weekday) -> [CoachingSession] {
-        sessions.filter { $0.weekday == day }
-    }
-
-    private func courtBookings(for day: Weekday) -> [CourtBooking] {
-        courtBookings.filter { $0.weekday == day }
     }
 
     private func minutesOfDay(_ date: Date) -> Int {
@@ -109,6 +125,8 @@ struct SessionListView: View {
     }
 
     var body: some View {
+        let summary = scheduleSummary
+
         NavigationStack {
             VStack(spacing: 0) {
                 weekBanner
@@ -116,7 +134,7 @@ struct SessionListView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 8)
 
-                weekSummaryStrip
+                weekSummaryStrip(summary)
                     .padding(.horizontal, calendarHorizontalPadding)
                     .padding(.bottom, 10)
 
@@ -124,7 +142,7 @@ struct SessionListView: View {
                     .padding(.horizontal, calendarHorizontalPadding)
 
                 ScrollView(.vertical) {
-                    grid
+                    grid(summary)
                         .frame(maxWidth: .infinity)
                     .padding(.horizontal, calendarHorizontalPadding)
                     .padding(.bottom, 28)
@@ -196,7 +214,7 @@ struct SessionListView: View {
         }
     }
 
-    private var weekSummaryStrip: some View {
+    private func weekSummaryStrip(_ summary: ScheduleSummary) -> some View {
         HStack(spacing: 8) {
             MetricTile(
                 title: "Sessions",
@@ -206,13 +224,13 @@ struct SessionListView: View {
             )
             MetricTile(
                 title: "Confirmed",
-                value: "\(confirmedSessionCount)",
+                value: "\(summary.confirmedSessionCount)",
                 systemImage: "checkmark.circle.fill",
                 tint: .green
             )
             MetricTile(
                 title: "Fees",
-                value: totalSessionFees.formatted(.currency(code: AppStyle.currencyCode).precision(.fractionLength(0...2))),
+                value: summary.totalSessionFees.formatted(.currency(code: AppStyle.currencyCode).precision(.fractionLength(0...2))),
                 systemImage: "dollarsign.circle.fill",
                 tint: .purple
             )
@@ -279,12 +297,12 @@ struct SessionListView: View {
         .background(AppStyle.background)
     }
 
-    private var grid: some View {
+    private func grid(_ summary: ScheduleSummary) -> some View {
         HStack(alignment: .top, spacing: 0) {
             timeAxis
 
             ForEach(Weekday.allCases) { day in
-                dayColumn(for: day)
+                dayColumn(for: day, summary: summary)
                     .overlay(alignment: .leading) {
                         Rectangle()
                             .fill(Color(.separator).opacity(isDrafting(day) ? activeGridLineOpacity : gridLineOpacity))
@@ -355,7 +373,7 @@ struct SessionListView: View {
         .background(AppStyle.surface)
     }
 
-    private func dayColumn(for day: Weekday) -> some View {
+    private func dayColumn(for day: Weekday, summary: ScheduleSummary) -> some View {
         ZStack(alignment: .topLeading) {
             VStack(spacing: 0) {
                 ForEach(visibleHours, id: \.self) { _ in
@@ -391,7 +409,7 @@ struct SessionListView: View {
                     .allowsHitTesting(false)
             }
 
-            ForEach(sessions(for: day)) { session in
+            ForEach(summary.sessions(for: day)) { session in
                 SessionBlock(session: session)
                     .frame(height: blockHeight(for: session))
                     .padding(.horizontal, 2)
@@ -401,7 +419,7 @@ struct SessionListView: View {
                     }
             }
 
-            ForEach(courtBookings(for: day)) { booking in
+            ForEach(summary.courtBookings(for: day)) { booking in
                 CourtBookingBlock(booking: booking)
                     .frame(height: blockHeight(for: booking))
                     .padding(.horizontal, 2)
@@ -697,6 +715,21 @@ private struct FinanceSendNotice: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+}
+
+private struct ScheduleSummary {
+    let sessionsByDay: [Weekday: [CoachingSession]]
+    let courtBookingsByDay: [Weekday: [CourtBooking]]
+    let confirmedSessionCount: Int
+    let totalSessionFees: Double
+
+    func sessions(for day: Weekday) -> [CoachingSession] {
+        sessionsByDay[day] ?? []
+    }
+
+    func courtBookings(for day: Weekday) -> [CourtBooking] {
+        courtBookingsByDay[day] ?? []
+    }
 }
 
 private struct ICSShareSheet: UIViewControllerRepresentable {

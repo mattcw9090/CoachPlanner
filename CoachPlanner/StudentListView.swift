@@ -24,60 +24,38 @@ struct StudentListView: View {
     @State private var genderFilter: GenderFilter?
     @State private var allocationFilter: AllocationFilter?
 
-    private var sessionCountByStudent: [PersistentIdentifier: Int] {
+    private var studentSummary: StudentSummary {
         var counts: [PersistentIdentifier: Int] = [:]
         for session in sessions {
             for student in session.students {
                 counts[student.persistentModelID, default: 0] += 1
             }
         }
-        return counts
-    }
 
-    private func sessionCount(for student: Student) -> Int {
-        sessionCountByStudent[student.persistentModelID] ?? 0
-    }
+        var maleCount = 0
+        var femaleCount = 0
+        var underallocatedCount = 0
+        var overallocatedCount = 0
+        var weeklyDemand = 0
 
-    private func isUnderallocated(_ student: Student) -> Bool {
-        sessionCount(for: student) < student.sessionsDemand
-    }
+        let filteredStudents = students.filter { student in
+            let sessionCount = counts[student.persistentModelID] ?? 0
+            let isUnderallocated = sessionCount < student.sessionsDemand
+            let isOverallocated = sessionCount > student.sessionsDemand
 
-    private func isOverallocated(_ student: Student) -> Bool {
-        sessionCount(for: student) > student.sessionsDemand
-    }
+            if student.gender == "Male" {
+                maleCount += 1
+            } else if student.gender == "Female" {
+                femaleCount += 1
+            }
+            if isUnderallocated {
+                underallocatedCount += 1
+            }
+            if isOverallocated {
+                overallocatedCount += 1
+            }
+            weeklyDemand += student.sessionsDemand
 
-    private var underallocatedCount: Int {
-        students.filter(isUnderallocated).count
-    }
-
-    private var overallocatedCount: Int {
-        students.filter(isOverallocated).count
-    }
-
-    private var weeklyDemand: Int {
-        students.reduce(0) { $0 + $1.sessionsDemand }
-    }
-
-    private var allocatedSessions: Int {
-        sessionCountByStudent.values.reduce(0, +)
-    }
-
-    private func count(for filter: GenderFilter) -> Int {
-        switch filter {
-        case .male: return students.filter { $0.gender == "Male" }.count
-        case .female: return students.filter { $0.gender == "Female" }.count
-        }
-    }
-
-    private func count(for filter: AllocationFilter) -> Int {
-        switch filter {
-        case .underallocated: return underallocatedCount
-        case .overallocated: return overallocatedCount
-        }
-    }
-
-    private var filteredStudents: [Student] {
-        students.filter { student in
             let matchesGender: Bool
             switch genderFilter {
             case .male:
@@ -91,18 +69,31 @@ struct StudentListView: View {
             let matchesAllocation: Bool
             switch allocationFilter {
             case .underallocated:
-                matchesAllocation = isUnderallocated(student)
+                matchesAllocation = isUnderallocated
             case .overallocated:
-                matchesAllocation = isOverallocated(student)
+                matchesAllocation = isOverallocated
             case nil:
                 matchesAllocation = true
             }
 
             return matchesGender && matchesAllocation
         }
+
+        return StudentSummary(
+            sessionCountByStudent: counts,
+            filteredStudents: filteredStudents,
+            maleCount: maleCount,
+            femaleCount: femaleCount,
+            underallocatedCount: underallocatedCount,
+            overallocatedCount: overallocatedCount,
+            weeklyDemand: weeklyDemand,
+            allocatedSessions: counts.values.reduce(0, +)
+        )
     }
 
     var body: some View {
+        let summary = studentSummary
+
         NavigationStack {
             Group {
                 if students.isEmpty {
@@ -128,13 +119,13 @@ struct StudentListView: View {
                                 )
                                 MetricTile(
                                     title: "Needs",
-                                    value: "\(underallocatedCount)",
+                                    value: "\(summary.underallocatedCount)",
                                     systemImage: "exclamationmark.circle.fill",
-                                    tint: underallocatedCount == 0 ? .green : .red
+                                    tint: summary.underallocatedCount == 0 ? .green : .red
                                 )
                                 MetricTile(
                                     title: "Booked",
-                                    value: "\(allocatedSessions)/\(weeklyDemand)",
+                                    value: "\(summary.allocatedSessions)/\(summary.weeklyDemand)",
                                     systemImage: "calendar.badge.clock",
                                     tint: .accentColor
                                 )
@@ -149,7 +140,7 @@ struct StudentListView: View {
                                     ForEach(GenderFilter.allCases) { option in
                                         FilterChip(
                                             title: option.rawValue,
-                                            count: count(for: option),
+                                            count: summary.count(for: option),
                                             isSelected: genderFilter == option
                                         ) {
                                             genderFilter = genderFilter == option ? nil : option
@@ -161,7 +152,7 @@ struct StudentListView: View {
                                     ForEach(AllocationFilter.allCases) { option in
                                         FilterChip(
                                             title: option.rawValue,
-                                            count: count(for: option),
+                                            count: summary.count(for: option),
                                             isSelected: allocationFilter == option
                                         ) {
                                             allocationFilter = allocationFilter == option ? nil : option
@@ -174,19 +165,21 @@ struct StudentListView: View {
                         }
 
                         Section {
-                            ForEach(filteredStudents) { student in
+                            ForEach(summary.filteredStudents) { student in
                                 Button {
                                     editor = StudentEditor(student: student)
                                 } label: {
                                     StudentRow(
                                         student: student,
-                                        sessionCount: sessionCount(for: student),
+                                        sessionCount: summary.sessionCount(for: student),
                                         demand: student.sessionsDemand
                                     )
                                 }
                                 .buttonStyle(.plain)
                             }
-                            .onDelete(perform: deleteStudents)
+                            .onDelete { offsets in
+                                deleteStudents(at: offsets, from: summary.filteredStudents)
+                            }
                         }
                     }
                 }
@@ -209,10 +202,39 @@ struct StudentListView: View {
         }
     }
 
-    private func deleteStudents(at offsets: IndexSet) {
+    private func deleteStudents(at offsets: IndexSet, from filteredStudents: [Student]) {
         let toDelete = offsets.map { filteredStudents[$0] }
         for student in toDelete {
             modelContext.delete(student)
+        }
+    }
+}
+
+private struct StudentSummary {
+    let sessionCountByStudent: [PersistentIdentifier: Int]
+    let filteredStudents: [Student]
+    let maleCount: Int
+    let femaleCount: Int
+    let underallocatedCount: Int
+    let overallocatedCount: Int
+    let weeklyDemand: Int
+    let allocatedSessions: Int
+
+    func sessionCount(for student: Student) -> Int {
+        sessionCountByStudent[student.persistentModelID] ?? 0
+    }
+
+    func count(for filter: GenderFilter) -> Int {
+        switch filter {
+        case .male: return maleCount
+        case .female: return femaleCount
+        }
+    }
+
+    func count(for filter: AllocationFilter) -> Int {
+        switch filter {
+        case .underallocated: return underallocatedCount
+        case .overallocated: return overallocatedCount
         }
     }
 }

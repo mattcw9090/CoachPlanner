@@ -44,10 +44,6 @@ struct StudentEditorView: View {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var trimmedContactDetail: String {
-        contactDetail.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private var isContactValid: Bool {
         switch contactPreference {
         case .instagram:
@@ -97,7 +93,8 @@ struct StudentEditorView: View {
                     }
 
                     HStack {
-                        if contactPreference == .instagram {
+                        switch contactPreference {
+                        case .instagram:
                             Text("@")
                                 .foregroundStyle(.secondary)
                                 .accessibilityHidden(true)
@@ -107,7 +104,7 @@ struct StudentEditorView: View {
                                 .autocorrectionDisabled()
                                 .keyboardType(keyboardType)
                                 .textContentType(textContentType)
-                        } else if usesPhoneContactPicker {
+                        case .whatsApp, .sms:
                             Text("+61")
                                 .foregroundStyle(.secondary)
                                 .accessibilityHidden(true)
@@ -115,7 +112,7 @@ struct StudentEditorView: View {
                             TextField("412 345 678", text: contactDetailBinding)
                                 .keyboardType(keyboardType)
                                 .textContentType(textContentType)
-                        } else if contactPreference == .fbMessenger {
+                        case .fbMessenger:
                             Text("https://facebook.com/")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -123,12 +120,6 @@ struct StudentEditorView: View {
                                 .accessibilityHidden(true)
 
                             TextField("username", text: contactDetailBinding)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .keyboardType(keyboardType)
-                                .textContentType(textContentType)
-                        } else {
-                            TextField(contactPreference.placeholder, text: contactDetailBinding)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .keyboardType(keyboardType)
@@ -212,24 +203,23 @@ struct StudentEditorView: View {
     private var contactDetailBinding: Binding<String> {
         Binding(
             get: {
-                if contactPreference == .instagram {
+                switch contactPreference {
+                case .instagram:
                     return Self.instagramHandle(from: contactDetail)
-                } else if usesPhoneContactPicker {
+                case .whatsApp, .sms:
                     return Self.formattedAustralianLocalNumber(contactDetail)
-                } else if contactPreference == .fbMessenger {
+                case .fbMessenger:
                     return Self.facebookProfilePath(from: contactDetail)
                 }
-                return contactDetail
             },
             set: { newValue in
-                if contactPreference == .instagram {
+                switch contactPreference {
+                case .instagram:
                     contactDetail = Self.formattedInstagramHandle(newValue)
-                } else if usesPhoneContactPicker {
+                case .whatsApp, .sms:
                     contactDetail = Self.formattedAustralianPhoneNumber(newValue)
-                } else if contactPreference == .fbMessenger {
+                case .fbMessenger:
                     contactDetail = Self.formattedFacebookProfile(newValue)
-                } else {
-                    contactDetail = newValue
                 }
             }
         )
@@ -258,14 +248,13 @@ struct StudentEditorView: View {
     }
 
     private func normalizeContactDetailForPreference() {
-        if contactPreference == .instagram {
+        switch contactPreference {
+        case .instagram:
             contactDetail = Self.formattedInstagramHandle(contactDetail)
-        } else if usesPhoneContactPicker {
+        case .whatsApp, .sms:
             contactDetail = Self.formattedAustralianPhoneNumber(contactDetail)
-        } else if contactPreference == .fbMessenger {
+        case .fbMessenger:
             contactDetail = Self.formattedFacebookProfile(contactDetail)
-        } else if contactDetail == "+61" || contactDetail == "+61 " {
-            contactDetail = ""
         }
     }
 
