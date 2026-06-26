@@ -134,7 +134,7 @@ struct SessionListView: View {
                             fileExport = FileExportItem(url: url)
                         }
                     } label: {
-                        Label("Export Calendar", systemImage: "square.and.arrow.up")
+                        Label("Export Calendar", systemImage: "calendar")
                     }
                     .disabled(sessions.isEmpty)
                 }
@@ -145,18 +145,11 @@ struct SessionListView: View {
                             fileExport = FileExportItem(url: url)
                         }
                     } label: {
-                        Label("Export Weekly API", systemImage: "curlybraces")
+                        Label("Export Weekly API", systemImage: "dollarsign.circle")
                     }
                     .disabled(sessions.isEmpty)
                 }
 
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        isWeekPickerPresented = true
-                    } label: {
-                        Label("Set Week", systemImage: "calendar")
-                    }
-                }
             }
             .sheet(item: $editor) { editor in
                 SessionEditorView(editor: editor)

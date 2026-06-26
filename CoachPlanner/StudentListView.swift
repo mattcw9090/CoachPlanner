@@ -1,11 +1,16 @@
 import SwiftData
 import SwiftUI
 
-private enum StudentFilter: String, CaseIterable, Identifiable {
-    case all = "All"
+private enum GenderFilter: String, CaseIterable, Identifiable {
     case male = "Male"
     case female = "Female"
+
+    var id: String { rawValue }
+}
+
+private enum AllocationFilter: String, CaseIterable, Identifiable {
     case underallocated = "Underallocated"
+    case overallocated = "Overallocated"
 
     var id: String { rawValue }
 }
@@ -16,7 +21,8 @@ struct StudentListView: View {
     @Query private var sessions: [CoachingSession]
 
     @State private var editor: StudentEditor?
-    @State private var filter: StudentFilter = .all
+    @State private var genderFilter: GenderFilter?
+    @State private var allocationFilter: AllocationFilter?
 
     private var sessionCountByStudent: [PersistentIdentifier: Int] {
         var counts: [PersistentIdentifier: Int] = [:]
@@ -36,8 +42,16 @@ struct StudentListView: View {
         sessionCount(for: student) < student.sessionsDemand
     }
 
+    private func isOverallocated(_ student: Student) -> Bool {
+        sessionCount(for: student) > student.sessionsDemand
+    }
+
     private var underallocatedCount: Int {
         students.filter(isUnderallocated).count
+    }
+
+    private var overallocatedCount: Int {
+        students.filter(isOverallocated).count
     }
 
     private var weeklyDemand: Int {
@@ -48,21 +62,43 @@ struct StudentListView: View {
         sessionCountByStudent.values.reduce(0, +)
     }
 
-    private func count(for filter: StudentFilter) -> Int {
+    private func count(for filter: GenderFilter) -> Int {
         switch filter {
-        case .all: return students.count
         case .male: return students.filter { $0.gender == "Male" }.count
         case .female: return students.filter { $0.gender == "Female" }.count
-        case .underallocated: return students.filter(isUnderallocated).count
+        }
+    }
+
+    private func count(for filter: AllocationFilter) -> Int {
+        switch filter {
+        case .underallocated: return underallocatedCount
+        case .overallocated: return overallocatedCount
         }
     }
 
     private var filteredStudents: [Student] {
-        switch filter {
-        case .all: return students
-        case .male: return students.filter { $0.gender == "Male" }
-        case .female: return students.filter { $0.gender == "Female" }
-        case .underallocated: return students.filter(isUnderallocated)
+        students.filter { student in
+            let matchesGender: Bool
+            switch genderFilter {
+            case .male:
+                matchesGender = student.gender == "Male"
+            case .female:
+                matchesGender = student.gender == "Female"
+            case nil:
+                matchesGender = true
+            }
+
+            let matchesAllocation: Bool
+            switch allocationFilter {
+            case .underallocated:
+                matchesAllocation = isUnderallocated(student)
+            case .overallocated:
+                matchesAllocation = isOverallocated(student)
+            case nil:
+                matchesAllocation = true
+            }
+
+            return matchesGender && matchesAllocation
         }
     }
 
@@ -108,15 +144,33 @@ struct StudentListView: View {
                         .listRowBackground(Color.clear)
 
                         Section {
-                            Picker("Filter", selection: $filter) {
-                                ForEach(StudentFilter.allCases) { option in
-                                    Text("\(option.rawValue) (\(count(for: option)))")
-                                        .tag(option)
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    ForEach(GenderFilter.allCases) { option in
+                                        FilterChip(
+                                            title: option.rawValue,
+                                            count: count(for: option),
+                                            isSelected: genderFilter == option
+                                        ) {
+                                            genderFilter = genderFilter == option ? nil : option
+                                        }
+                                    }
+                                }
+
+                                HStack(spacing: 8) {
+                                    ForEach(AllocationFilter.allCases) { option in
+                                        FilterChip(
+                                            title: option.rawValue,
+                                            count: count(for: option),
+                                            isSelected: allocationFilter == option
+                                        ) {
+                                            allocationFilter = allocationFilter == option ? nil : option
+                                        }
+                                    }
                                 }
                             }
-                            .pickerStyle(.segmented)
                             .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets())
+                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 4, trailing: 0))
                         }
 
                         Section {
@@ -133,8 +187,6 @@ struct StudentListView: View {
                                 .buttonStyle(.plain)
                             }
                             .onDelete(perform: deleteStudents)
-                        } header: {
-                            Text("\(filteredStudents.count) \(filteredStudents.count == 1 ? "student" : "students")")
                         }
                     }
                 }
@@ -222,6 +274,43 @@ private struct StudentRow: View {
         }
         .contentShape(Rectangle())
         .padding(.vertical, 6)
+    }
+}
+
+private struct FilterChip: View {
+    let title: String
+    let count: Int
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                Text("\(count)")
+                    .font(.caption2.weight(.bold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(badgeBackground))
+            }
+            .foregroundStyle(isSelected ? .white : .primary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: AppStyle.radius)
+                    .fill(isSelected ? Color.accentColor : AppStyle.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: AppStyle.radius)
+                    .stroke(AppStyle.separator.opacity(isSelected ? 0 : 0.18), lineWidth: 0.75)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var badgeBackground: Color {
+        isSelected ? .white.opacity(0.22) : Color.accentColor.opacity(0.12)
     }
 }
 

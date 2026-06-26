@@ -31,7 +31,6 @@
 		FB9F74212FEC56CC0039EE52 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionEditorView.swift; sourceTree = "<group>"; };
 		FB9F74232FEC56CC0039EE52 /* SessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListView.swift; sourceTree = "<group>"; };
-		FBA8CDD52FED33E400D5AB73 /* AppLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLogo.swift; sourceTree = "<group>"; };
 		FBD32EA42FED7386008E8EA4 /* CoachPlanner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CoachPlanner.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -67,7 +66,6 @@
 				FB9F74212FEC56CC0039EE52 /* RootTabView.swift */,
 				FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */,
 				FB9F74232FEC56CC0039EE52 /* SessionListView.swift */,
-				FBA8CDD52FED33E400D5AB73 /* AppLogo.swift */,
 				FB3A86EF2FED3C2800F18F03 /* AppIcon.xcassets */,
 			);
 			path = CoachPlanner;
