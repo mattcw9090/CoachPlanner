@@ -49,7 +49,14 @@ struct StudentEditorView: View {
     }
 
     private var isContactValid: Bool {
-        usesPhoneContactPicker ? !Self.australianLocalDigits(from: contactDetail).isEmpty : !trimmedContactDetail.isEmpty
+        switch contactPreference {
+        case .instagram:
+            return !Self.instagramHandle(from: contactDetail).isEmpty
+        case .whatsApp, .sms:
+            return !Self.australianLocalDigits(from: contactDetail).isEmpty
+        case .fbMessenger:
+            return !Self.facebookProfilePath(from: contactDetail).isEmpty
+        }
     }
 
     private var usesPhoneContactPicker: Bool {
@@ -60,8 +67,9 @@ struct StudentEditorView: View {
         NavigationStack {
             Form {
                 Section("Student Details") {
-                    TextField("Name", text: $name)
+                    TextField("Name", text: nameBinding)
                         .textContentType(.name)
+                        .textInputAutocapitalization(.words)
 
                     Picker("Gender", selection: $gender) {
                         ForEach(genderOptions, id: \.self) { option in
@@ -89,12 +97,34 @@ struct StudentEditorView: View {
                     }
 
                     HStack {
-                        if usesPhoneContactPicker {
+                        if contactPreference == .instagram {
+                            Text("@")
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+
+                            TextField("username", text: contactDetailBinding)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(keyboardType)
+                                .textContentType(textContentType)
+                        } else if usesPhoneContactPicker {
                             Text("+61")
                                 .foregroundStyle(.secondary)
                                 .accessibilityHidden(true)
 
                             TextField("412 345 678", text: contactDetailBinding)
+                                .keyboardType(keyboardType)
+                                .textContentType(textContentType)
+                        } else if contactPreference == .fbMessenger {
+                            Text("https://facebook.com/")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .accessibilityHidden(true)
+
+                            TextField("username", text: contactDetailBinding)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
                                 .keyboardType(keyboardType)
                                 .textContentType(textContentType)
                         } else {
@@ -172,17 +202,32 @@ struct StudentEditorView: View {
             sessionsDemand != (editor.student?.sessionsDemand ?? 1)
     }
 
+    private var nameBinding: Binding<String> {
+        Binding(
+            get: { name },
+            set: { name = Self.capitalizedWords(newValue: $0) }
+        )
+    }
+
     private var contactDetailBinding: Binding<String> {
         Binding(
             get: {
-                if usesPhoneContactPicker {
+                if contactPreference == .instagram {
+                    return Self.instagramHandle(from: contactDetail)
+                } else if usesPhoneContactPicker {
                     return Self.formattedAustralianLocalNumber(contactDetail)
+                } else if contactPreference == .fbMessenger {
+                    return Self.facebookProfilePath(from: contactDetail)
                 }
                 return contactDetail
             },
             set: { newValue in
-                if usesPhoneContactPicker {
+                if contactPreference == .instagram {
+                    contactDetail = Self.formattedInstagramHandle(newValue)
+                } else if usesPhoneContactPicker {
                     contactDetail = Self.formattedAustralianPhoneNumber(newValue)
+                } else if contactPreference == .fbMessenger {
+                    contactDetail = Self.formattedFacebookProfile(newValue)
                 } else {
                     contactDetail = newValue
                 }
@@ -213,11 +258,63 @@ struct StudentEditorView: View {
     }
 
     private func normalizeContactDetailForPreference() {
-        if usesPhoneContactPicker {
+        if contactPreference == .instagram {
+            contactDetail = Self.formattedInstagramHandle(contactDetail)
+        } else if usesPhoneContactPicker {
             contactDetail = Self.formattedAustralianPhoneNumber(contactDetail)
+        } else if contactPreference == .fbMessenger {
+            contactDetail = Self.formattedFacebookProfile(contactDetail)
         } else if contactDetail == "+61" || contactDetail == "+61 " {
             contactDetail = ""
         }
+    }
+
+    private static func capitalizedWords(newValue: String) -> String {
+        var shouldCapitalizeNext = true
+        return String(newValue.map { character in
+            if character.isWhitespace {
+                shouldCapitalizeNext = true
+                return character
+            }
+
+            if shouldCapitalizeNext {
+                shouldCapitalizeNext = false
+                return Character(character.uppercased())
+            }
+
+            return character
+        })
+    }
+
+    private static func instagramHandle(from value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+    }
+
+    private static func formattedInstagramHandle(_ value: String) -> String {
+        let handle = instagramHandle(from: value)
+        return handle.isEmpty ? "" : "@\(handle)"
+    }
+
+    private static func facebookProfilePath(from value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: trimmed),
+           let host = url.host,
+           host.localizedCaseInsensitiveContains("facebook.com") {
+            return url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+
+        return trimmed
+            .replacingOccurrences(of: "https://facebook.com/", with: "", options: .caseInsensitive)
+            .replacingOccurrences(of: "http://facebook.com/", with: "", options: .caseInsensitive)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func formattedFacebookProfile(_ value: String) -> String {
+        let profile = facebookProfilePath(from: value)
+        return profile.isEmpty ? "" : "https://facebook.com/\(profile)"
     }
 
     private static func formattedAustralianPhoneNumber(_ value: String) -> String {
@@ -268,9 +365,15 @@ struct StudentEditorView: View {
     }
 
     private func save() {
-        let savedContactDetail = usesPhoneContactPicker
-            ? Self.formattedAustralianPhoneNumber(contactDetail)
-            : trimmedContactDetail
+        let savedContactDetail: String
+        switch contactPreference {
+        case .instagram:
+            savedContactDetail = Self.formattedInstagramHandle(contactDetail)
+        case .whatsApp, .sms:
+            savedContactDetail = Self.formattedAustralianPhoneNumber(contactDetail)
+        case .fbMessenger:
+            savedContactDetail = Self.formattedFacebookProfile(contactDetail)
+        }
 
         if let student = editor.student {
             student.name = trimmedName

@@ -282,7 +282,7 @@ struct SessionEditorView: View {
 
                     if isCourtBooked {
                         TextField("Court number", text: $courtNumber)
-                            .keyboardType(.numbersAndPunctuation)
+                            .keyboardType(.numberPad)
                             .textInputAutocapitalization(.never)
                     }
 
@@ -469,19 +469,28 @@ struct SessionEditorView: View {
     }
 
     private func availabilityMessage(for student: Student) -> String {
-        let sessionLines = consolidatedSessions(for: student)
-            .map { "- \($0.dateText), \($0.day.name), \($0.timeRange) at \($0.venue)" }
-            .joined(separator: "\n")
+        let sessionSummaries = consolidatedSessions(for: student)
 
-        guard !sessionLines.isEmpty else {
-            return "Hi \(student.name), are you available to train?"
+        guard !sessionSummaries.isEmpty else {
+            return "Hey \(firstName(for: student)), can you train?"
         }
 
-        return """
-        Hi \(student.name), are you available for these training sessions?
+        if sessionSummaries.count == 1, let session = sessionSummaries.first {
+            return "Hey \(firstName(for: student)), can you train on \(session.messageLine)?"
+        }
 
-        \(sessionLines)
-        """
+        let sessionLines = sessionSummaries
+            .map { "- \($0.messageLine)?" }
+            .joined(separator: "\n")
+
+        return "Hey \(firstName(for: student)), can you train on:\n\(sessionLines)"
+    }
+
+    private func firstName(for student: Student) -> String {
+        student.name
+            .split(whereSeparator: \.isWhitespace)
+            .first
+            .map(String.init) ?? student.name
     }
 
     private func consolidatedSessions(for student: Student) -> [ContactSessionSummary] {
@@ -632,13 +641,18 @@ private struct ContactSessionSummary {
         Self.compactTimeRange(from: startTime, to: endTime)
     }
 
+    var messageLine: String {
+        "(\(dateText)) \(day.name) \(timeRange) at \(venue)"
+    }
+
     var dateText: String {
         let date = Calendar.current.date(
             byAdding: .day,
             value: day.rawValue - 1,
             to: weekStart
         ) ?? weekStart
-        return date.formatted(.dateTime.day().month(.abbreviated))
+        let comps = Calendar.current.dateComponents([.day, .month], from: date)
+        return "\(comps.day ?? 1)/\(comps.month ?? 1)"
     }
 
     private static func compactTimeRange(from startTime: Date, to endTime: Date) -> String {
