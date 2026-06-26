@@ -35,22 +35,15 @@ struct CoachPlannerApp: App {
     /// signing-identity changes, so re-provisioning the app (e.g. when adding
     /// capabilities or switching teams) no longer wipes user data.
     private static func makeContainer() -> ModelContainer {
-        let groupConfig = ModelConfiguration(
+        let config = ModelConfiguration(
             schema: schema,
-            groupContainer: .identifier(FinanceBridge.appGroupID)
+            groupContainer: .none
         )
 
         do {
-            return try ModelContainer(for: schema, configurations: [groupConfig])
+            return try ModelContainer(for: schema, configurations: [config])
         } catch {
-            // If the App Group container is unavailable (e.g. the capability is
-            // missing in this build), fail loudly rather than silently writing
-            // to a different location and splitting the user's data.
-            fatalError("""
-            Could not open the CoachPlanner store in the App Group container \
-            \(FinanceBridge.appGroupID). Verify the App Groups capability is \
-            enabled for this target. Underlying error: \(error)
-            """)
+            fatalError("Could not open the CoachPlanner store: \(error)")
         }
     }
 }
