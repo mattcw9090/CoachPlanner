@@ -730,8 +730,8 @@ struct SessionListView: View {
             let location = trimmedCourt.isEmpty ? session.venue : "\(session.venue), Court \(trimmedCourt)"
 
             let baseSummary = studentList.isEmpty
-                ? session.venue
-                : "\(studentList) - \(session.venue)"
+                ? "Unassigned Session"
+                : studentList
             let summary = calendarTitle(
                 base: baseSummary,
                 status: status,
@@ -778,7 +778,7 @@ struct SessionListView: View {
             let trimmedCourt = booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
             let courtLabel = trimmedCourt.isEmpty ? "Court" : "Court \(trimmedCourt)"
             let location = trimmedCourt.isEmpty ? booking.venue : "\(booking.venue), \(courtLabel)"
-            let summary = "Vacant Court - \(location)"
+            let summary = "COURT BOOKING"
             let uid = [
                 "court",
                 String(Int(booking.createdAt.timeIntervalSince1970 * 1000)),
