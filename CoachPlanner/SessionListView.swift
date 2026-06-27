@@ -685,11 +685,6 @@ struct SessionListView: View {
     private func generateICSContent() -> String {
         let calendar = Calendar.current
 
-        let localFormatter = DateFormatter()
-        localFormatter.dateFormat = "yyyyMMdd'T'HHmmss"
-        localFormatter.timeZone = .current
-        localFormatter.locale = Locale(identifier: "en_US_POSIX")
-
         let utcFormatter = DateFormatter()
         utcFormatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
         utcFormatter.timeZone = TimeZone(identifier: "UTC")
@@ -701,38 +696,28 @@ struct SessionListView: View {
             "BEGIN:VCALENDAR",
             "VERSION:2.0",
             "PRODID:-//CoachPlanner//Sessions//EN",
-            "CALSCALE:GREGORIAN",
-            "METHOD:PUBLISH"
+            "CALSCALE:GREGORIAN"
         ]
 
         for session in sessions {
-            guard let eventDate = calendar.date(
-                byAdding: .day,
-                value: session.dayOfWeek - 1,
-                to: weekStart
+            guard let eventDates = eventDates(
+                dayOfWeek: session.dayOfWeek,
+                startTime: session.startTime,
+                endTime: session.endTime,
+                calendar: calendar
             ) else { continue }
 
-            let startComps = calendar.dateComponents([.hour, .minute], from: session.startTime)
-            let endComps = calendar.dateComponents([.hour, .minute], from: session.endTime)
-            let dateComps = calendar.dateComponents([.year, .month, .day], from: eventDate)
-
-            var startBuild = DateComponents()
-            startBuild.year = dateComps.year
-            startBuild.month = dateComps.month
-            startBuild.day = dateComps.day
-            startBuild.hour = startComps.hour
-            startBuild.minute = startComps.minute
-
-            var endBuild = startBuild
-            endBuild.hour = endComps.hour
-            endBuild.minute = endComps.minute
-
-            guard let startDate = calendar.date(from: startBuild),
-                  let endDate = calendar.date(from: endBuild) else { continue }
-
-            let dtStart = localFormatter.string(from: startDate)
-            let dtEnd = localFormatter.string(from: endDate)
-            let uid = "\(Int(session.createdAt.timeIntervalSince1970 * 1000))-coachplanner@local"
+            let dtStart = utcFormatter.string(from: eventDates.start)
+            let dtEnd = utcFormatter.string(from: eventDates.end)
+            let uid = [
+                Int(session.createdAt.timeIntervalSince1970 * 1000),
+                session.dayOfWeek,
+                minutesOfDay(session.startTime),
+                minutesOfDay(session.endTime)
+            ]
+                .map(String.init)
+                .joined(separator: "-") + "-coachplanner@local"
+            let status = session.statusValue
 
             let studentList = session.students
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -740,19 +725,34 @@ struct SessionListView: View {
                 .joined(separator: ", ")
 
             let trimmedCourt = session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isCourtBooked = !trimmedCourt.isEmpty
             let courtInfo = trimmedCourt.isEmpty ? "Court unbooked" : "Court \(trimmedCourt)"
+            let location = trimmedCourt.isEmpty ? session.venue : "\(session.venue), Court \(trimmedCourt)"
 
-            let summary = studentList.isEmpty
-                ? "Coaching at \(session.venue)"
-                : "Coaching: \(studentList)"
+            let baseSummary = studentList.isEmpty
+                ? session.venue
+                : "\(studentList) - \(session.venue)"
+            let summary = calendarTitle(
+                base: baseSummary,
+                status: status,
+                isCourtBooked: isCourtBooked
+            )
 
-            var descriptionParts: [String] = []
+            var descriptionParts: [String] = [
+                "CoachPlanner session",
+                "Status: \(status.rawValue)",
+                "Venue: \(session.venue)",
+                courtInfo,
+                "Day: \(session.weekday.name)",
+                "Time: \(timeRangeText(start: session.startTime, end: session.endTime))",
+                "Session fee: \(session.sessionFee.formatted(.currency(code: AppStyle.currencyCode).precision(.fractionLength(0...2))))"
+            ]
             if !studentList.isEmpty {
                 descriptionParts.append("Students: \(studentList)")
+            } else {
+                descriptionParts.append("Students: None assigned")
             }
-            descriptionParts.append(courtInfo)
-            descriptionParts.append("Status: \(session.statusValue.rawValue)")
-            let description = descriptionParts.joined(separator: "\\n")
+            let description = descriptionParts.joined(separator: "\n")
 
             lines += [
                 "BEGIN:VEVENT",
@@ -760,17 +760,109 @@ struct SessionListView: View {
                 "DTSTAMP:\(stamp)",
                 "DTSTART:\(dtStart)",
                 "DTEND:\(dtEnd)",
-                "RRULE:FREQ=WEEKLY",
                 "SUMMARY:\(icsEscape(summary))",
-                "LOCATION:\(icsEscape(session.venue))",
                 "DESCRIPTION:\(icsEscape(description))",
-                "STATUS:\(icsStatus(session.statusValue))",
+                "LOCATION:\(icsEscape(location))",
+                "END:VEVENT"
+            ]
+        }
+
+        for booking in courtBookings {
+            guard let eventDates = eventDates(
+                dayOfWeek: booking.dayOfWeek,
+                startTime: booking.startTime,
+                endTime: booking.endTime,
+                calendar: calendar
+            ) else { continue }
+
+            let trimmedCourt = booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+            let courtLabel = trimmedCourt.isEmpty ? "Court" : "Court \(trimmedCourt)"
+            let location = trimmedCourt.isEmpty ? booking.venue : "\(booking.venue), \(courtLabel)"
+            let summary = "Vacant Court - \(location)"
+            let uid = [
+                "court",
+                String(Int(booking.createdAt.timeIntervalSince1970 * 1000)),
+                String(booking.dayOfWeek),
+                String(minutesOfDay(booking.startTime)),
+                String(minutesOfDay(booking.endTime))
+            ]
+                .joined(separator: "-") + "-coachplanner@local"
+            let description = [
+                "CoachPlanner vacant court booking",
+                "Venue: \(booking.venue)",
+                courtLabel,
+                "Day: \(booking.weekday.name)",
+                "Time: \(timeRangeText(start: booking.startTime, end: booking.endTime))"
+            ].joined(separator: "\n")
+
+            lines += [
+                "BEGIN:VEVENT",
+                "UID:\(uid)",
+                "DTSTAMP:\(stamp)",
+                "DTSTART:\(utcFormatter.string(from: eventDates.start))",
+                "DTEND:\(utcFormatter.string(from: eventDates.end))",
+                "SUMMARY:\(icsEscape(summary))",
+                "DESCRIPTION:\(icsEscape(description))",
+                "LOCATION:\(icsEscape(location))",
                 "END:VEVENT"
             ]
         }
 
         lines.append("END:VCALENDAR")
-        return lines.joined(separator: "\r\n")
+        return lines.flatMap(foldedICSLines).joined(separator: "\r\n") + "\r\n"
+    }
+
+    private func eventDates(
+        dayOfWeek: Int,
+        startTime: Date,
+        endTime: Date,
+        calendar: Calendar
+    ) -> (start: Date, end: Date)? {
+        guard let eventDate = calendar.date(
+            byAdding: .day,
+            value: dayOfWeek - 1,
+            to: weekStart
+        ) else { return nil }
+
+        let startComps = calendar.dateComponents([.hour, .minute], from: startTime)
+        let endComps = calendar.dateComponents([.hour, .minute], from: endTime)
+        let dateComps = calendar.dateComponents([.year, .month, .day], from: eventDate)
+
+        var startBuild = DateComponents()
+        startBuild.year = dateComps.year
+        startBuild.month = dateComps.month
+        startBuild.day = dateComps.day
+        startBuild.hour = startComps.hour
+        startBuild.minute = startComps.minute
+
+        var endBuild = startBuild
+        endBuild.hour = endComps.hour
+        endBuild.minute = endComps.minute
+
+        guard let startDate = calendar.date(from: startBuild),
+              let endDate = calendar.date(from: endBuild) else { return nil }
+
+        return (startDate, endDate)
+    }
+
+    private func calendarTitle(
+        base: String,
+        status: SessionStatus,
+        isCourtBooked: Bool
+    ) -> String {
+        var title = base
+        if !isCourtBooked {
+            title += " (UNBOOKED)"
+        }
+        if status == .pending || status == .unscheduled {
+            title += "?"
+        }
+        return title
+    }
+
+    private func timeRangeText(start: Date, end: Date) -> String {
+        let formatter = Date.FormatStyle.dateTime.hour().minute()
+        return "\(start.formatted(formatter))-\(end.formatted(formatter))"
     }
 
     private func icsEscape(_ string: String) -> String {
@@ -778,14 +870,31 @@ struct SessionListView: View {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: ";", with: "\\;")
             .replacingOccurrences(of: ",", with: "\\,")
+            .replacingOccurrences(of: "\r\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\n")
             .replacingOccurrences(of: "\n", with: "\\n")
     }
 
-    private func icsStatus(_ status: SessionStatus) -> String {
-        switch status {
-        case .unscheduled, .pending: return "TENTATIVE"
-        case .confirmed: return "CONFIRMED"
+    private func foldedICSLines(_ line: String) -> [String] {
+        let maxBytes = 75
+        var folded: [String] = []
+        var current = ""
+        var currentBytes = 0
+
+        for character in line {
+            let characterBytes = String(character).utf8.count
+            if currentBytes + characterBytes > maxBytes, !current.isEmpty {
+                folded.append(current)
+                current = " "
+                currentBytes = 1
+            }
+
+            current.append(character)
+            currentBytes += characterBytes
         }
+
+        folded.append(current)
+        return folded
     }
 }
 
