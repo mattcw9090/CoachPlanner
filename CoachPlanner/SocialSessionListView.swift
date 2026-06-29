@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import UIKit
 
 struct SocialSessionListView: View {
     @Environment(\.modelContext) private var modelContext
@@ -35,7 +36,7 @@ struct SocialSessionListView: View {
     }
 
     private var totalStudents: Int {
-        sessionsForWeek.reduce(0) { $0 + $1.students.count }
+        sessionsForWeek.reduce(0) { $0 + attendanceCount(for: $1) }
     }
 
     var body: some View {
@@ -159,6 +160,10 @@ struct SocialSessionListView: View {
         }
     }
 
+    private func attendanceCount(for session: SocialSession) -> Int {
+        session.attendances.isEmpty ? session.students.count : session.attendances.count
+    }
+
     static func monday(of date: Date) -> Date {
         var calendar = Calendar(identifier: .iso8601)
         calendar.firstWeekday = 2
@@ -170,8 +175,25 @@ struct SocialSessionListView: View {
 private struct SocialSessionRow: View {
     let session: SocialSession
 
-    private var sortedStudents: [Student] {
-        session.students.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    private var attendanceRows: [SocialAttendanceRowData] {
+        let rows: [SocialAttendanceRowData]
+        if session.attendances.isEmpty {
+            rows = session.students.map { SocialAttendanceRowData(student: $0, status: .unscheduled) }
+        } else {
+            rows = session.attendances.compactMap { attendance in
+                guard let student = attendance.student else { return nil }
+                return SocialAttendanceRowData(student: student, status: attendance.statusValue)
+            }
+        }
+
+        return rows.sorted {
+            $0.student.name.localizedCaseInsensitiveCompare($1.student.name) == .orderedAscending
+        }
+    }
+
+    private var statusCounts: [SessionStatus: Int] {
+        Dictionary(grouping: attendanceRows, by: \.status)
+            .mapValues(\.count)
     }
 
     var body: some View {
@@ -195,7 +217,7 @@ private struct SocialSessionRow: View {
 
                 Spacer()
 
-                Text("\(sortedStudents.count)")
+                Text("\(attendanceRows.count)")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.purple)
                     .padding(.horizontal, 8)
@@ -203,15 +225,25 @@ private struct SocialSessionRow: View {
                     .background(Capsule().fill(Color.purple.opacity(0.14)))
             }
 
-            if sortedStudents.isEmpty {
+            if attendanceRows.isEmpty {
                 Text("No students added yet")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text(sortedStudents.map(\.name).joined(separator: ", "))
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(3)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        ForEach(SessionStatus.allCases) { status in
+                            if let count = statusCounts[status], count > 0 {
+                                SocialStatusBadge(status: status, count: count)
+                            }
+                        }
+                    }
+
+                    Text(attendanceRows.map { "\($0.student.name) (\($0.status.rawValue))" }.joined(separator: ", "))
+                        .font(.subheadline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(3)
+                }
             }
 
             if !session.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -229,6 +261,59 @@ private struct SocialSessionRow: View {
     }
 }
 
+private struct SocialAttendanceRowData {
+    let student: Student
+    let status: SessionStatus
+}
+
+private struct SocialStatusBadge: View {
+    let status: SessionStatus
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: status.iconName)
+                .font(.caption2)
+            Text("\(count) \(status.rawValue)")
+                .font(.caption2.weight(.semibold))
+        }
+        .foregroundStyle(status.color)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(status.color.opacity(0.14)))
+    }
+}
+
+private struct SocialStatusMenu: View {
+    let status: SessionStatus
+    let onChange: (SessionStatus) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(SessionStatus.allCases) { option in
+                Button {
+                    onChange(option)
+                } label: {
+                    Label(option.rawValue, systemImage: option.iconName)
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Text(status.rawValue)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.bold))
+            }
+            .foregroundStyle(status.color)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(status.color.opacity(0.14)))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 struct SocialSessionEditor: Identifiable {
     let id = UUID()
     let session: SocialSession?
@@ -243,6 +328,7 @@ struct SocialSessionEditor: Identifiable {
 private struct SocialSessionEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openURL) private var openURL
     @Query(sort: \Student.name) private var students: [Student]
 
     let editor: SocialSessionEditor
@@ -253,8 +339,9 @@ private struct SocialSessionEditorView: View {
     @State private var endTime: Date
     @State private var venue: Venue
     @State private var notes: String
-    @State private var selectedStudentIDs: Set<PersistentIdentifier>
+    @State private var selectedStatusByStudentID: [PersistentIdentifier: SessionStatus]
     @State private var studentSearch = ""
+    @State private var contactNotice: SocialContactNotice?
 
     private var isEditing: Bool { editor.session != nil }
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -273,21 +360,19 @@ private struct SocialSessionEditorView: View {
         _endTime = State(initialValue: editor.session?.endTime ?? defaultEnd)
         _venue = State(initialValue: editor.session?.venueValue ?? .pbaMalaga)
         _notes = State(initialValue: editor.session?.notes ?? "")
-        _selectedStudentIDs = State(
-            initialValue: Set(editor.session?.students.map(\.persistentModelID) ?? [])
-        )
+        _selectedStatusByStudentID = State(initialValue: Self.initialStatuses(for: editor.session))
     }
 
     private var selectedStudents: [Student] {
         students
-            .filter { selectedStudentIDs.contains($0.persistentModelID) }
+            .filter { selectedStatusByStudentID[$0.persistentModelID] != nil }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     private var availableStudents: [Student] {
         let trimmed = studentSearch.trimmingCharacters(in: .whitespacesAndNewlines)
         return students
-            .filter { !selectedStudentIDs.contains($0.persistentModelID) }
+            .filter { selectedStatusByStudentID[$0.persistentModelID] == nil }
             .filter { trimmed.isEmpty || $0.name.localizedCaseInsensitiveContains(trimmed) }
     }
 
@@ -324,7 +409,7 @@ private struct SocialSessionEditorView: View {
                     }
                 }
 
-                Section("Name List") {
+                Section {
                     TextField("Search students", text: $studentSearch)
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
@@ -334,16 +419,49 @@ private struct SocialSessionEditorView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(selectedStudents) { student in
-                            HStack {
-                                Label(student.name, systemImage: "checkmark.circle.fill")
+                            HStack(spacing: 12) {
+                                Image(systemName: status(for: student).iconName)
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(status(for: student).color)
+                                    .frame(width: 24, height: 24)
+                                    .background(Circle().fill(status(for: student).color.opacity(0.14)))
+
+                                Text(student.name)
+                                    .font(.body)
                                     .foregroundStyle(.primary)
-                                Spacer()
-                                Button("Remove") {
-                                    selectedStudentIDs.remove(student.persistentModelID)
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                SocialStatusMenu(
+                                    status: status(for: student),
+                                    onChange: { newStatus in
+                                        selectedStatusByStudentID[student.persistentModelID] = newStatus
+                                    }
+                                )
+                            }
+                            .padding(.vertical, 4)
+                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                Button {
+                                    ask(student)
+                                } label: {
+                                    Label("Ask", systemImage: "paperplane.fill")
                                 }
-                                .buttonStyle(.borderless)
+                                .tint(.blue)
+                            }
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    selectedStatusByStudentID.removeValue(forKey: student.persistentModelID)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
                         }
+                    }
+                } header: {
+                    Text("Name List")
+                } footer: {
+                    if !selectedStudents.isEmpty {
+                        Text("Swipe right to ask, or swipe left to remove.")
                     }
                 }
 
@@ -354,7 +472,7 @@ private struct SocialSessionEditorView: View {
                     } else {
                         ForEach(availableStudents) { student in
                             Button {
-                                selectedStudentIDs.insert(student.persistentModelID)
+                                selectedStatusByStudentID[student.persistentModelID] = .unscheduled
                                 studentSearch = ""
                             } label: {
                                 HStack {
@@ -398,13 +516,25 @@ private struct SocialSessionEditorView: View {
                     .disabled(trimmedTitle.isEmpty || !isTimeValid)
                 }
             }
+            .alert(item: $contactNotice) { notice in
+                Alert(
+                    title: Text(notice.title),
+                    message: Text(notice.message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
         }
     }
 
     private func save() {
-        let selected = students.filter { selectedStudentIDs.contains($0.persistentModelID) }
+        let selected = students.filter { selectedStatusByStudentID[$0.persistentModelID] != nil }
+        let attendances = attendanceModels(for: selected)
 
         if let session = editor.session {
+            for attendance in session.attendances {
+                modelContext.delete(attendance)
+            }
+
             session.title = trimmedTitle
             session.weekStart = editor.weekStart
             session.dayOfWeek = dayOfWeek.rawValue
@@ -413,6 +543,7 @@ private struct SocialSessionEditorView: View {
             session.venue = venue.rawValue
             session.notes = trimmedNotes
             session.students = selected
+            session.attendances = attendances
         } else {
             let session = SocialSession(
                 title: trimmedTitle,
@@ -422,7 +553,8 @@ private struct SocialSessionEditorView: View {
                 endTime: endTime,
                 venue: venue,
                 notes: trimmedNotes,
-                students: selected
+                students: selected,
+                attendances: attendances
             )
             modelContext.insert(session)
         }
@@ -441,9 +573,163 @@ private struct SocialSessionEditorView: View {
         let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
         return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
     }
+
+    private func ask(_ student: Student) {
+        let message = socialAskMessage(for: student)
+        let preference = student.contactPreferenceValue
+
+        if requiresClipboardMessage(preference) {
+            UIPasteboard.general.string = message
+            contactNotice = SocialContactNotice(
+                title: "Message Copied",
+                message: "Paste the copied socials invite into \(preference.rawValue)."
+            )
+        }
+
+        guard let url = contactURL(for: student, message: message) else {
+            contactNotice = SocialContactNotice(
+                title: "Contact Unavailable",
+                message: "The contact detail for \(student.name) does not look usable."
+            )
+            return
+        }
+
+        openURL(url)
+    }
+
+    private func socialAskMessage(for student: Student) -> String {
+        "Hey \(firstName(for: student)), wanna come play \(dayOfWeek.name) \(compactTimeRangeText(start: startTime, end: endTime)) at \(venue.rawValue)?"
+    }
+
+    private func firstName(for student: Student) -> String {
+        student.name
+            .split(whereSeparator: \.isWhitespace)
+            .first
+            .map(String.init) ?? student.name
+    }
+
+    private func compactTimeRangeText(start: Date, end: Date) -> String {
+        let calendar = Calendar.current
+        let startComps = calendar.dateComponents([.hour, .minute], from: start)
+        let endComps = calendar.dateComponents([.hour, .minute], from: end)
+        let startHour = startComps.hour ?? 0
+        let endHour = endComps.hour ?? 0
+        let startPeriod = startHour < 12 ? "am" : "pm"
+        let endPeriod = endHour < 12 ? "am" : "pm"
+        let includeStartPeriod = startPeriod != endPeriod
+
+        return "\(compactTime(hour: startHour, minute: startComps.minute ?? 0, period: startPeriod, includePeriod: includeStartPeriod))-\(compactTime(hour: endHour, minute: endComps.minute ?? 0, period: endPeriod, includePeriod: true))"
+    }
+
+    private func compactTime(
+        hour: Int,
+        minute: Int,
+        period: String,
+        includePeriod: Bool
+    ) -> String {
+        let displayHour = hour % 12 == 0 ? 12 : hour % 12
+        let minuteText = minute == 0 ? "" : ".\(String(format: "%02d", minute))"
+        let periodText = includePeriod ? period : ""
+        return "\(displayHour)\(minuteText)\(periodText)"
+    }
+
+    private func contactURL(for student: Student, message: String) -> URL? {
+        let detail = student.contactDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let encodedMessage = percentEncodedMessage(message)
+
+        switch student.contactPreferenceValue {
+        case .instagram:
+            let handle = detail
+                .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !handle.isEmpty else { return nil }
+            return URL(string: "https://ig.me/m/\(handle)")
+        case .whatsApp:
+            let phone = phoneDigits(from: detail)
+            guard !phone.isEmpty else { return nil }
+            return URL(string: "https://wa.me/\(phone)?text=\(encodedMessage)")
+        case .fbMessenger:
+            if let url = URL(string: detail), url.scheme != nil {
+                return url
+            }
+            let profile = detail.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard !profile.isEmpty else { return nil }
+            return URL(string: "https://m.me/\(profile)")
+        case .sms:
+            let phone = smsPhoneNumber(from: detail)
+            guard !phone.isEmpty else { return nil }
+            return URL(string: "sms:\(phone)&body=\(encodedMessage)")
+        }
+    }
+
+    private func requiresClipboardMessage(_ preference: ContactPreference) -> Bool {
+        switch preference {
+        case .instagram, .fbMessenger:
+            return true
+        case .whatsApp, .sms:
+            return false
+        }
+    }
+
+    private func percentEncodedMessage(_ message: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return message.addingPercentEncoding(withAllowedCharacters: allowed) ?? message
+    }
+
+    private func phoneDigits(from value: String) -> String {
+        value.filter(\.isNumber)
+    }
+
+    private func smsPhoneNumber(from value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = trimmed.hasPrefix("+") ? "+" : ""
+        return prefix + trimmed.filter(\.isNumber)
+    }
+
+    private func status(for student: Student) -> SessionStatus {
+        selectedStatusByStudentID[student.persistentModelID] ?? .unscheduled
+    }
+
+    private func attendanceModels(for selectedStudents: [Student]) -> [SocialAttendance] {
+        selectedStudents.map { student in
+            let attendance = SocialAttendance(
+                student: student,
+                status: selectedStatusByStudentID[student.persistentModelID] ?? .unscheduled
+            )
+            modelContext.insert(attendance)
+            return attendance
+        }
+    }
+
+    private static func initialStatuses(for session: SocialSession?) -> [PersistentIdentifier: SessionStatus] {
+        guard let session else { return [:] }
+
+        var attendanceStatuses: [PersistentIdentifier: SessionStatus] = [:]
+        for attendance in session.attendances {
+            guard let student = attendance.student else { continue }
+            attendanceStatuses[student.persistentModelID] = attendance.statusValue
+        }
+
+        if !attendanceStatuses.isEmpty {
+            return attendanceStatuses
+        }
+
+        var legacyStatuses: [PersistentIdentifier: SessionStatus] = [:]
+        for student in session.students {
+            legacyStatuses[student.persistentModelID] = .unscheduled
+        }
+        return legacyStatuses
+    }
+}
+
+private struct SocialContactNotice: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
 }
 
 #Preview {
     SocialSessionListView()
-        .modelContainer(for: [Student.self, CoachingSession.self, CourtBooking.self, SocialSession.self], inMemory: true)
+        .modelContainer(for: [Student.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialAttendance.self], inMemory: true)
 }

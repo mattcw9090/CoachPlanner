@@ -15,6 +15,9 @@ final class SocialSession {
     @Relationship(deleteRule: .nullify)
     var students: [Student]
 
+    @Relationship(deleteRule: .cascade)
+    var attendances: [SocialAttendance]
+
     init(
         title: String = "Badminton Socials",
         weekStart: Date,
@@ -24,6 +27,7 @@ final class SocialSession {
         venue: Venue,
         notes: String = "",
         students: [Student] = [],
+        attendances: [SocialAttendance] = [],
         createdAt: Date = .now
     ) {
         self.title = title
@@ -34,6 +38,7 @@ final class SocialSession {
         self.venue = venue.rawValue
         self.notes = notes
         self.students = students
+        self.attendances = attendances
         self.createdAt = createdAt
     }
 
@@ -43,5 +48,28 @@ final class SocialSession {
 
     var venueValue: Venue {
         Venue(rawValue: venue) ?? .pbaMalaga
+    }
+}
+
+@Model
+final class SocialAttendance {
+    var status: String
+    var createdAt: Date
+
+    @Relationship(deleteRule: .nullify)
+    var student: Student?
+
+    init(
+        student: Student?,
+        status: SessionStatus = .unscheduled,
+        createdAt: Date = .now
+    ) {
+        self.student = student
+        self.status = status.rawValue
+        self.createdAt = createdAt
+    }
+
+    var statusValue: SessionStatus {
+        SessionStatus(rawValue: status) ?? .unscheduled
     }
 }

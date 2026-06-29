@@ -25,7 +25,8 @@ struct CoachPlannerApp: App {
         Student.self,
         CoachingSession.self,
         CourtBooking.self,
-        SocialSession.self
+        SocialSession.self,
+        SocialAttendance.self
     ])
 
     /// Builds the SwiftData container.
