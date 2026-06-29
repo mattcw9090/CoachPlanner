@@ -245,12 +245,6 @@ private struct SocialSessionRow: View {
                     .foregroundStyle(.green)
             }
 
-            if !session.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(session.notes)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
         }
         .padding(.vertical, 6)
     }
@@ -388,7 +382,6 @@ private struct SocialSessionEditorView: View {
     @State private var endTime: Date
     @State private var venue: Venue
     @State private var sessionStatus: SocialSessionStatus
-    @State private var notes: String
     @State private var areCourtsBooked: Bool
     @State private var courtNumbers: String
     @State private var shuttlecockCostText: String
@@ -405,7 +398,6 @@ private struct SocialSessionEditorView: View {
 
     private var isEditing: Bool { editor.session != nil }
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var trimmedNotes: String { notes.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedCourtNumbers: String { normalizedCourtNumbers(courtNumbers) }
     private var shuttlecockCost: Double { Double(shuttlecockCostText) ?? 0 }
     private var courtCost: Double { Double(courtCostText) ?? 0 }
@@ -424,7 +416,6 @@ private struct SocialSessionEditorView: View {
         _endTime = State(initialValue: editor.session?.endTime ?? defaultEnd)
         _venue = State(initialValue: editor.session?.venueValue ?? .pbaMalaga)
         _sessionStatus = State(initialValue: editor.session?.statusValue ?? .planned)
-        _notes = State(initialValue: editor.session?.notes ?? "")
         _courtNumbers = State(initialValue: editor.session?.courtNumbers ?? "")
         _areCourtsBooked = State(
             initialValue: editor.session?.areCourtsBooked ?? !(editor.session?.courtNumbersList.isEmpty ?? true)
@@ -885,11 +876,6 @@ private struct SocialSessionEditorView: View {
                     Text("Swipe sideways to switch between students and outsiders.")
                 }
 
-                Section("Notes") {
-                    TextField("Optional notes", text: $notes, axis: .vertical)
-                        .lineLimit(2...4)
-                }
-
                 if isEditing {
                     Section {
                         Button("Delete Socials Session", role: .destructive) {
@@ -943,7 +929,6 @@ private struct SocialSessionEditorView: View {
             session.startTime = startTime
             session.endTime = endTime
             session.venue = venue.rawValue
-            session.notes = trimmedNotes
             session.status = sessionStatus.rawValue
             session.areCourtsBooked = areCourtsBooked
             session.courtNumbers = areCourtsBooked ? trimmedCourtNumbers : ""
@@ -959,7 +944,6 @@ private struct SocialSessionEditorView: View {
                 startTime: startTime,
                 endTime: endTime,
                 venue: venue,
-                notes: trimmedNotes,
                 status: sessionStatus,
                 areCourtsBooked: areCourtsBooked,
                 courtNumbers: areCourtsBooked ? trimmedCourtNumbers : "",

@@ -23,7 +23,6 @@ final class SocialSession {
     var startTime: Date
     var endTime: Date
     var venue: String
-    var notes: String
     var status: String = SocialSessionStatus.planned.rawValue
     var areCourtsBooked: Bool = false
     var courtNumbers: String = ""
@@ -44,7 +43,6 @@ final class SocialSession {
         startTime: Date,
         endTime: Date,
         venue: Venue,
-        notes: String = "",
         status: SocialSessionStatus = .planned,
         areCourtsBooked: Bool = false,
         courtNumbers: String = "",
@@ -60,7 +58,6 @@ final class SocialSession {
         self.startTime = startTime
         self.endTime = endTime
         self.venue = venue.rawValue
-        self.notes = notes
         self.status = status.rawValue
         self.areCourtsBooked = areCourtsBooked
         self.courtNumbers = courtNumbers
