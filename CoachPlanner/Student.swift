@@ -121,7 +121,6 @@ final class Outsider {
     var gender: String
     var contactPreference: String
     var contactDetail: String
-    var sessionsDemand: Int
     var createdAt: Date
 
     init(
@@ -129,14 +128,12 @@ final class Outsider {
         gender: String,
         contactPreference: ContactPreference,
         contactDetail: String,
-        sessionsDemand: Int = 0,
         createdAt: Date = .now
     ) {
         self.name = name
         self.gender = gender
         self.contactPreference = contactPreference.rawValue
         self.contactDetail = contactDetail
-        self.sessionsDemand = sessionsDemand
         self.createdAt = createdAt
     }
 

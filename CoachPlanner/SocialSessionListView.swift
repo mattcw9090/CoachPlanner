@@ -456,8 +456,22 @@ private struct SocialSessionEditorView: View {
     }
 
     private var costPerPerson: Double {
-        guard participantCountForSplit > 0 else { return 0 }
+        guard areAllParticipantsConfirmed, participantCountForSplit > 0 else { return 0 }
         return totalSocialCost / Double(participantCountForSplit)
+    }
+
+    private var selectedParticipantCount: Int {
+        selectedStudents.count + selectedOutsiders.count
+    }
+
+    private var areAllParticipantsConfirmed: Bool {
+        selectedParticipantCount > 0 &&
+            selectedStudents.allSatisfy { status(for: $0) == .confirmed } &&
+            selectedOutsiders.allSatisfy { status(for: $0) == .confirmed }
+    }
+
+    private var isFinishedSettlementReady: Bool {
+        sessionStatus == .finished && areAllParticipantsConfirmed
     }
 
     private var isTimeValid: Bool {
@@ -479,6 +493,7 @@ private struct SocialSessionEditorView: View {
         trimmedTitle.isEmpty == false &&
             isTimeValid &&
             overlappingSession == nil &&
+            (sessionStatus != .finished || areAllParticipantsConfirmed) &&
             shuttlecockCost >= 0 &&
             courtCost >= 0
     }
@@ -507,8 +522,13 @@ private struct SocialSessionEditorView: View {
                         }
                     }
 
-                    DatePicker("Start", selection: $startTime, displayedComponents: .hourAndMinute)
-                    DatePicker("End", selection: $endTime, displayedComponents: .hourAndMinute)
+                    LabeledContent("Start Time") {
+                        HalfHourTimePicker(selection: $startTime)
+                    }
+
+                    LabeledContent("End Time") {
+                        HalfHourTimePicker(selection: $endTime)
+                    }
 
                     Toggle("Courts Booked", isOn: $areCourtsBooked.animation())
 
@@ -525,6 +545,9 @@ private struct SocialSessionEditorView: View {
                             .foregroundStyle(.red)
                     } else if let overlap = overlappingSession {
                         Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(start: overlap.startTime, end: overlap.endTime)) at \(overlap.venue).")
+                            .foregroundStyle(.red)
+                    } else if sessionStatus == .finished && !areAllParticipantsConfirmed {
+                        Text(selectedParticipantCount == 0 ? "Add at least one confirmed person before marking socials as finished." : "Everyone must be confirmed before marking socials as finished.")
                             .foregroundStyle(.red)
                     } else if shuttlecockCost < 0 || courtCost < 0 {
                         Text("Costs cannot be negative.")
@@ -555,13 +578,13 @@ private struct SocialSessionEditorView: View {
                         HStack {
                             Text("Split")
                             Spacer()
-                            Text("\(currencyText(costPerPerson)) each")
+                            Text(areAllParticipantsConfirmed ? "\(currencyText(costPerPerson)) each" : "Confirm everyone first")
                                 .foregroundStyle(.secondary)
                         }
                     } header: {
                         Text("Finished Costs")
                     } footer: {
-                        Text("Split uses confirmed attendees. If no one is confirmed yet, it uses everyone in the name list.")
+                        Text("Everyone must be confirmed before the final split is saved.")
                     }
                 }
 
@@ -576,11 +599,11 @@ private struct SocialSessionEditorView: View {
                     } else {
                         ForEach(selectedStudents) { student in
                             HStack(spacing: 12) {
-                                Image(systemName: status(for: student).iconName)
+                                Image(systemName: isFinishedSettlementReady ? paymentStatus(for: student).iconName : status(for: student).iconName)
                                     .font(.caption.weight(.bold))
-                                    .foregroundStyle(status(for: student).color)
+                                    .foregroundStyle(isFinishedSettlementReady ? paymentStatus(for: student).color : status(for: student).color)
                                     .frame(width: 24, height: 24)
-                                    .background(Circle().fill(status(for: student).color.opacity(0.14)))
+                                    .background(Circle().fill((isFinishedSettlementReady ? paymentStatus(for: student).color : status(for: student).color).opacity(0.14)))
 
                                 Text(student.name)
                                     .font(.body)
@@ -588,14 +611,16 @@ private struct SocialSessionEditorView: View {
                                     .lineLimit(2)
                                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                                SocialStatusMenu(
-                                    status: status(for: student),
-                                    onChange: { newStatus in
-                                        selectedStatusByStudentID[student.persistentModelID] = newStatus
-                                    }
-                                )
+                                if !isFinishedSettlementReady {
+                                    SocialStatusMenu(
+                                        status: status(for: student),
+                                        onChange: { newStatus in
+                                            selectedStatusByStudentID[student.persistentModelID] = newStatus
+                                        }
+                                    )
+                                }
 
-                                if sessionStatus == .finished {
+                                if isFinishedSettlementReady {
                                     SocialPaymentMenu(
                                         status: paymentStatus(for: student),
                                         onChange: { newStatus in
@@ -627,11 +652,11 @@ private struct SocialSessionEditorView: View {
                     if !selectedOutsiders.isEmpty {
                         ForEach(selectedOutsiders) { outsider in
                             HStack(spacing: 12) {
-                                Image(systemName: status(for: outsider).iconName)
+                                Image(systemName: isFinishedSettlementReady ? paymentStatus(for: outsider).iconName : status(for: outsider).iconName)
                                     .font(.caption.weight(.bold))
-                                    .foregroundStyle(status(for: outsider).color)
+                                    .foregroundStyle(isFinishedSettlementReady ? paymentStatus(for: outsider).color : status(for: outsider).color)
                                     .frame(width: 24, height: 24)
-                                    .background(Circle().fill(status(for: outsider).color.opacity(0.14)))
+                                    .background(Circle().fill((isFinishedSettlementReady ? paymentStatus(for: outsider).color : status(for: outsider).color).opacity(0.14)))
 
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(outsider.name)
@@ -644,14 +669,16 @@ private struct SocialSessionEditorView: View {
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                                SocialStatusMenu(
-                                    status: status(for: outsider),
-                                    onChange: { newStatus in
-                                        selectedStatusByOutsiderID[outsider.persistentModelID] = newStatus
-                                    }
-                                )
+                                if !isFinishedSettlementReady {
+                                    SocialStatusMenu(
+                                        status: status(for: outsider),
+                                        onChange: { newStatus in
+                                            selectedStatusByOutsiderID[outsider.persistentModelID] = newStatus
+                                        }
+                                    )
+                                }
 
-                                if sessionStatus == .finished {
+                                if isFinishedSettlementReady {
                                     SocialPaymentMenu(
                                         status: paymentStatus(for: outsider),
                                         onChange: { newStatus in
@@ -694,7 +721,7 @@ private struct SocialSessionEditorView: View {
                     } else {
                         ForEach(availableStudents) { student in
                             Button {
-                                selectedStatusByStudentID[student.persistentModelID] = .unscheduled
+                                selectedStatusByStudentID[student.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
                                 paymentStatusByStudentID[student.persistentModelID] = .unpaid
                                 studentSearch = ""
                             } label: {
@@ -730,7 +757,7 @@ private struct SocialSessionEditorView: View {
                     } else {
                         ForEach(availableOutsiders) { outsider in
                             Button {
-                                selectedStatusByOutsiderID[outsider.persistentModelID] = .unscheduled
+                                selectedStatusByOutsiderID[outsider.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
                                 paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
                                 outsiderSearch = ""
                             } label: {
@@ -1064,7 +1091,7 @@ private struct SocialSessionEditorView: View {
         let studentAttendances = selectedStudents.map { student in
             let attendance = SocialAttendance(
                 student: student,
-                status: selectedStatusByStudentID[student.persistentModelID] ?? .unscheduled,
+                status: sessionStatus == .finished ? .confirmed : selectedStatusByStudentID[student.persistentModelID] ?? .unscheduled,
                 paymentStatus: paymentStatusByStudentID[student.persistentModelID] ?? .unpaid
             )
             modelContext.insert(attendance)
@@ -1075,7 +1102,7 @@ private struct SocialSessionEditorView: View {
             let attendance = SocialAttendance(
                 student: nil,
                 outsider: outsider,
-                status: selectedStatusByOutsiderID[outsider.persistentModelID] ?? .unscheduled,
+                status: sessionStatus == .finished ? .confirmed : selectedStatusByOutsiderID[outsider.persistentModelID] ?? .unscheduled,
                 paymentStatus: paymentStatusByOutsiderID[outsider.persistentModelID] ?? .unpaid
             )
             modelContext.insert(attendance)
@@ -1172,7 +1199,6 @@ private struct OutsiderEditorView: View {
     @State private var gender: String
     @State private var contactPreference: ContactPreference
     @State private var contactDetail: String
-    @State private var sessionsDemand: Int
 
     private let genderOptions = ["Male", "Female"]
 
@@ -1182,26 +1208,46 @@ private struct OutsiderEditorView: View {
         _gender = State(initialValue: editor.outsider?.gender ?? "")
         _contactPreference = State(initialValue: editor.outsider?.contactPreferenceValue ?? .instagram)
         _contactDetail = State(initialValue: editor.outsider?.contactDetail ?? "")
-        _sessionsDemand = State(initialValue: editor.outsider?.sessionsDemand ?? 0)
     }
 
     private var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var trimmedContactDetail: String {
-        contactDetail.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private var isContactValid: Bool {
         switch contactPreference {
         case .instagram:
-            return !trimmedContactDetail.trimmingCharacters(in: CharacterSet(charactersIn: "@")).isEmpty
+            return !Self.instagramHandle(from: contactDetail).isEmpty
         case .whatsApp, .sms:
-            return !trimmedContactDetail.filter(\.isNumber).isEmpty
+            return !Self.australianLocalDigits(from: contactDetail).isEmpty
         case .fbMessenger:
-            return !trimmedContactDetail.isEmpty
+            return !Self.facebookProfilePath(from: contactDetail).isEmpty
         }
+    }
+
+    private var outsiderContactDetailBinding: Binding<String> {
+        Binding(
+            get: {
+                switch contactPreference {
+                case .instagram:
+                    return Self.instagramHandle(from: contactDetail)
+                case .whatsApp, .sms:
+                    return Self.groupedAustralianLocalDigits(Self.australianLocalDigits(from: contactDetail))
+                case .fbMessenger:
+                    return Self.facebookProfilePath(from: contactDetail)
+                }
+            },
+            set: { newValue in
+                switch contactPreference {
+                case .instagram:
+                    contactDetail = Self.formattedInstagramHandle(newValue)
+                case .whatsApp, .sms:
+                    contactDetail = Self.formattedAustralianPhoneNumber(newValue)
+                case .fbMessenger:
+                    contactDetail = Self.formattedFacebookProfile(newValue)
+                }
+            }
+        )
     }
 
     var body: some View {
@@ -1219,14 +1265,6 @@ private struct OutsiderEditorView: View {
                     }
                     .pickerStyle(.segmented)
 
-                    Stepper(value: $sessionsDemand, in: 0...7) {
-                        HStack {
-                            Text("Sessions per week")
-                            Spacer()
-                            Text("\(sessionsDemand)")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
                 }
 
                 Section {
@@ -1237,10 +1275,37 @@ private struct OutsiderEditorView: View {
                         }
                     }
 
-                    TextField(contactPreference.placeholder, text: $contactDetail)
-                        .textInputAutocapitalization(contactPreference == .whatsApp || contactPreference == .sms ? .sentences : .never)
-                        .autocorrectionDisabled()
-                        .keyboardType(contactPreference == .whatsApp || contactPreference == .sms ? .phonePad : .default)
+                    HStack {
+                        switch contactPreference {
+                        case .instagram:
+                            Text("@")
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+
+                            TextField("username", text: outsiderContactDetailBinding)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.twitter)
+                        case .whatsApp, .sms:
+                            Text("+61")
+                                .foregroundStyle(.secondary)
+                                .accessibilityHidden(true)
+
+                            TextField("412 345 678", text: outsiderContactDetailBinding)
+                                .keyboardType(.phonePad)
+                        case .fbMessenger:
+                            Text("https://facebook.com/")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .accessibilityHidden(true)
+
+                            TextField("username", text: outsiderContactDetailBinding)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.URL)
+                        }
+                    }
                 } header: {
                     Text("Contact")
                 } footer: {
@@ -1277,14 +1342,12 @@ private struct OutsiderEditorView: View {
             outsider.gender = gender
             outsider.contactPreference = contactPreference.rawValue
             outsider.contactDetail = savedContactDetail
-            outsider.sessionsDemand = sessionsDemand
         } else {
             let outsider = Outsider(
                 name: trimmedName,
                 gender: gender,
                 contactPreference: contactPreference,
-                contactDetail: savedContactDetail,
-                sessionsDemand: sessionsDemand
+                contactDetail: savedContactDetail
             )
             modelContext.insert(outsider)
         }
@@ -1295,18 +1358,86 @@ private struct OutsiderEditorView: View {
     private func formattedContactDetail() -> String {
         switch contactPreference {
         case .instagram:
-            let handle = trimmedContactDetail.trimmingCharacters(in: CharacterSet(charactersIn: "@"))
-            return handle.isEmpty ? "" : "@\(handle)"
+            return Self.formattedInstagramHandle(contactDetail)
         case .whatsApp, .sms:
-            let digits = trimmedContactDetail.filter(\.isNumber)
-            if digits.hasPrefix("61") || digits.isEmpty {
-                return digits.isEmpty ? "" : "+\(digits)"
-            }
-            let localDigits = digits.hasPrefix("0") ? String(digits.dropFirst()) : digits
-            return "+61\(localDigits)"
+            return Self.formattedAustralianPhoneNumber(contactDetail)
         case .fbMessenger:
-            return trimmedContactDetail
+            return Self.formattedFacebookProfile(contactDetail)
         }
+    }
+
+    private static func instagramHandle(from value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+    }
+
+    private static func formattedInstagramHandle(_ value: String) -> String {
+        let handle = instagramHandle(from: value)
+        return handle.isEmpty ? "" : "@\(handle)"
+    }
+
+    private static func facebookProfilePath(from value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: trimmed),
+           let host = url.host,
+           host.localizedCaseInsensitiveContains("facebook.com") {
+            return url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+
+        return trimmed
+            .replacingOccurrences(of: "https://facebook.com/", with: "", options: .caseInsensitive)
+            .replacingOccurrences(of: "http://facebook.com/", with: "", options: .caseInsensitive)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func formattedFacebookProfile(_ value: String) -> String {
+        let profile = facebookProfilePath(from: value)
+        return profile.isEmpty ? "" : "https://facebook.com/\(profile)"
+    }
+
+    private static func formattedAustralianPhoneNumber(_ value: String) -> String {
+        let localDigits = australianLocalDigits(from: value)
+        guard !localDigits.isEmpty else { return "" }
+        return "+61\(localDigits)"
+    }
+
+    private static func australianLocalDigits(from value: String) -> String {
+        let digits = value.filter(\.isNumber)
+
+        var localDigits: String
+        if digits.hasPrefix("61") {
+            localDigits = String(digits.dropFirst(2))
+            if localDigits.hasPrefix("0") {
+                localDigits.removeFirst()
+            }
+        } else if digits.hasPrefix("0") {
+            localDigits = String(digits.dropFirst())
+        } else {
+            localDigits = digits
+        }
+
+        return String(localDigits.prefix(9))
+    }
+
+    private static func groupedAustralianLocalDigits(_ localDigits: String) -> String {
+        guard !localDigits.isEmpty else { return "" }
+        var groups: [String] = []
+        groups.append(String(localDigits.prefix(3)))
+
+        if localDigits.count > 3 {
+            let start = localDigits.index(localDigits.startIndex, offsetBy: 3)
+            let end = localDigits.index(start, offsetBy: min(3, localDigits.distance(from: start, to: localDigits.endIndex)))
+            groups.append(String(localDigits[start..<end]))
+        }
+
+        if localDigits.count > 6 {
+            let start = localDigits.index(localDigits.startIndex, offsetBy: 6)
+            groups.append(String(localDigits[start...]))
+        }
+
+        return groups.joined(separator: " ")
     }
 }
 
