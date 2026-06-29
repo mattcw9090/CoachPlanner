@@ -24,7 +24,8 @@ struct CoachPlannerApp: App {
     static let schema = Schema([
         Student.self,
         CoachingSession.self,
-        CourtBooking.self
+        CourtBooking.self,
+        SocialSession.self
     ])
 
     /// Builds the SwiftData container.

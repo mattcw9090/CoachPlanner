@@ -12,6 +12,11 @@ struct RootTabView: View {
                 .tabItem {
                     Label("Sessions", systemImage: "calendar")
                 }
+
+            SocialSessionListView()
+                .tabItem {
+                    Label("Socials", systemImage: "figure.badminton")
+                }
         }
         .tint(.blue)
     }
