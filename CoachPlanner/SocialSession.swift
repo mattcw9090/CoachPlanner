@@ -10,13 +10,15 @@ final class SocialSession {
     var endTime: Date
     var venue: String
     var notes: String
+    var areCourtsBooked: Bool = false
+    var courtNumbers: String = ""
     var createdAt: Date
 
     @Relationship(deleteRule: .nullify)
     var students: [Student]
 
     @Relationship(deleteRule: .cascade)
-    var attendances: [SocialAttendance]
+    var attendances: [SocialAttendance] = []
 
     init(
         title: String = "Badminton Socials",
@@ -26,6 +28,8 @@ final class SocialSession {
         endTime: Date,
         venue: Venue,
         notes: String = "",
+        areCourtsBooked: Bool = false,
+        courtNumbers: String = "",
         students: [Student] = [],
         attendances: [SocialAttendance] = [],
         createdAt: Date = .now
@@ -37,6 +41,8 @@ final class SocialSession {
         self.endTime = endTime
         self.venue = venue.rawValue
         self.notes = notes
+        self.areCourtsBooked = areCourtsBooked
+        self.courtNumbers = courtNumbers
         self.students = students
         self.attendances = attendances
         self.createdAt = createdAt
@@ -48,6 +54,13 @@ final class SocialSession {
 
     var venueValue: Venue {
         Venue(rawValue: venue) ?? .pbaMalaga
+    }
+
+    var courtNumbersList: [String] {
+        courtNumbers
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 }
 

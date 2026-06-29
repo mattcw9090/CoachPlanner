@@ -42,6 +42,7 @@ struct SessionEditorView: View {
     @Query(sort: \Student.name) private var students: [Student]
     @Query private var existingSessions: [CoachingSession]
     @Query private var existingCourtBookings: [CourtBooking]
+    @Query private var existingSocialSessions: [SocialSession]
 
     let editor: SessionEditor
 
@@ -140,6 +141,19 @@ struct SessionEditorView: View {
         }
     }
 
+    private var overlappingSocialSession: SocialSession? {
+        let weekStart = messageWeekStart
+        let newStart = minutes(of: startTime)
+        let newEnd = minutes(of: endTime)
+
+        return existingSocialSessions.first { social in
+            Calendar.current.isDate(social.weekStart, inSameDayAs: weekStart) &&
+                social.dayOfWeek == dayOfWeek.rawValue &&
+                newStart < minutes(of: social.endTime) &&
+                newEnd > minutes(of: social.startTime)
+        }
+    }
+
     private var isUsingSelectedCourtBooking: Bool {
         guard let booking = editor.consumedCourtBooking else { return true }
         let bookingStart = minutes(of: booking.startTime)
@@ -158,6 +172,7 @@ struct SessionEditorView: View {
         isTimeRangeValid &&
             overlappingSession == nil &&
             overlappingCourtBooking == nil &&
+            overlappingSocialSession == nil &&
             isUsingSelectedCourtBooking &&
             !selectedStudentIDs.isEmpty &&
             isCourtValid &&
@@ -393,6 +408,9 @@ struct SessionEditorView: View {
                             .foregroundStyle(.red)
                     } else if let overlap = overlappingCourtBooking {
                         Text("Overlaps with vacant Court \(overlap.courtNumber) at \(overlap.venue), \(timeRangeText(start: overlap.startTime, end: overlap.endTime)).")
+                            .foregroundStyle(.red)
+                    } else if let overlap = overlappingSocialSession {
+                        Text("Overlaps with socials at \(overlap.venue), \(timeRangeText(start: overlap.startTime, end: overlap.endTime)).")
                             .foregroundStyle(.red)
                     }
                 }

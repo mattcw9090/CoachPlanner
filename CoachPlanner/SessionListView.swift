@@ -16,6 +16,13 @@ struct SessionListView: View {
             SortDescriptor(\CourtBooking.startTime)
         ]
     ) private var courtBookings: [CourtBooking]
+    @Query(
+        sort: [
+            SortDescriptor(\SocialSession.weekStart),
+            SortDescriptor(\SocialSession.dayOfWeek),
+            SortDescriptor(\SocialSession.startTime)
+        ]
+    ) private var socialSessions: [SocialSession]
 
     @AppStorage("weekStartTimestamp") private var weekStartTimestamp: Double = 0
 
@@ -43,6 +50,7 @@ struct SessionListView: View {
     private var scheduleSummary: ScheduleSummary {
         var sessionsByDay = Dictionary(uniqueKeysWithValues: Weekday.allCases.map { ($0, [CoachingSession]()) })
         var courtBookingsByDay = Dictionary(uniqueKeysWithValues: Weekday.allCases.map { ($0, [CourtBooking]()) })
+        var socialSessionsByDay = Dictionary(uniqueKeysWithValues: Weekday.allCases.map { ($0, [SocialSession]()) })
         var confirmedSessionCount = 0
         var totalSessionFees = 0.0
 
@@ -58,9 +66,14 @@ struct SessionListView: View {
             courtBookingsByDay[booking.weekday, default: []].append(booking)
         }
 
+        for social in socialSessions where Calendar.current.isDate(social.weekStart, inSameDayAs: weekStart) {
+            socialSessionsByDay[social.weekday, default: []].append(social)
+        }
+
         return ScheduleSummary(
             sessionsByDay: sessionsByDay,
             courtBookingsByDay: courtBookingsByDay,
+            socialSessionsByDay: socialSessionsByDay,
             confirmedSessionCount: confirmedSessionCount,
             totalSessionFees: totalSessionFees
         )
@@ -459,6 +472,13 @@ struct SessionListView: View {
                         selectedCourtBooking = booking
                     }
             }
+
+            ForEach(summary.socialSessions(for: day)) { social in
+                SocialSessionBlock(session: social)
+                    .frame(height: blockHeight(for: social))
+                    .padding(.horizontal, 2)
+                    .offset(y: yOffset(for: social))
+            }
         }
         .frame(maxWidth: .infinity)
         .frame(height: totalGridHeight)
@@ -603,6 +623,11 @@ struct SessionListView: View {
         return CGFloat(mins) / 60.0 * hourHeight
     }
 
+    private func yOffset(for social: SocialSession) -> CGFloat {
+        let mins = minutesOfDay(social.startTime) - dayStartHour * 60
+        return CGFloat(mins) / 60.0 * hourHeight
+    }
+
     private func blockHeight(for session: CoachingSession) -> CGFloat {
         let duration = minutesOfDay(session.endTime) - minutesOfDay(session.startTime)
         return max(CGFloat(duration) / 60.0 * hourHeight - 5, 30)
@@ -610,6 +635,11 @@ struct SessionListView: View {
 
     private func blockHeight(for booking: CourtBooking) -> CGFloat {
         let duration = minutesOfDay(booking.endTime) - minutesOfDay(booking.startTime)
+        return max(CGFloat(duration) / 60.0 * hourHeight - 5, 30)
+    }
+
+    private func blockHeight(for social: SocialSession) -> CGFloat {
+        let duration = minutesOfDay(social.endTime) - minutesOfDay(social.startTime)
         return max(CGFloat(duration) / 60.0 * hourHeight - 5, 30)
     }
 
@@ -912,6 +942,7 @@ private struct FinanceSendNotice: Identifiable {
 private struct ScheduleSummary {
     let sessionsByDay: [Weekday: [CoachingSession]]
     let courtBookingsByDay: [Weekday: [CourtBooking]]
+    let socialSessionsByDay: [Weekday: [SocialSession]]
     let confirmedSessionCount: Int
     let totalSessionFees: Double
 
@@ -921,6 +952,10 @@ private struct ScheduleSummary {
 
     func courtBookings(for day: Weekday) -> [CourtBooking] {
         courtBookingsByDay[day] ?? []
+    }
+
+    func socialSessions(for day: Weekday) -> [SocialSession] {
+        socialSessionsByDay[day] ?? []
     }
 }
 
@@ -1341,6 +1376,61 @@ private struct CourtBookingBlock: View {
             RoundedRectangle(cornerRadius: 6)
                 .stroke(Color.gray.opacity(0.5), lineWidth: 1)
         )
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+private struct SocialSessionBlock: View {
+    let session: SocialSession
+
+    private var courtSummary: String {
+        guard session.areCourtsBooked else { return "" }
+        let courts = session.courtNumbersList
+        guard !courts.isEmpty else { return "Courts booked" }
+        let label = courts.count == 1 ? "Court" : "Courts"
+        return "\(label) \(courts.joined(separator: ", "))"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(session.title)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .minimumScaleFactor(0.75)
+
+            Text(session.venue)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+
+            if !courtSummary.isEmpty {
+                Text(courtSummary)
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.purple)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 3)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.purple.opacity(0.16))
+        )
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(Color.purple)
+                .frame(width: 4)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.purple.opacity(0.48), lineWidth: 1)
+        )
+        .shadow(color: Color.purple.opacity(0.12), radius: 5, x: 0, y: 2)
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }

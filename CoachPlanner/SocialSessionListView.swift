@@ -175,25 +175,16 @@ struct SocialSessionListView: View {
 private struct SocialSessionRow: View {
     let session: SocialSession
 
-    private var attendanceRows: [SocialAttendanceRowData] {
-        let rows: [SocialAttendanceRowData]
-        if session.attendances.isEmpty {
-            rows = session.students.map { SocialAttendanceRowData(student: $0, status: .unscheduled) }
-        } else {
-            rows = session.attendances.compactMap { attendance in
-                guard let student = attendance.student else { return nil }
-                return SocialAttendanceRowData(student: student, status: attendance.statusValue)
-            }
-        }
-
-        return rows.sorted {
-            $0.student.name.localizedCaseInsensitiveCompare($1.student.name) == .orderedAscending
-        }
+    private var attendanceCount: Int {
+        session.attendances.isEmpty ? session.students.count : session.attendances.count
     }
 
-    private var statusCounts: [SessionStatus: Int] {
-        Dictionary(grouping: attendanceRows, by: \.status)
-            .mapValues(\.count)
+    private var courtSummary: String {
+        guard session.areCourtsBooked else { return "" }
+        let courts = session.courtNumbersList
+        guard !courts.isEmpty else { return "Courts booked" }
+        let label = courts.count == 1 ? "Court" : "Courts"
+        return "\(label) \(courts.joined(separator: ", "))"
     }
 
     var body: some View {
@@ -217,7 +208,7 @@ private struct SocialSessionRow: View {
 
                 Spacer()
 
-                Text("\(attendanceRows.count)")
+                Text("\(attendanceCount)")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.purple)
                     .padding(.horizontal, 8)
@@ -225,25 +216,10 @@ private struct SocialSessionRow: View {
                     .background(Capsule().fill(Color.purple.opacity(0.14)))
             }
 
-            if attendanceRows.isEmpty {
-                Text("No students added yet")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        ForEach(SessionStatus.allCases) { status in
-                            if let count = statusCounts[status], count > 0 {
-                                SocialStatusBadge(status: status, count: count)
-                            }
-                        }
-                    }
-
-                    Text(attendanceRows.map { "\($0.student.name) (\($0.status.rawValue))" }.joined(separator: ", "))
-                        .font(.subheadline)
-                        .foregroundStyle(.primary)
-                        .lineLimit(3)
-                }
+            if !courtSummary.isEmpty {
+                Label(courtSummary, systemImage: "rectangle.grid.2x2.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.purple)
             }
 
             if !session.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -258,29 +234,6 @@ private struct SocialSessionRow: View {
 
     private func timeRangeText(start: Date, end: Date) -> String {
         "\(start.formatted(.dateTime.hour().minute()))-\(end.formatted(.dateTime.hour().minute()))"
-    }
-}
-
-private struct SocialAttendanceRowData {
-    let student: Student
-    let status: SessionStatus
-}
-
-private struct SocialStatusBadge: View {
-    let status: SessionStatus
-    let count: Int
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: status.iconName)
-                .font(.caption2)
-            Text("\(count) \(status.rawValue)")
-                .font(.caption2.weight(.semibold))
-        }
-        .foregroundStyle(status.color)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 4)
-        .background(Capsule().fill(status.color.opacity(0.14)))
     }
 }
 
@@ -330,6 +283,7 @@ private struct SocialSessionEditorView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.openURL) private var openURL
     @Query(sort: \Student.name) private var students: [Student]
+    @Query private var existingSessions: [CoachingSession]
 
     let editor: SocialSessionEditor
 
@@ -339,6 +293,8 @@ private struct SocialSessionEditorView: View {
     @State private var endTime: Date
     @State private var venue: Venue
     @State private var notes: String
+    @State private var areCourtsBooked: Bool
+    @State private var courtNumbers: String
     @State private var selectedStatusByStudentID: [PersistentIdentifier: SessionStatus]
     @State private var studentSearch = ""
     @State private var contactNotice: SocialContactNotice?
@@ -346,6 +302,7 @@ private struct SocialSessionEditorView: View {
     private var isEditing: Bool { editor.session != nil }
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedNotes: String { notes.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedCourtNumbers: String { normalizedCourtNumbers(courtNumbers) }
 
     init(editor: SocialSessionEditor) {
         self.editor = editor
@@ -360,6 +317,10 @@ private struct SocialSessionEditorView: View {
         _endTime = State(initialValue: editor.session?.endTime ?? defaultEnd)
         _venue = State(initialValue: editor.session?.venueValue ?? .pbaMalaga)
         _notes = State(initialValue: editor.session?.notes ?? "")
+        _courtNumbers = State(initialValue: editor.session?.courtNumbers ?? "")
+        _areCourtsBooked = State(
+            initialValue: editor.session?.areCourtsBooked ?? !(editor.session?.courtNumbersList.isEmpty ?? true)
+        )
         _selectedStatusByStudentID = State(initialValue: Self.initialStatuses(for: editor.session))
     }
 
@@ -378,6 +339,23 @@ private struct SocialSessionEditorView: View {
 
     private var isTimeValid: Bool {
         minutesOfDay(endTime) > minutesOfDay(startTime)
+    }
+
+    private var overlappingSession: CoachingSession? {
+        let newStart = minutesOfDay(startTime)
+        let newEnd = minutesOfDay(endTime)
+
+        return existingSessions.first { session in
+            session.dayOfWeek == dayOfWeek.rawValue &&
+                newStart < minutesOfDay(session.endTime) &&
+                newEnd > minutesOfDay(session.startTime)
+        }
+    }
+
+    private var canSave: Bool {
+        trimmedTitle.isEmpty == false &&
+            isTimeValid &&
+            overlappingSession == nil
     }
 
     var body: some View {
@@ -400,11 +378,22 @@ private struct SocialSessionEditorView: View {
 
                     DatePicker("Start", selection: $startTime, displayedComponents: .hourAndMinute)
                     DatePicker("End", selection: $endTime, displayedComponents: .hourAndMinute)
+
+                    Toggle("Courts Booked", isOn: $areCourtsBooked.animation())
+
+                    if areCourtsBooked {
+                        TextField("Court numbers, e.g. 1, 2, 5", text: $courtNumbers)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
                 } header: {
                     Text("Socials Details")
                 } footer: {
                     if !isTimeValid {
                         Text("End time must be after start time.")
+                            .foregroundStyle(.red)
+                    } else if let overlap = overlappingSession {
+                        Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(start: overlap.startTime, end: overlap.endTime)) at \(overlap.venue).")
                             .foregroundStyle(.red)
                     }
                 }
@@ -513,7 +502,7 @@ private struct SocialSessionEditorView: View {
                     Button("Save") {
                         save()
                     }
-                    .disabled(trimmedTitle.isEmpty || !isTimeValid)
+                    .disabled(!canSave)
                 }
             }
             .alert(item: $contactNotice) { notice in
@@ -542,6 +531,8 @@ private struct SocialSessionEditorView: View {
             session.endTime = endTime
             session.venue = venue.rawValue
             session.notes = trimmedNotes
+            session.areCourtsBooked = areCourtsBooked
+            session.courtNumbers = areCourtsBooked ? trimmedCourtNumbers : ""
             session.students = selected
             session.attendances = attendances
         } else {
@@ -553,6 +544,8 @@ private struct SocialSessionEditorView: View {
                 endTime: endTime,
                 venue: venue,
                 notes: trimmedNotes,
+                areCourtsBooked: areCourtsBooked,
+                courtNumbers: areCourtsBooked ? trimmedCourtNumbers : "",
                 students: selected,
                 attendances: attendances
             )
@@ -572,6 +565,18 @@ private struct SocialSessionEditorView: View {
     private func minutesOfDay(_ date: Date) -> Int {
         let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
         return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+    }
+
+    private func timeRangeText(start: Date, end: Date) -> String {
+        "\(start.formatted(.dateTime.hour().minute()))-\(end.formatted(.dateTime.hour().minute()))"
+    }
+
+    private func normalizedCourtNumbers(_ value: String) -> String {
+        value
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
     }
 
     private func ask(_ student: Student) {
