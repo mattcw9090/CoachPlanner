@@ -347,6 +347,20 @@ private extension SocialPaymentStatus {
     }
 }
 
+private enum SocialPeoplePage: Int, CaseIterable, Identifiable {
+    case students
+    case outsiders
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .students: return "Students"
+        case .outsiders: return "Outsiders"
+        }
+    }
+}
+
 struct SocialSessionEditor: Identifiable {
     let id = UUID()
     let session: SocialSession?
@@ -383,6 +397,7 @@ private struct SocialSessionEditorView: View {
     @State private var selectedStatusByOutsiderID: [PersistentIdentifier: SessionStatus]
     @State private var paymentStatusByStudentID: [PersistentIdentifier: SocialPaymentStatus]
     @State private var paymentStatusByOutsiderID: [PersistentIdentifier: SocialPaymentStatus]
+    @State private var addPeoplePage: SocialPeoplePage = .students
     @State private var studentSearch = ""
     @State private var outsiderSearch = ""
     @State private var outsiderEditor: OutsiderEditor?
@@ -496,6 +511,139 @@ private struct SocialSessionEditorView: View {
             (sessionStatus != .finished || areAllParticipantsConfirmed) &&
             shuttlecockCost >= 0 &&
             courtCost >= 0
+    }
+
+    private var addStudentsPage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextField("Search students", text: $studentSearch)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
+
+            if availableStudents.isEmpty {
+                Text(students.isEmpty ? "Add students in the Students tab first." : "No matching students.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(availableStudents) { student in
+                            Button {
+                                selectedStatusByStudentID[student.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
+                                paymentStatusByStudentID[student.persistentModelID] = .unpaid
+                                studentSearch = ""
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "person.fill")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(.blue)
+                                        .frame(width: 24, height: 24)
+                                        .background(Circle().fill(Color.blue.opacity(0.14)))
+
+                                    Text(student.name)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+
+                                    Spacer()
+
+                                    Image(systemName: "plus.circle.fill")
+                                        .foregroundStyle(.tint)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 9)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .fill(AppStyle.surface)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 230)
+            }
+        }
+        .padding(.top, 8)
+    }
+
+    private var addOutsidersPage: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                TextField("Search outsiders", text: $outsiderSearch)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.roundedBorder)
+
+                Button {
+                    outsiderEditor = OutsiderEditor()
+                } label: {
+                    Label("New", systemImage: "plus.circle.fill")
+                        .labelStyle(.iconOnly)
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if availableOutsiders.isEmpty {
+                Text(outsiders.isEmpty ? "Create an outsider to add non-students." : "No matching outsiders.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(availableOutsiders) { outsider in
+                            HStack(spacing: 10) {
+                                Button {
+                                    selectedStatusByOutsiderID[outsider.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
+                                    paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
+                                    outsiderSearch = ""
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "person.crop.circle.badge.questionmark")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundStyle(.purple)
+                                            .frame(width: 24, height: 24)
+                                            .background(Circle().fill(Color.purple.opacity(0.14)))
+
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(outsider.name)
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
+                                            Text(outsider.displayContactDetail)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+
+                                        Spacer()
+
+                                        Image(systemName: "plus.circle.fill")
+                                            .foregroundStyle(.tint)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+
+                                Button(role: .destructive) {
+                                    deleteOutsider(outsider)
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(AppStyle.surface)
+                            )
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 230)
+            }
+        }
+        .padding(.top, 8)
     }
 
     var body: some View {
@@ -714,79 +862,27 @@ private struct SocialSessionEditorView: View {
                     }
                 }
 
-                Section("Add Students") {
-                    if availableStudents.isEmpty {
-                        Text(students.isEmpty ? "Add students in the Students tab first." : "No matching students.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(availableStudents) { student in
-                            Button {
-                                selectedStatusByStudentID[student.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
-                                paymentStatusByStudentID[student.persistentModelID] = .unpaid
-                                studentSearch = ""
-                            } label: {
-                                HStack {
-                                    Text(student.name)
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                    Image(systemName: "plus.circle.fill")
-                                        .foregroundStyle(.tint)
-                                }
-                            }
-                        }
-                    }
-                }
-
                 Section {
-                    HStack {
-                        TextField("Search outsiders", text: $outsiderSearch)
-                            .textInputAutocapitalization(.words)
-                            .autocorrectionDisabled()
-
-                        Button {
-                            outsiderEditor = OutsiderEditor()
-                        } label: {
-                            Label("New", systemImage: "plus.circle.fill")
-                                .labelStyle(.iconOnly)
+                    Picker("People", selection: $addPeoplePage) {
+                        ForEach(SocialPeoplePage.allCases) { page in
+                            Text(page.title).tag(page)
                         }
                     }
+                    .pickerStyle(.segmented)
 
-                    if availableOutsiders.isEmpty {
-                        Text(outsiders.isEmpty ? "Create an outsider to add non-students." : "No matching outsiders.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(availableOutsiders) { outsider in
-                            Button {
-                                selectedStatusByOutsiderID[outsider.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
-                                paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
-                                outsiderSearch = ""
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(outsider.name)
-                                            .foregroundStyle(.primary)
-                                        Text(outsider.displayContactDetail)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "plus.circle.fill")
-                                        .foregroundStyle(.tint)
-                                }
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button(role: .destructive) {
-                                    deleteOutsider(outsider)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                        }
+                    TabView(selection: $addPeoplePage) {
+                        addStudentsPage
+                            .tag(SocialPeoplePage.students)
+
+                        addOutsidersPage
+                            .tag(SocialPeoplePage.outsiders)
                     }
+                    .tabViewStyle(.page(indexDisplayMode: .automatic))
+                    .frame(minHeight: 320)
                 } header: {
-                    Text("Add Outsiders")
+                    Text("Add People")
                 } footer: {
-                    Text("Outsiders are non-students you can reuse for future socials.")
+                    Text("Swipe sideways to switch between students and outsiders.")
                 }
 
                 Section("Notes") {
