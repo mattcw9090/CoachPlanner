@@ -11,7 +11,6 @@ struct SocialSessionListView: View {
             SortDescriptor(\SocialSession.startTime)
         ]
     ) private var socialSessions: [SocialSession]
-
     @AppStorage("weekStartTimestamp") private var weekStartTimestamp: Double = 0
     @State private var editor: SocialSessionEditor?
 
@@ -80,7 +79,7 @@ struct SocialSessionListView: View {
                                 tint: .purple
                             )
                             MetricTile(
-                                title: "Names",
+                                title: "People",
                                 value: "\(totalStudents)",
                                 systemImage: "person.2.fill",
                                 tint: .blue
@@ -187,6 +186,13 @@ private struct SocialSessionRow: View {
         return "\(label) \(courts.joined(separator: ", "))"
     }
 
+    private var costSummary: String {
+        guard session.statusValue == .finished else { return "" }
+        let total = session.shuttlecockCost + session.courtCost
+        let share = splitAmount(for: session)
+        return "Total \(currencyText(total)) · \(currencyText(share)) each"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
@@ -208,18 +214,35 @@ private struct SocialSessionRow: View {
 
                 Spacer()
 
-                Text("\(attendanceCount)")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.purple)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Color.purple.opacity(0.14)))
+                VStack(alignment: .trailing, spacing: 6) {
+                    Text("\(attendanceCount)")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.purple)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(Color.purple.opacity(0.14)))
+
+                    if session.statusValue == .finished {
+                        Text("Finished")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.green)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color.green.opacity(0.14)))
+                    }
+                }
             }
 
             if !courtSummary.isEmpty {
                 Label(courtSummary, systemImage: "rectangle.grid.2x2.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.purple)
+            }
+
+            if !costSummary.isEmpty {
+                Label(costSummary, systemImage: "dollarsign.circle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
             }
 
             if !session.notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -234,6 +257,17 @@ private struct SocialSessionRow: View {
 
     private func timeRangeText(start: Date, end: Date) -> String {
         "\(start.formatted(.dateTime.hour().minute()))-\(end.formatted(.dateTime.hour().minute()))"
+    }
+
+    private func splitAmount(for session: SocialSession) -> Double {
+        let confirmedCount = session.attendances.filter { $0.statusValue == .confirmed }.count
+        let participantCount = confirmedCount > 0 ? confirmedCount : attendanceCount
+        guard participantCount > 0 else { return 0 }
+        return (session.shuttlecockCost + session.courtCost) / Double(participantCount)
+    }
+
+    private func currencyText(_ value: Double) -> String {
+        value.formatted(.currency(code: Locale.current.currency?.identifier ?? "AUD"))
     }
 }
 
@@ -267,6 +301,52 @@ private struct SocialStatusMenu: View {
     }
 }
 
+private struct SocialPaymentMenu: View {
+    let status: SocialPaymentStatus
+    let onChange: (SocialPaymentStatus) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(SocialPaymentStatus.allCases) { option in
+                Button {
+                    onChange(option)
+                } label: {
+                    Label(option.rawValue, systemImage: option.iconName)
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Text(status.rawValue)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.bold))
+            }
+            .foregroundStyle(status.color)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(status.color.opacity(0.14)))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private extension SocialPaymentStatus {
+    var color: Color {
+        switch self {
+        case .unpaid: return .orange
+        case .paid: return .green
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .unpaid: return "exclamationmark.circle.fill"
+        case .paid: return "checkmark.circle.fill"
+        }
+    }
+}
+
 struct SocialSessionEditor: Identifiable {
     let id = UUID()
     let session: SocialSession?
@@ -283,6 +363,7 @@ private struct SocialSessionEditorView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.openURL) private var openURL
     @Query(sort: \Student.name) private var students: [Student]
+    @Query(sort: \Outsider.name) private var outsiders: [Outsider]
     @Query private var existingSessions: [CoachingSession]
 
     let editor: SocialSessionEditor
@@ -292,17 +373,28 @@ private struct SocialSessionEditorView: View {
     @State private var startTime: Date
     @State private var endTime: Date
     @State private var venue: Venue
+    @State private var sessionStatus: SocialSessionStatus
     @State private var notes: String
     @State private var areCourtsBooked: Bool
     @State private var courtNumbers: String
+    @State private var shuttlecockCostText: String
+    @State private var courtCostText: String
     @State private var selectedStatusByStudentID: [PersistentIdentifier: SessionStatus]
+    @State private var selectedStatusByOutsiderID: [PersistentIdentifier: SessionStatus]
+    @State private var paymentStatusByStudentID: [PersistentIdentifier: SocialPaymentStatus]
+    @State private var paymentStatusByOutsiderID: [PersistentIdentifier: SocialPaymentStatus]
     @State private var studentSearch = ""
+    @State private var outsiderSearch = ""
+    @State private var outsiderEditor: OutsiderEditor?
     @State private var contactNotice: SocialContactNotice?
 
     private var isEditing: Bool { editor.session != nil }
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedNotes: String { notes.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedCourtNumbers: String { normalizedCourtNumbers(courtNumbers) }
+    private var shuttlecockCost: Double { Double(shuttlecockCostText) ?? 0 }
+    private var courtCost: Double { Double(courtCostText) ?? 0 }
+    private var totalSocialCost: Double { shuttlecockCost + courtCost }
 
     init(editor: SocialSessionEditor) {
         self.editor = editor
@@ -316,12 +408,18 @@ private struct SocialSessionEditorView: View {
         _startTime = State(initialValue: editor.session?.startTime ?? defaultStart)
         _endTime = State(initialValue: editor.session?.endTime ?? defaultEnd)
         _venue = State(initialValue: editor.session?.venueValue ?? .pbaMalaga)
+        _sessionStatus = State(initialValue: editor.session?.statusValue ?? .planned)
         _notes = State(initialValue: editor.session?.notes ?? "")
         _courtNumbers = State(initialValue: editor.session?.courtNumbers ?? "")
         _areCourtsBooked = State(
             initialValue: editor.session?.areCourtsBooked ?? !(editor.session?.courtNumbersList.isEmpty ?? true)
         )
-        _selectedStatusByStudentID = State(initialValue: Self.initialStatuses(for: editor.session))
+        _shuttlecockCostText = State(initialValue: Self.costText(for: editor.session?.shuttlecockCost ?? 0))
+        _courtCostText = State(initialValue: Self.costText(for: editor.session?.courtCost ?? 0))
+        _selectedStatusByStudentID = State(initialValue: Self.initialStudentStatuses(for: editor.session))
+        _selectedStatusByOutsiderID = State(initialValue: Self.initialOutsiderStatuses(for: editor.session))
+        _paymentStatusByStudentID = State(initialValue: Self.initialStudentPaymentStatuses(for: editor.session))
+        _paymentStatusByOutsiderID = State(initialValue: Self.initialOutsiderPaymentStatuses(for: editor.session))
     }
 
     private var selectedStudents: [Student] {
@@ -335,6 +433,31 @@ private struct SocialSessionEditorView: View {
         return students
             .filter { selectedStatusByStudentID[$0.persistentModelID] == nil }
             .filter { trimmed.isEmpty || $0.name.localizedCaseInsensitiveContains(trimmed) }
+    }
+
+    private var selectedOutsiders: [Outsider] {
+        outsiders
+            .filter { selectedStatusByOutsiderID[$0.persistentModelID] != nil }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var availableOutsiders: [Outsider] {
+        let trimmed = outsiderSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return outsiders
+            .filter { selectedStatusByOutsiderID[$0.persistentModelID] == nil }
+            .filter { trimmed.isEmpty || $0.name.localizedCaseInsensitiveContains(trimmed) }
+    }
+
+    private var participantCountForSplit: Int {
+        let confirmedStudents = selectedStudents.filter { status(for: $0) == .confirmed }.count
+        let confirmedOutsiders = selectedOutsiders.filter { status(for: $0) == .confirmed }.count
+        let confirmedCount = confirmedStudents + confirmedOutsiders
+        return confirmedCount > 0 ? confirmedCount : selectedStudents.count + selectedOutsiders.count
+    }
+
+    private var costPerPerson: Double {
+        guard participantCountForSplit > 0 else { return 0 }
+        return totalSocialCost / Double(participantCountForSplit)
     }
 
     private var isTimeValid: Bool {
@@ -355,7 +478,9 @@ private struct SocialSessionEditorView: View {
     private var canSave: Bool {
         trimmedTitle.isEmpty == false &&
             isTimeValid &&
-            overlappingSession == nil
+            overlappingSession == nil &&
+            shuttlecockCost >= 0 &&
+            courtCost >= 0
     }
 
     var body: some View {
@@ -373,6 +498,12 @@ private struct SocialSessionEditorView: View {
                     Picker("Venue", selection: $venue) {
                         ForEach(Venue.allCases) { venue in
                             Text(venue.rawValue).tag(venue)
+                        }
+                    }
+
+                    Picker("Status", selection: $sessionStatus) {
+                        ForEach(SocialSessionStatus.allCases) { status in
+                            Text(status.rawValue).tag(status)
                         }
                     }
 
@@ -395,6 +526,42 @@ private struct SocialSessionEditorView: View {
                     } else if let overlap = overlappingSession {
                         Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(start: overlap.startTime, end: overlap.endTime)) at \(overlap.venue).")
                             .foregroundStyle(.red)
+                    } else if shuttlecockCost < 0 || courtCost < 0 {
+                        Text("Costs cannot be negative.")
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                if sessionStatus == .finished {
+                    Section {
+                        HStack {
+                            Text("Shuttlecocks")
+                            Spacer()
+                            TextField("0.00", text: $shuttlecockCostText)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 110)
+                        }
+
+                        HStack {
+                            Text("Courts")
+                            Spacer()
+                            TextField("0.00", text: $courtCostText)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 110)
+                        }
+
+                        HStack {
+                            Text("Split")
+                            Spacer()
+                            Text("\(currencyText(costPerPerson)) each")
+                                .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text("Finished Costs")
+                    } footer: {
+                        Text("Split uses confirmed attendees. If no one is confirmed yet, it uses everyone in the name list.")
                     }
                 }
 
@@ -403,8 +570,8 @@ private struct SocialSessionEditorView: View {
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
 
-                    if selectedStudents.isEmpty {
-                        Text("No students selected")
+                    if selectedStudents.isEmpty && selectedOutsiders.isEmpty {
+                        Text("No people selected")
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(selectedStudents) { student in
@@ -427,6 +594,15 @@ private struct SocialSessionEditorView: View {
                                         selectedStatusByStudentID[student.persistentModelID] = newStatus
                                     }
                                 )
+
+                                if sessionStatus == .finished {
+                                    SocialPaymentMenu(
+                                        status: paymentStatus(for: student),
+                                        onChange: { newStatus in
+                                            paymentStatusByStudentID[student.persistentModelID] = newStatus
+                                        }
+                                    )
+                                }
                             }
                             .padding(.vertical, 4)
                             .swipeActions(edge: .leading, allowsFullSwipe: false) {
@@ -440,6 +616,63 @@ private struct SocialSessionEditorView: View {
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
                                     selectedStatusByStudentID.removeValue(forKey: student.persistentModelID)
+                                    paymentStatusByStudentID.removeValue(forKey: student.persistentModelID)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+
+                    if !selectedOutsiders.isEmpty {
+                        ForEach(selectedOutsiders) { outsider in
+                            HStack(spacing: 12) {
+                                Image(systemName: status(for: outsider).iconName)
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(status(for: outsider).color)
+                                    .frame(width: 24, height: 24)
+                                    .background(Circle().fill(status(for: outsider).color.opacity(0.14)))
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(outsider.name)
+                                        .font(.body)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(2)
+                                    Text("Outsider")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                                SocialStatusMenu(
+                                    status: status(for: outsider),
+                                    onChange: { newStatus in
+                                        selectedStatusByOutsiderID[outsider.persistentModelID] = newStatus
+                                    }
+                                )
+
+                                if sessionStatus == .finished {
+                                    SocialPaymentMenu(
+                                        status: paymentStatus(for: outsider),
+                                        onChange: { newStatus in
+                                            paymentStatusByOutsiderID[outsider.persistentModelID] = newStatus
+                                        }
+                                    )
+                                }
+                            }
+                            .padding(.vertical, 4)
+                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                Button {
+                                    ask(outsider)
+                                } label: {
+                                    Label("Ask", systemImage: "paperplane.fill")
+                                }
+                                .tint(.blue)
+                            }
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    selectedStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
+                                    paymentStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
@@ -449,7 +682,7 @@ private struct SocialSessionEditorView: View {
                 } header: {
                     Text("Name List")
                 } footer: {
-                    if !selectedStudents.isEmpty {
+                    if !selectedStudents.isEmpty || !selectedOutsiders.isEmpty {
                         Text("Swipe right to ask, or swipe left to remove.")
                     }
                 }
@@ -462,6 +695,7 @@ private struct SocialSessionEditorView: View {
                         ForEach(availableStudents) { student in
                             Button {
                                 selectedStatusByStudentID[student.persistentModelID] = .unscheduled
+                                paymentStatusByStudentID[student.persistentModelID] = .unpaid
                                 studentSearch = ""
                             } label: {
                                 HStack {
@@ -474,6 +708,58 @@ private struct SocialSessionEditorView: View {
                             }
                         }
                     }
+                }
+
+                Section {
+                    HStack {
+                        TextField("Search outsiders", text: $outsiderSearch)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+
+                        Button {
+                            outsiderEditor = OutsiderEditor()
+                        } label: {
+                            Label("New", systemImage: "plus.circle.fill")
+                                .labelStyle(.iconOnly)
+                        }
+                    }
+
+                    if availableOutsiders.isEmpty {
+                        Text(outsiders.isEmpty ? "Create an outsider to add non-students." : "No matching outsiders.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(availableOutsiders) { outsider in
+                            Button {
+                                selectedStatusByOutsiderID[outsider.persistentModelID] = .unscheduled
+                                paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
+                                outsiderSearch = ""
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(outsider.name)
+                                            .foregroundStyle(.primary)
+                                        Text(outsider.displayContactDetail)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "plus.circle.fill")
+                                        .foregroundStyle(.tint)
+                                }
+                            }
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    deleteOutsider(outsider)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Add Outsiders")
+                } footer: {
+                    Text("Outsiders are non-students you can reuse for future socials.")
                 }
 
                 Section("Notes") {
@@ -512,12 +798,16 @@ private struct SocialSessionEditorView: View {
                     dismissButton: .default(Text("OK"))
                 )
             }
+            .sheet(item: $outsiderEditor) { editor in
+                OutsiderEditorView(editor: editor)
+            }
         }
     }
 
     private func save() {
         let selected = students.filter { selectedStatusByStudentID[$0.persistentModelID] != nil }
-        let attendances = attendanceModels(for: selected)
+        let selectedOutsiders = outsiders.filter { selectedStatusByOutsiderID[$0.persistentModelID] != nil }
+        let attendances = attendanceModels(for: selected, outsiders: selectedOutsiders)
 
         if let session = editor.session {
             for attendance in session.attendances {
@@ -531,8 +821,11 @@ private struct SocialSessionEditorView: View {
             session.endTime = endTime
             session.venue = venue.rawValue
             session.notes = trimmedNotes
+            session.status = sessionStatus.rawValue
             session.areCourtsBooked = areCourtsBooked
             session.courtNumbers = areCourtsBooked ? trimmedCourtNumbers : ""
+            session.shuttlecockCost = sessionStatus == .finished ? shuttlecockCost : 0
+            session.courtCost = sessionStatus == .finished ? courtCost : 0
             session.students = selected
             session.attendances = attendances
         } else {
@@ -544,8 +837,11 @@ private struct SocialSessionEditorView: View {
                 endTime: endTime,
                 venue: venue,
                 notes: trimmedNotes,
+                status: sessionStatus,
                 areCourtsBooked: areCourtsBooked,
                 courtNumbers: areCourtsBooked ? trimmedCourtNumbers : "",
+                shuttlecockCost: sessionStatus == .finished ? shuttlecockCost : 0,
+                courtCost: sessionStatus == .finished ? courtCost : 0,
                 students: selected,
                 attendances: attendances
             )
@@ -560,6 +856,12 @@ private struct SocialSessionEditorView: View {
             modelContext.delete(session)
         }
         dismiss()
+    }
+
+    private func deleteOutsider(_ outsider: Outsider) {
+        selectedStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
+        paymentStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
+        modelContext.delete(outsider)
     }
 
     private func minutesOfDay(_ date: Date) -> Int {
@@ -602,8 +904,35 @@ private struct SocialSessionEditorView: View {
         openURL(url)
     }
 
+    private func ask(_ outsider: Outsider) {
+        let message = socialAskMessage(for: outsider)
+        let preference = outsider.contactPreferenceValue
+
+        if requiresClipboardMessage(preference) {
+            UIPasteboard.general.string = message
+            contactNotice = SocialContactNotice(
+                title: "Message Copied",
+                message: "Paste the copied socials invite into \(preference.rawValue)."
+            )
+        }
+
+        guard let url = contactURL(for: outsider, message: message) else {
+            contactNotice = SocialContactNotice(
+                title: "Contact Unavailable",
+                message: "The contact detail for \(outsider.name) does not look usable."
+            )
+            return
+        }
+
+        openURL(url)
+    }
+
     private func socialAskMessage(for student: Student) -> String {
         "Hey \(firstName(for: student)), wanna come play \(dayOfWeek.name) \(compactTimeRangeText(start: startTime, end: endTime)) at \(venue.rawValue)?"
+    }
+
+    private func socialAskMessage(for outsider: Outsider) -> String {
+        "Hey \(firstName(for: outsider)), wanna come play \(dayOfWeek.name) \(compactTimeRangeText(start: startTime, end: endTime)) at \(venue.rawValue)?"
     }
 
     private func firstName(for student: Student) -> String {
@@ -611,6 +940,13 @@ private struct SocialSessionEditorView: View {
             .split(whereSeparator: \.isWhitespace)
             .first
             .map(String.init) ?? student.name
+    }
+
+    private func firstName(for outsider: Outsider) -> String {
+        outsider.name
+            .split(whereSeparator: \.isWhitespace)
+            .first
+            .map(String.init) ?? outsider.name
     }
 
     private func compactTimeRangeText(start: Date, end: Date) -> String {
@@ -639,10 +975,26 @@ private struct SocialSessionEditorView: View {
     }
 
     private func contactURL(for student: Student, message: String) -> URL? {
-        let detail = student.contactDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+        contactURL(
+            preference: student.contactPreferenceValue,
+            detail: student.contactDetail,
+            message: message
+        )
+    }
+
+    private func contactURL(for outsider: Outsider, message: String) -> URL? {
+        contactURL(
+            preference: outsider.contactPreferenceValue,
+            detail: outsider.contactDetail,
+            message: message
+        )
+    }
+
+    private func contactURL(preference: ContactPreference, detail rawDetail: String, message: String) -> URL? {
+        let detail = rawDetail.trimmingCharacters(in: .whitespacesAndNewlines)
         let encodedMessage = percentEncodedMessage(message)
 
-        switch student.contactPreferenceValue {
+        switch preference {
         case .instagram:
             let handle = detail
                 .trimmingCharacters(in: CharacterSet(charactersIn: "@"))
@@ -696,18 +1048,44 @@ private struct SocialSessionEditorView: View {
         selectedStatusByStudentID[student.persistentModelID] ?? .unscheduled
     }
 
-    private func attendanceModels(for selectedStudents: [Student]) -> [SocialAttendance] {
-        selectedStudents.map { student in
+    private func status(for outsider: Outsider) -> SessionStatus {
+        selectedStatusByOutsiderID[outsider.persistentModelID] ?? .unscheduled
+    }
+
+    private func paymentStatus(for student: Student) -> SocialPaymentStatus {
+        paymentStatusByStudentID[student.persistentModelID] ?? .unpaid
+    }
+
+    private func paymentStatus(for outsider: Outsider) -> SocialPaymentStatus {
+        paymentStatusByOutsiderID[outsider.persistentModelID] ?? .unpaid
+    }
+
+    private func attendanceModels(for selectedStudents: [Student], outsiders selectedOutsiders: [Outsider]) -> [SocialAttendance] {
+        let studentAttendances = selectedStudents.map { student in
             let attendance = SocialAttendance(
                 student: student,
-                status: selectedStatusByStudentID[student.persistentModelID] ?? .unscheduled
+                status: selectedStatusByStudentID[student.persistentModelID] ?? .unscheduled,
+                paymentStatus: paymentStatusByStudentID[student.persistentModelID] ?? .unpaid
             )
             modelContext.insert(attendance)
             return attendance
         }
+
+        let outsiderAttendances = selectedOutsiders.map { outsider in
+            let attendance = SocialAttendance(
+                student: nil,
+                outsider: outsider,
+                status: selectedStatusByOutsiderID[outsider.persistentModelID] ?? .unscheduled,
+                paymentStatus: paymentStatusByOutsiderID[outsider.persistentModelID] ?? .unpaid
+            )
+            modelContext.insert(attendance)
+            return attendance
+        }
+
+        return studentAttendances + outsiderAttendances
     }
 
-    private static func initialStatuses(for session: SocialSession?) -> [PersistentIdentifier: SessionStatus] {
+    private static func initialStudentStatuses(for session: SocialSession?) -> [PersistentIdentifier: SessionStatus] {
         guard let session else { return [:] }
 
         var attendanceStatuses: [PersistentIdentifier: SessionStatus] = [:]
@@ -726,6 +1104,47 @@ private struct SocialSessionEditorView: View {
         }
         return legacyStatuses
     }
+
+    private static func initialOutsiderStatuses(for session: SocialSession?) -> [PersistentIdentifier: SessionStatus] {
+        guard let session else { return [:] }
+
+        var attendanceStatuses: [PersistentIdentifier: SessionStatus] = [:]
+        for attendance in session.attendances {
+            guard let outsider = attendance.outsider else { continue }
+            attendanceStatuses[outsider.persistentModelID] = attendance.statusValue
+        }
+        return attendanceStatuses
+    }
+
+    private static func initialStudentPaymentStatuses(for session: SocialSession?) -> [PersistentIdentifier: SocialPaymentStatus] {
+        guard let session else { return [:] }
+
+        var paymentStatuses: [PersistentIdentifier: SocialPaymentStatus] = [:]
+        for attendance in session.attendances {
+            guard let student = attendance.student else { continue }
+            paymentStatuses[student.persistentModelID] = attendance.paymentStatusValue
+        }
+        return paymentStatuses
+    }
+
+    private static func initialOutsiderPaymentStatuses(for session: SocialSession?) -> [PersistentIdentifier: SocialPaymentStatus] {
+        guard let session else { return [:] }
+
+        var paymentStatuses: [PersistentIdentifier: SocialPaymentStatus] = [:]
+        for attendance in session.attendances {
+            guard let outsider = attendance.outsider else { continue }
+            paymentStatuses[outsider.persistentModelID] = attendance.paymentStatusValue
+        }
+        return paymentStatuses
+    }
+
+    private static func costText(for value: Double) -> String {
+        value == 0 ? "" : String(format: "%.2f", value)
+    }
+
+    private func currencyText(_ value: Double) -> String {
+        value.formatted(.currency(code: Locale.current.currency?.identifier ?? "AUD"))
+    }
 }
 
 private struct SocialContactNotice: Identifiable {
@@ -734,7 +1153,164 @@ private struct SocialContactNotice: Identifiable {
     let message: String
 }
 
+private struct OutsiderEditor: Identifiable {
+    let id = UUID()
+    let outsider: Outsider?
+
+    init(outsider: Outsider? = nil) {
+        self.outsider = outsider
+    }
+}
+
+private struct OutsiderEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    let editor: OutsiderEditor
+
+    @State private var name: String
+    @State private var gender: String
+    @State private var contactPreference: ContactPreference
+    @State private var contactDetail: String
+    @State private var sessionsDemand: Int
+
+    private let genderOptions = ["Male", "Female"]
+
+    init(editor: OutsiderEditor) {
+        self.editor = editor
+        _name = State(initialValue: editor.outsider?.name ?? "")
+        _gender = State(initialValue: editor.outsider?.gender ?? "")
+        _contactPreference = State(initialValue: editor.outsider?.contactPreferenceValue ?? .instagram)
+        _contactDetail = State(initialValue: editor.outsider?.contactDetail ?? "")
+        _sessionsDemand = State(initialValue: editor.outsider?.sessionsDemand ?? 0)
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var trimmedContactDetail: String {
+        contactDetail.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isContactValid: Bool {
+        switch contactPreference {
+        case .instagram:
+            return !trimmedContactDetail.trimmingCharacters(in: CharacterSet(charactersIn: "@")).isEmpty
+        case .whatsApp, .sms:
+            return !trimmedContactDetail.filter(\.isNumber).isEmpty
+        case .fbMessenger:
+            return !trimmedContactDetail.isEmpty
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Outsider Details") {
+                    TextField("Name", text: $name)
+                        .textContentType(.name)
+                        .textInputAutocapitalization(.words)
+
+                    Picker("Gender", selection: $gender) {
+                        ForEach(genderOptions, id: \.self) { option in
+                            Text(option).tag(option)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Stepper(value: $sessionsDemand, in: 0...7) {
+                        HStack {
+                            Text("Sessions per week")
+                            Spacer()
+                            Text("\(sessionsDemand)")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section {
+                    Picker("Preferred Contact", selection: $contactPreference) {
+                        ForEach(ContactPreference.allCases) { preference in
+                            Label(preference.rawValue, systemImage: preference.iconName)
+                                .tag(preference)
+                        }
+                    }
+
+                    TextField(contactPreference.placeholder, text: $contactDetail)
+                        .textInputAutocapitalization(contactPreference == .whatsApp || contactPreference == .sms ? .sentences : .never)
+                        .autocorrectionDisabled()
+                        .keyboardType(contactPreference == .whatsApp || contactPreference == .sms ? .phonePad : .default)
+                } header: {
+                    Text("Contact")
+                } footer: {
+                    if !isContactValid {
+                        Text("\(contactPreference.detailLabel) is required for \(contactPreference.rawValue).")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle(editor.outsider == nil ? "New Outsider" : "Edit Outsider")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        save()
+                    }
+                    .disabled(trimmedName.isEmpty || gender.isEmpty || !isContactValid)
+                }
+            }
+        }
+    }
+
+    private func save() {
+        let savedContactDetail = formattedContactDetail()
+
+        if let outsider = editor.outsider {
+            outsider.name = trimmedName
+            outsider.gender = gender
+            outsider.contactPreference = contactPreference.rawValue
+            outsider.contactDetail = savedContactDetail
+            outsider.sessionsDemand = sessionsDemand
+        } else {
+            let outsider = Outsider(
+                name: trimmedName,
+                gender: gender,
+                contactPreference: contactPreference,
+                contactDetail: savedContactDetail,
+                sessionsDemand: sessionsDemand
+            )
+            modelContext.insert(outsider)
+        }
+
+        dismiss()
+    }
+
+    private func formattedContactDetail() -> String {
+        switch contactPreference {
+        case .instagram:
+            let handle = trimmedContactDetail.trimmingCharacters(in: CharacterSet(charactersIn: "@"))
+            return handle.isEmpty ? "" : "@\(handle)"
+        case .whatsApp, .sms:
+            let digits = trimmedContactDetail.filter(\.isNumber)
+            if digits.hasPrefix("61") || digits.isEmpty {
+                return digits.isEmpty ? "" : "+\(digits)"
+            }
+            let localDigits = digits.hasPrefix("0") ? String(digits.dropFirst()) : digits
+            return "+61\(localDigits)"
+        case .fbMessenger:
+            return trimmedContactDetail
+        }
+    }
+}
+
 #Preview {
     SocialSessionListView()
-        .modelContainer(for: [Student.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialAttendance.self], inMemory: true)
+        .modelContainer(for: [Student.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialAttendance.self], inMemory: true)
 }

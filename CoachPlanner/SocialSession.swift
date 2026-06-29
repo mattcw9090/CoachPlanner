@@ -1,6 +1,20 @@
 import Foundation
 import SwiftData
 
+enum SocialSessionStatus: String, CaseIterable, Identifiable {
+    case planned = "Planned"
+    case finished = "Finished"
+
+    var id: String { rawValue }
+}
+
+enum SocialPaymentStatus: String, CaseIterable, Identifiable {
+    case unpaid = "Unpaid"
+    case paid = "Paid"
+
+    var id: String { rawValue }
+}
+
 @Model
 final class SocialSession {
     var title: String
@@ -10,8 +24,11 @@ final class SocialSession {
     var endTime: Date
     var venue: String
     var notes: String
+    var status: String = SocialSessionStatus.planned.rawValue
     var areCourtsBooked: Bool = false
     var courtNumbers: String = ""
+    var shuttlecockCost: Double = 0
+    var courtCost: Double = 0
     var createdAt: Date
 
     @Relationship(deleteRule: .nullify)
@@ -28,8 +45,11 @@ final class SocialSession {
         endTime: Date,
         venue: Venue,
         notes: String = "",
+        status: SocialSessionStatus = .planned,
         areCourtsBooked: Bool = false,
         courtNumbers: String = "",
+        shuttlecockCost: Double = 0,
+        courtCost: Double = 0,
         students: [Student] = [],
         attendances: [SocialAttendance] = [],
         createdAt: Date = .now
@@ -41,8 +61,11 @@ final class SocialSession {
         self.endTime = endTime
         self.venue = venue.rawValue
         self.notes = notes
+        self.status = status.rawValue
         self.areCourtsBooked = areCourtsBooked
         self.courtNumbers = courtNumbers
+        self.shuttlecockCost = shuttlecockCost
+        self.courtCost = courtCost
         self.students = students
         self.attendances = attendances
         self.createdAt = createdAt
@@ -56,6 +79,10 @@ final class SocialSession {
         Venue(rawValue: venue) ?? .pbaMalaga
     }
 
+    var statusValue: SocialSessionStatus {
+        SocialSessionStatus(rawValue: status) ?? .planned
+    }
+
     var courtNumbersList: [String] {
         courtNumbers
             .split(separator: ",")
@@ -67,22 +94,34 @@ final class SocialSession {
 @Model
 final class SocialAttendance {
     var status: String
+    var paymentStatus: String = SocialPaymentStatus.unpaid.rawValue
     var createdAt: Date
 
     @Relationship(deleteRule: .nullify)
     var student: Student?
 
+    @Relationship(deleteRule: .nullify)
+    var outsider: Outsider?
+
     init(
         student: Student?,
+        outsider: Outsider? = nil,
         status: SessionStatus = .unscheduled,
+        paymentStatus: SocialPaymentStatus = .unpaid,
         createdAt: Date = .now
     ) {
         self.student = student
+        self.outsider = outsider
         self.status = status.rawValue
+        self.paymentStatus = paymentStatus.rawValue
         self.createdAt = createdAt
     }
 
     var statusValue: SessionStatus {
         SessionStatus(rawValue: status) ?? .unscheduled
+    }
+
+    var paymentStatusValue: SocialPaymentStatus {
+        SocialPaymentStatus(rawValue: paymentStatus) ?? .unpaid
     }
 }

@@ -86,7 +86,7 @@ final class Student {
         }
     }
 
-    private static func displayAustralianPhoneNumber(_ value: String) -> String {
+    static func displayAustralianPhoneNumber(_ value: String) -> String {
         let digits = value.filter(\.isNumber)
 
         let localDigits: String
@@ -112,5 +112,44 @@ final class Student {
         }
 
         return "+61 " + groups.joined(separator: " ")
+    }
+}
+
+@Model
+final class Outsider {
+    var name: String
+    var gender: String
+    var contactPreference: String
+    var contactDetail: String
+    var sessionsDemand: Int
+    var createdAt: Date
+
+    init(
+        name: String,
+        gender: String,
+        contactPreference: ContactPreference,
+        contactDetail: String,
+        sessionsDemand: Int = 0,
+        createdAt: Date = .now
+    ) {
+        self.name = name
+        self.gender = gender
+        self.contactPreference = contactPreference.rawValue
+        self.contactDetail = contactDetail
+        self.sessionsDemand = sessionsDemand
+        self.createdAt = createdAt
+    }
+
+    var contactPreferenceValue: ContactPreference {
+        ContactPreference(rawValue: contactPreference) ?? .instagram
+    }
+
+    var displayContactDetail: String {
+        switch contactPreferenceValue {
+        case .whatsApp, .sms:
+            return Student.displayAustralianPhoneNumber(contactDetail)
+        case .instagram, .fbMessenger:
+            return contactDetail
+        }
     }
 }

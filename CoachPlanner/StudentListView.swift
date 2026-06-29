@@ -338,5 +338,5 @@ private struct FilterChip: View {
 
 #Preview {
     StudentListView()
-        .modelContainer(for: [Student.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialAttendance.self], inMemory: true)
+        .modelContainer(for: [Student.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialAttendance.self], inMemory: true)
 }
