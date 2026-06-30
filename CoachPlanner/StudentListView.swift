@@ -15,6 +15,13 @@ private enum AllocationFilter: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private enum VisibilityFilter: String, CaseIterable, Identifiable {
+    case active = "Active"
+    case hidden = "Hidden"
+
+    var id: String { rawValue }
+}
+
 struct StudentListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Student.name) private var students: [Student]
@@ -23,6 +30,7 @@ struct StudentListView: View {
     @State private var editor: StudentEditor?
     @State private var genderFilter: GenderFilter?
     @State private var allocationFilter: AllocationFilter?
+    @State private var visibilityFilter: VisibilityFilter = .active
 
     private var studentSummary: StudentSummary {
         var counts: [PersistentIdentifier: Int] = [:]
@@ -36,25 +44,36 @@ struct StudentListView: View {
         var femaleCount = 0
         var underallocatedCount = 0
         var overallocatedCount = 0
+        var activeCount = 0
+        var hiddenCount = 0
         var weeklyDemand = 0
+        var allocatedSessions = 0
 
         let filteredStudents = students.filter { student in
             let sessionCount = counts[student.persistentModelID] ?? 0
             let isUnderallocated = sessionCount < student.sessionsDemand
             let isOverallocated = sessionCount > student.sessionsDemand
+            let isHidden = student.isHidden
 
             if student.gender == "Male" {
                 maleCount += 1
             } else if student.gender == "Female" {
                 femaleCount += 1
             }
-            if isUnderallocated {
-                underallocatedCount += 1
+
+            if isHidden {
+                hiddenCount += 1
+            } else {
+                activeCount += 1
+                if isUnderallocated {
+                    underallocatedCount += 1
+                }
+                if isOverallocated {
+                    overallocatedCount += 1
+                }
+                weeklyDemand += student.sessionsDemand
+                allocatedSessions += sessionCount
             }
-            if isOverallocated {
-                overallocatedCount += 1
-            }
-            weeklyDemand += student.sessionsDemand
 
             let matchesGender: Bool
             switch genderFilter {
@@ -67,16 +86,28 @@ struct StudentListView: View {
             }
 
             let matchesAllocation: Bool
-            switch allocationFilter {
-            case .underallocated:
-                matchesAllocation = isUnderallocated
-            case .overallocated:
-                matchesAllocation = isOverallocated
-            case nil:
-                matchesAllocation = true
+            if isHidden {
+                matchesAllocation = allocationFilter == nil
+            } else {
+                switch allocationFilter {
+                case .underallocated:
+                    matchesAllocation = isUnderallocated
+                case .overallocated:
+                    matchesAllocation = isOverallocated
+                case nil:
+                    matchesAllocation = true
+                }
             }
 
-            return matchesGender && matchesAllocation
+            let matchesVisibility: Bool
+            switch visibilityFilter {
+            case .active:
+                matchesVisibility = !isHidden
+            case .hidden:
+                matchesVisibility = isHidden
+            }
+
+            return matchesGender && matchesAllocation && matchesVisibility
         }
 
         return StudentSummary(
@@ -86,8 +117,10 @@ struct StudentListView: View {
             femaleCount: femaleCount,
             underallocatedCount: underallocatedCount,
             overallocatedCount: overallocatedCount,
+            activeCount: activeCount,
+            hiddenCount: hiddenCount,
             weeklyDemand: weeklyDemand,
-            allocatedSessions: counts.values.reduce(0, +)
+            allocatedSessions: allocatedSessions
         )
     }
 
@@ -112,8 +145,8 @@ struct StudentListView: View {
                         Section {
                             HStack(spacing: 8) {
                                 MetricTile(
-                                    title: "Students",
-                                    value: "\(students.count)",
+                                    title: "Active",
+                                    value: "\(summary.activeCount)",
                                     systemImage: "person.3.fill",
                                     tint: .blue
                                 )
@@ -124,10 +157,10 @@ struct StudentListView: View {
                                     tint: summary.underallocatedCount == 0 ? .green : .red
                                 )
                                 MetricTile(
-                                    title: "Booked",
-                                    value: "\(summary.allocatedSessions)/\(summary.weeklyDemand)",
-                                    systemImage: "calendar.badge.clock",
-                                    tint: .accentColor
+                                    title: "Hidden",
+                                    value: "\(summary.hiddenCount)",
+                                    systemImage: "eye.slash.fill",
+                                    tint: .secondary
                                 )
                             }
                         }
@@ -136,6 +169,21 @@ struct StudentListView: View {
 
                         Section {
                             VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 8) {
+                                    ForEach(VisibilityFilter.allCases) { option in
+                                        FilterChip(
+                                            title: option.rawValue,
+                                            count: summary.count(for: option),
+                                            isSelected: visibilityFilter == option
+                                        ) {
+                                            visibilityFilter = option
+                                            if option == .hidden {
+                                                allocationFilter = nil
+                                            }
+                                        }
+                                    }
+                                }
+
                                 HStack(spacing: 8) {
                                     ForEach(GenderFilter.allCases) { option in
                                         FilterChip(
@@ -169,13 +217,24 @@ struct StudentListView: View {
                                 Button {
                                     editor = StudentEditor(student: student)
                                 } label: {
-                                    StudentRow(
-                                        student: student,
-                                        sessionCount: summary.sessionCount(for: student),
-                                        demand: student.sessionsDemand
-                                    )
+                                        StudentRow(
+                                            student: student,
+                                            sessionCount: summary.sessionCount(for: student),
+                                            demand: student.sessionsDemand
+                                        )
                                 }
                                 .buttonStyle(.plain)
+                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                    Button {
+                                        student.isHidden.toggle()
+                                        if student.isHidden {
+                                            allocationFilter = nil
+                                        }
+                                    } label: {
+                                        Label(student.isHidden ? "Unhide" : "Hide", systemImage: student.isHidden ? "eye.fill" : "eye.slash.fill")
+                                    }
+                                    .tint(student.isHidden ? .blue : .gray)
+                                }
                             }
                             .onDelete { offsets in
                                 deleteStudents(at: offsets, from: summary.filteredStudents)
@@ -217,6 +276,8 @@ private struct StudentSummary {
     let femaleCount: Int
     let underallocatedCount: Int
     let overallocatedCount: Int
+    let activeCount: Int
+    let hiddenCount: Int
     let weeklyDemand: Int
     let allocatedSessions: Int
 
@@ -235,6 +296,13 @@ private struct StudentSummary {
         switch filter {
         case .underallocated: return underallocatedCount
         case .overallocated: return overallocatedCount
+        }
+    }
+
+    func count(for filter: VisibilityFilter) -> Int {
+        switch filter {
+        case .active: return activeCount
+        case .hidden: return hiddenCount
         }
     }
 }
@@ -261,9 +329,20 @@ private struct StudentRow: View {
                 .background(Circle().fill(iconColor.opacity(0.12)))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(student.name)
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.primary)
+                HStack(spacing: 6) {
+                    Text(student.name)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(student.isHidden ? .secondary : .primary)
+
+                    if student.isHidden {
+                        Text("Hidden")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                    }
+                }
 
                 HStack(spacing: 5) {
                     Image(systemName: student.contactPreferenceValue.iconName)

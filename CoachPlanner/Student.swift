@@ -52,6 +52,7 @@ final class Student {
     var contactPreference: String
     var contactDetail: String
     var sessionsDemand: Int
+    var isHidden: Bool = false
     var createdAt: Date
 
     @Relationship(inverse: \CoachingSession.students)

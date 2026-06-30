@@ -34,6 +34,7 @@ struct SessionListView: View {
     @State private var fileExport: FileExportItem?
     @State private var financeSendNotice: FinanceSendNotice?
     @State private var selectedCourtBooking: CourtBooking?
+    @State private var isResetConfirmationPresented = false
 
     private let dayStartHour = 6
     private let dayEndHour = 23
@@ -203,6 +204,28 @@ struct SessionListView: View {
                     .disabled(sessions.isEmpty)
                 }
 
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(role: .destructive) {
+                        isResetConfirmationPresented = true
+                    } label: {
+                        Label("Reset Sessions", systemImage: "arrow.counterclockwise")
+                    }
+                    .disabled(sessions.isEmpty)
+                }
+
+            }
+            .confirmationDialog(
+                "Reset all sessions?",
+                isPresented: $isResetConfirmationPresented,
+                titleVisibility: .visible
+            ) {
+                Button("Reset Sessions", role: .destructive) {
+                    resetSessions()
+                }
+
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This keeps every session and its students, but changes statuses to Unscheduled and clears booked court numbers.")
             }
             .sheet(item: $editor) { editor in
                 SessionEditorView(editor: editor)
@@ -700,6 +723,13 @@ struct SessionListView: View {
                 title: "Couldn't Send",
                 message: reason
             )
+        }
+    }
+
+    private func resetSessions() {
+        for session in sessions {
+            session.status = SessionStatus.unscheduled.rawValue
+            session.courtNumber = ""
         }
     }
 
