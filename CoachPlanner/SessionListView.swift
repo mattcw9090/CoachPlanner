@@ -481,6 +481,7 @@ struct SessionListView: View {
                 SessionBlock(
                     session: session,
                     isSwapModeEnabled: isSwapModeEnabled,
+                    isSwapEligible: canSwap(session),
                     isSwapSelected: selectedSwapSession?.persistentModelID == session.persistentModelID
                 )
                     .frame(height: blockHeight(for: session))
@@ -559,6 +560,14 @@ struct SessionListView: View {
             return
         }
 
+        guard canSwap(session) else {
+            swapNotice = SessionSwapNotice(
+                title: "Can't Swap Session",
+                message: "Only Unscheduled or Pending sessions can be swapped."
+            )
+            return
+        }
+
         if selectedSwapSession?.persistentModelID == session.persistentModelID {
             selectedSwapSession = nil
             return
@@ -578,6 +587,15 @@ struct SessionListView: View {
     }
 
     private func swapSessions(_ firstSession: CoachingSession, _ secondSession: CoachingSession) {
+        guard canSwap(firstSession), canSwap(secondSession) else {
+            swapNotice = SessionSwapNotice(
+                title: "Can't Swap Sessions",
+                message: "Only Unscheduled or Pending sessions can be swapped."
+            )
+            selectedSwapSession = nil
+            return
+        }
+
         let firstDuration = durationMinutes(for: firstSession)
         let secondDuration = durationMinutes(for: secondSession)
 
@@ -601,6 +619,10 @@ struct SessionListView: View {
 
         selectedSwapSession = nil
         isSwapModeEnabled = false
+    }
+
+    private func canSwap(_ session: CoachingSession) -> Bool {
+        session.statusValue == .unscheduled || session.statusValue == .pending
     }
 
     private func openCourtBookingEditor(with selection: DraftSessionSelection) {
@@ -1364,6 +1386,7 @@ private struct DraftTypeButton: View {
 private struct SessionBlock: View {
     let session: CoachingSession
     var isSwapModeEnabled = false
+    var isSwapEligible = true
     var isSwapSelected = false
 
     private var color: Color {
@@ -1415,10 +1438,15 @@ private struct SessionBlock: View {
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.orange)
                     .lineLimit(1)
-            } else if isSwapModeEnabled {
+            } else if isSwapModeEnabled && isSwapEligible {
                 Text("Tap to swap")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.orange.opacity(0.9))
+                    .lineLimit(1)
+            } else if isSwapModeEnabled {
+                Text("Locked")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
@@ -1461,6 +1489,7 @@ private struct SessionBlock: View {
         )
         .shadow(color: isSwapSelected ? Color.orange.opacity(0.28) : (isCourtBooked ? .clear : color.opacity(0.14)), radius: 5, x: 0, y: 2)
         .clipShape(RoundedRectangle(cornerRadius: 6))
+        .opacity(isSwapModeEnabled && !isSwapEligible ? 0.48 : 1)
     }
 }
 
