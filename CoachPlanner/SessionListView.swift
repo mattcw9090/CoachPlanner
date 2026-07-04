@@ -243,24 +243,24 @@ struct SessionListView: View {
                     Button(role: .destructive) {
                         isResetConfirmationPresented = true
                     } label: {
-                        Label("Reset Sessions", systemImage: "arrow.counterclockwise")
+                        Label("Move to Next Week", systemImage: "arrow.forward")
                     }
                     .disabled(sessionsForWeek.isEmpty)
                 }
 
             }
             .confirmationDialog(
-                "Reset all sessions?",
+                "Move this week's sessions to next week?",
                 isPresented: $isResetConfirmationPresented,
                 titleVisibility: .visible
             ) {
-                Button("Reset Sessions", role: .destructive) {
-                    resetSessions()
+                Button("Move Sessions", role: .destructive) {
+                    moveSessionsToNextWeek()
                 }
 
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This keeps every session and its students, but changes statuses to Unscheduled and clears booked court numbers.")
+                Text("This moves the current week's sessions to next week, keeps their students and fees, then marks them Unscheduled and clears booked court numbers.")
             }
             .sheet(item: $editor) { editor in
                 SessionEditorView(editor: editor)
@@ -836,11 +836,14 @@ struct SessionListView: View {
         }
     }
 
-    private func resetSessions() {
+    private func moveSessionsToNextWeek() {
+        let nextWeek = Self.monday(of: Calendar.current.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart)
         for session in sessionsForWeek {
+            session.weekStart = nextWeek
             session.status = SessionStatus.unscheduled.rawValue
             session.courtNumber = ""
         }
+        setWeekStart(nextWeek)
     }
 
     private func sessionName(for session: CoachingSession) -> String {
