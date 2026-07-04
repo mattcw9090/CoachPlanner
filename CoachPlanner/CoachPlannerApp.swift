@@ -23,6 +23,7 @@ struct CoachPlannerApp: App {
     /// The schema shared across the app.
     static let schema = Schema([
         Student.self,
+        StudentHiddenWeek.self,
         Outsider.self,
         CoachingSession.self,
         CourtBooking.self,

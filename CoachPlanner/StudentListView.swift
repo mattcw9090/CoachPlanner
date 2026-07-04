@@ -26,6 +26,7 @@ struct StudentListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Student.name) private var students: [Student]
     @Query private var sessions: [CoachingSession]
+    @Query private var hiddenWeeks: [StudentHiddenWeek]
     @AppStorage("weekStartTimestamp") private var weekStartTimestamp: Double = 0
 
     @State private var editor: StudentEditor?
@@ -40,6 +41,7 @@ struct StudentListView: View {
                 counts[student.persistentModelID, default: 0] += 1
             }
         }
+        let hiddenStudentIDs = hiddenStudentIDsForSelectedWeek
 
         var maleCount = 0
         var femaleCount = 0
@@ -54,7 +56,7 @@ struct StudentListView: View {
             let sessionCount = counts[student.persistentModelID] ?? 0
             let isUnderallocated = sessionCount < student.sessionsDemand
             let isOverallocated = sessionCount > student.sessionsDemand
-            let isHidden = student.isHidden
+            let isHidden = hiddenStudentIDs.contains(student.persistentModelID)
 
             if student.gender == "Male" {
                 maleCount += 1
@@ -113,6 +115,7 @@ struct StudentListView: View {
 
         return StudentSummary(
             sessionCountByStudent: counts,
+            hiddenStudentIDs: hiddenStudentIDs,
             filteredStudents: filteredStudents,
             maleCount: maleCount,
             femaleCount: femaleCount,
@@ -137,6 +140,18 @@ struct StudentListView: View {
             let sessionWeekStart = session.weekStart ?? selectedWeekStart
             return Calendar.current.isDate(Self.monday(of: sessionWeekStart), inSameDayAs: selectedWeekStart)
         }
+    }
+
+    private var hiddenStudentIDsForSelectedWeek: Set<PersistentIdentifier> {
+        Set(
+            hiddenWeeks.compactMap { hiddenWeek in
+                guard Calendar.current.isDate(Self.monday(of: hiddenWeek.weekStart), inSameDayAs: selectedWeekStart),
+                      let student = hiddenWeek.student else {
+                    return nil
+                }
+                return student.persistentModelID
+            }
+        )
     }
 
     private static func monday(of date: Date) -> Date {
@@ -242,20 +257,21 @@ struct StudentListView: View {
                                         StudentRow(
                                             student: student,
                                             sessionCount: summary.sessionCount(for: student),
-                                            demand: student.sessionsDemand
+                                            demand: student.sessionsDemand,
+                                            isHidden: summary.isHidden(student)
                                         )
                                 }
                                 .buttonStyle(.plain)
                                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                                     Button {
-                                        student.isHidden.toggle()
-                                        if student.isHidden {
+                                        toggleHidden(student, isCurrentlyHidden: summary.isHidden(student))
+                                        if !summary.isHidden(student) {
                                             allocationFilter = nil
                                         }
                                     } label: {
-                                        Label(student.isHidden ? "Unhide" : "Hide", systemImage: student.isHidden ? "eye.fill" : "eye.slash.fill")
+                                        Label(summary.isHidden(student) ? "Unhide" : "Hide", systemImage: summary.isHidden(student) ? "eye.fill" : "eye.slash.fill")
                                     }
-                                    .tint(student.isHidden ? .blue : .gray)
+                                    .tint(summary.isHidden(student) ? .blue : .gray)
                                 }
                             }
                             .onDelete { offsets in
@@ -280,12 +296,39 @@ struct StudentListView: View {
             .sheet(item: $editor) { editor in
                 StudentEditorView(editor: editor)
             }
+            .onAppear {
+                migrateGlobalHiddenStudentsIfNeeded()
+            }
+        }
+    }
+
+    private func toggleHidden(_ student: Student, isCurrentlyHidden: Bool) {
+        if isCurrentlyHidden {
+            for hiddenWeek in hiddenWeeks where hiddenWeek.student?.persistentModelID == student.persistentModelID && Calendar.current.isDate(Self.monday(of: hiddenWeek.weekStart), inSameDayAs: selectedWeekStart) {
+                modelContext.delete(hiddenWeek)
+            }
+        } else {
+            let hiddenWeek = StudentHiddenWeek(student: student, weekStart: selectedWeekStart)
+            modelContext.insert(hiddenWeek)
+        }
+    }
+
+    private func migrateGlobalHiddenStudentsIfNeeded() {
+        let hiddenIDs = hiddenStudentIDsForSelectedWeek
+        for student in students where student.isHidden {
+            if !hiddenIDs.contains(student.persistentModelID) {
+                modelContext.insert(StudentHiddenWeek(student: student, weekStart: selectedWeekStart))
+            }
+            student.isHidden = false
         }
     }
 
     private func deleteStudents(at offsets: IndexSet, from filteredStudents: [Student]) {
         let toDelete = offsets.map { filteredStudents[$0] }
         for student in toDelete {
+            for hiddenWeek in hiddenWeeks where hiddenWeek.student?.persistentModelID == student.persistentModelID {
+                modelContext.delete(hiddenWeek)
+            }
             modelContext.delete(student)
         }
     }
@@ -293,6 +336,7 @@ struct StudentListView: View {
 
 private struct StudentSummary {
     let sessionCountByStudent: [PersistentIdentifier: Int]
+    let hiddenStudentIDs: Set<PersistentIdentifier>
     let filteredStudents: [Student]
     let maleCount: Int
     let femaleCount: Int
@@ -305,6 +349,10 @@ private struct StudentSummary {
 
     func sessionCount(for student: Student) -> Int {
         sessionCountByStudent[student.persistentModelID] ?? 0
+    }
+
+    func isHidden(_ student: Student) -> Bool {
+        hiddenStudentIDs.contains(student.persistentModelID)
     }
 
     func count(for filter: GenderFilter) -> Int {
@@ -333,6 +381,7 @@ private struct StudentRow: View {
     let student: Student
     let sessionCount: Int
     let demand: Int
+    let isHidden: Bool
 
     private var iconColor: Color {
         AppStyle.genderColor(for: student.gender)
@@ -354,9 +403,9 @@ private struct StudentRow: View {
                 HStack(spacing: 6) {
                     Text(student.name)
                         .font(.headline.weight(.semibold))
-                        .foregroundStyle(student.isHidden ? .secondary : .primary)
+                        .foregroundStyle(isHidden ? .secondary : .primary)
 
-                    if student.isHidden {
+                    if isHidden {
                         Text("Hidden")
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(.secondary)
@@ -439,5 +488,5 @@ private struct FilterChip: View {
 
 #Preview {
     StudentListView()
-        .modelContainer(for: [Student.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialAttendance.self], inMemory: true)
+        .modelContainer(for: [Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialAttendance.self], inMemory: true)
 }

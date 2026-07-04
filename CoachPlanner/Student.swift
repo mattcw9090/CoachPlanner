@@ -117,6 +117,25 @@ final class Student {
 }
 
 @Model
+final class StudentHiddenWeek {
+    var weekStart: Date
+    var createdAt: Date
+
+    @Relationship
+    var student: Student?
+
+    init(
+        student: Student,
+        weekStart: Date,
+        createdAt: Date = .now
+    ) {
+        self.student = student
+        self.weekStart = weekStart
+        self.createdAt = createdAt
+    }
+}
+
+@Model
 final class Outsider {
     var name: String
     var gender: String
