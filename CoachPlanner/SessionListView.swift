@@ -244,14 +244,15 @@ struct SessionListView: View {
         let exitOffset = direction > 0 ? -pageWidth : pageWidth
         let remainingDistance = max(abs(exitOffset - currentOffset), 0)
         let completionProgress = min(remainingDistance / max(pageWidth, 1), 1)
-        let completionDuration = max(0.1, min(0.22, 0.07 + completionProgress * 0.18))
+        let completionDuration = max(0.18, min(0.34, 0.12 + completionProgress * 0.24))
+        let settleDelay = 0.04
 
         isWeekCommitInProgress = true
-        withAnimation(.timingCurve(0.2, 0.86, 0.22, 1.0, duration: completionDuration)) {
+        withAnimation(.timingCurve(0.16, 0.92, 0.22, 1.0, duration: completionDuration)) {
             weekDragTranslation = exitOffset
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + completionDuration) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + completionDuration + settleDelay) {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
