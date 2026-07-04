@@ -35,6 +35,9 @@ struct SessionListView: View {
     @State private var financeSendNotice: FinanceSendNotice?
     @State private var selectedCourtBooking: CourtBooking?
     @State private var isResetConfirmationPresented = false
+    @State private var isSwapModeEnabled = false
+    @State private var selectedSwapSession: CoachingSession?
+    @State private var swapNotice: SessionSwapNotice?
 
     private let dayStartHour = 6
     private let dayEndHour = 23
@@ -167,24 +170,6 @@ struct SessionListView: View {
             .navigationTitle("Sessions")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            editor = SessionEditor(weekStart: weekStart)
-                        } label: {
-                            Label("Session", systemImage: "person.2.fill")
-                        }
-
-                        Button {
-                            courtBookingEditor = CourtBookingEditor()
-                        } label: {
-                            Label("Vacant Court", systemImage: "sportscourt.fill")
-                        }
-                    } label: {
-                        Label("Add", systemImage: "plus")
-                    }
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         if let url = prepareICSFile() {
                             fileExport = FileExportItem(url: url)
@@ -202,6 +187,16 @@ struct SessionListView: View {
                         Label("Send to Finance Tracker", systemImage: "dollarsign.circle")
                     }
                     .disabled(sessions.isEmpty)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        toggleSwapMode()
+                    } label: {
+                        Label(isSwapModeEnabled ? "Cancel Swap" : "Swap Sessions", systemImage: "arrow.left.arrow.right")
+                    }
+                    .disabled(sessions.count < 2)
+                    .tint(isSwapModeEnabled ? .orange : nil)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -242,6 +237,13 @@ struct SessionListView: View {
                 ICSShareSheet(url: item.url)
             }
             .alert(item: $financeSendNotice) { notice in
+                Alert(
+                    title: Text(notice.title),
+                    message: Text(notice.message),
+                    dismissButton: .default(Text("OK"))
+                )
+            }
+            .alert(item: $swapNotice) { notice in
                 Alert(
                     title: Text(notice.title),
                     message: Text(notice.message),
@@ -476,12 +478,16 @@ struct SessionListView: View {
             }
 
             ForEach(summary.sessions(for: day)) { session in
-                SessionBlock(session: session)
+                SessionBlock(
+                    session: session,
+                    isSwapModeEnabled: isSwapModeEnabled,
+                    isSwapSelected: selectedSwapSession?.persistentModelID == session.persistentModelID
+                )
                     .frame(height: blockHeight(for: session))
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: session))
                     .onTapGesture {
-                        editor = SessionEditor(session: session, weekStart: weekStart)
+                        handleSessionTap(session)
                     }
             }
 
@@ -491,6 +497,7 @@ struct SessionListView: View {
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: booking))
                     .onTapGesture {
+                        guard !isSwapModeEnabled else { return }
                         pendingDraftSelection = nil
                         selectedCourtBooking = booking
                     }
@@ -546,6 +553,56 @@ struct SessionListView: View {
         )
     }
 
+    private func handleSessionTap(_ session: CoachingSession) {
+        guard isSwapModeEnabled else {
+            editor = SessionEditor(session: session, weekStart: weekStart)
+            return
+        }
+
+        if selectedSwapSession?.persistentModelID == session.persistentModelID {
+            selectedSwapSession = nil
+            return
+        }
+
+        guard let firstSession = selectedSwapSession else {
+            selectedSwapSession = session
+            return
+        }
+
+        swapSessions(firstSession, session)
+    }
+
+    private func toggleSwapMode() {
+        isSwapModeEnabled.toggle()
+        selectedSwapSession = nil
+    }
+
+    private func swapSessions(_ firstSession: CoachingSession, _ secondSession: CoachingSession) {
+        let firstDuration = durationMinutes(for: firstSession)
+        let secondDuration = durationMinutes(for: secondSession)
+
+        guard firstDuration == secondDuration else {
+            swapNotice = SessionSwapNotice(
+                title: "Can't Swap Sessions",
+                message: "Only sessions with the same duration can be swapped. This is \(durationText(firstDuration)) and \(durationText(secondDuration))."
+            )
+            selectedSwapSession = nil
+            return
+        }
+
+        let firstStudents = firstSession.students
+        let firstFee = firstSession.sessionFee
+
+        firstSession.students = secondSession.students
+        firstSession.sessionFee = secondSession.sessionFee
+
+        secondSession.students = firstStudents
+        secondSession.sessionFee = firstFee
+
+        selectedSwapSession = nil
+        isSwapModeEnabled = false
+    }
+
     private func openCourtBookingEditor(with selection: DraftSessionSelection) {
         courtBookingEditor = CourtBookingEditor(
             preselectedDay: selection.day,
@@ -583,6 +640,20 @@ struct SessionListView: View {
 
     private func durationMinutes(for booking: CourtBooking) -> Int {
         minutesOfDay(booking.endTime) - minutesOfDay(booking.startTime)
+    }
+
+    private func durationMinutes(for session: CoachingSession) -> Int {
+        minutesOfDay(session.endTime) - minutesOfDay(session.startTime)
+    }
+
+    private func durationText(_ minutes: Int) -> String {
+        if minutes % 60 == 0 {
+            return "\(minutes / 60)h"
+        }
+
+        let hours = minutes / 60
+        let remainingMinutes = minutes % 60
+        return hours == 0 ? "\(remainingMinutes)m" : "\(hours)h \(remainingMinutes)m"
     }
 
     private func draftPopoverX(for selection: DraftSessionSelection, gridWidth: CGFloat) -> CGFloat {
@@ -969,6 +1040,12 @@ private struct FinanceSendNotice: Identifiable {
     let message: String
 }
 
+private struct SessionSwapNotice: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+}
+
 private struct ScheduleSummary {
     let sessionsByDay: [Weekday: [CoachingSession]]
     let courtBookingsByDay: [Weekday: [CourtBooking]]
@@ -1286,6 +1363,8 @@ private struct DraftTypeButton: View {
 
 private struct SessionBlock: View {
     let session: CoachingSession
+    var isSwapModeEnabled = false
+    var isSwapSelected = false
 
     private var color: Color {
         session.statusValue.color
@@ -1321,11 +1400,28 @@ private struct SessionBlock: View {
     }
 
     private var strokeOpacity: Double {
-        isCourtBooked ? 0.36 : 0.68
+        if isSwapSelected { return 0.95 }
+        return isCourtBooked ? 0.36 : 0.68
+    }
+
+    private var strokeWidth: CGFloat {
+        isSwapSelected ? 2.4 : (isCourtBooked ? 0.75 : 1.1)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
+            if isSwapSelected {
+                Text("Swap from")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            } else if isSwapModeEnabled {
+                Text("Tap to swap")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.orange.opacity(0.9))
+                    .lineLimit(1)
+            }
+
             Text(studentNames.isEmpty ? "No students" : studentNames)
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(.primary)
@@ -1361,9 +1457,9 @@ private struct SessionBlock: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke(color.opacity(strokeOpacity), lineWidth: isCourtBooked ? 0.75 : 1.1)
+                .stroke((isSwapSelected ? Color.orange : color).opacity(strokeOpacity), lineWidth: strokeWidth)
         )
-        .shadow(color: isCourtBooked ? .clear : color.opacity(0.14), radius: 5, x: 0, y: 2)
+        .shadow(color: isSwapSelected ? Color.orange.opacity(0.28) : (isCourtBooked ? .clear : color.opacity(0.14)), radius: 5, x: 0, y: 2)
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
