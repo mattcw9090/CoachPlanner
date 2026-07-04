@@ -26,6 +26,7 @@ struct StudentListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Student.name) private var students: [Student]
     @Query private var sessions: [CoachingSession]
+    @AppStorage("weekStartTimestamp") private var weekStartTimestamp: Double = 0
 
     @State private var editor: StudentEditor?
     @State private var genderFilter: GenderFilter?
@@ -34,7 +35,7 @@ struct StudentListView: View {
 
     private var studentSummary: StudentSummary {
         var counts: [PersistentIdentifier: Int] = [:]
-        for session in sessions {
+        for session in sessionsForSelectedWeek {
             for student in session.students {
                 counts[student.persistentModelID, default: 0] += 1
             }
@@ -122,6 +123,27 @@ struct StudentListView: View {
             weeklyDemand: weeklyDemand,
             allocatedSessions: allocatedSessions
         )
+    }
+
+    private var selectedWeekStart: Date {
+        if weekStartTimestamp == 0 {
+            return Self.monday(of: .now)
+        }
+        return Self.monday(of: Date(timeIntervalSince1970: weekStartTimestamp))
+    }
+
+    private var sessionsForSelectedWeek: [CoachingSession] {
+        sessions.filter { session in
+            let sessionWeekStart = session.weekStart ?? selectedWeekStart
+            return Calendar.current.isDate(Self.monday(of: sessionWeekStart), inSameDayAs: selectedWeekStart)
+        }
+    }
+
+    private static func monday(of date: Date) -> Date {
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.firstWeekday = 2
+        let comps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
+        return calendar.date(from: comps) ?? date
     }
 
     var body: some View {

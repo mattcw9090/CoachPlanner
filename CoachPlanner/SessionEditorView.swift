@@ -122,6 +122,7 @@ struct SessionEditorView: View {
 
         return existingSessions.first { session in
             session.persistentModelID != editingID &&
+                belongsToEditorWeek(session.weekStart) &&
                 session.dayOfWeek == dayOfWeek.rawValue &&
                 newStart < minutes(of: session.endTime) &&
                 newEnd > minutes(of: session.startTime)
@@ -135,6 +136,7 @@ struct SessionEditorView: View {
 
         return existingCourtBookings.first { booking in
             booking.persistentModelID != consumedBookingID &&
+                belongsToEditorWeek(booking.weekStart) &&
                 booking.dayOfWeek == dayOfWeek.rawValue &&
                 newStart < minutes(of: booking.endTime) &&
                 newEnd > minutes(of: booking.startTime)
@@ -181,6 +183,11 @@ struct SessionEditorView: View {
 
     private var messageWeekStart: Date {
         editor.weekStart ?? SessionListView.monday(of: .now)
+    }
+
+    private func belongsToEditorWeek(_ recordWeekStart: Date?) -> Bool {
+        guard let recordWeekStart else { return true }
+        return Calendar.current.isDate(SessionListView.monday(of: recordWeekStart), inSameDayAs: messageWeekStart)
     }
 
     private var selectedStudentsList: [Student] {
@@ -644,6 +651,7 @@ struct SessionEditorView: View {
         }
 
         if let session = editor.session {
+            session.weekStart = messageWeekStart
             session.dayOfWeek = dayOfWeek.rawValue
             session.startTime = startTime
             session.endTime = endTime
@@ -654,6 +662,7 @@ struct SessionEditorView: View {
             session.students = selectedStudents
         } else {
             let session = CoachingSession(
+                weekStart: messageWeekStart,
                 dayOfWeek: dayOfWeek,
                 startTime: startTime,
                 endTime: endTime,
@@ -702,6 +711,7 @@ struct SessionEditorView: View {
 
             for booking in existingCourtBookings {
                 guard !absorbedBookingIDs.contains(booking.persistentModelID),
+                      belongsToEditorWeek(booking.weekStart),
                       booking.dayOfWeek == session.dayOfWeek,
                       booking.venue == venue.rawValue,
                       booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines) == courtNumber else {
@@ -731,6 +741,7 @@ struct SessionEditorView: View {
         }
 
         let booking = CourtBooking(
+            weekStart: messageWeekStart,
             dayOfWeek: session.weekday,
             startTime: mergedStart,
             endTime: mergedEnd,
@@ -759,6 +770,7 @@ struct SessionEditorView: View {
             booking.endTime = startTime
             if let venue = Venue(rawValue: booking.venue) {
                 let trailingBooking = CourtBooking(
+                    weekStart: booking.weekStart ?? messageWeekStart,
                     dayOfWeek: booking.weekday,
                     startTime: endTime,
                     endTime: originalEndTime,

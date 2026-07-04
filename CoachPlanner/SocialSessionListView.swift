@@ -490,15 +490,12 @@ private struct SocialSessionEditorView: View {
     }
 
     private var overlappingSession: CoachingSession? {
-        guard Calendar.current.isDate(editor.weekStart, inSameDayAs: coachingWeekStart) else {
-            return nil
-        }
-
         let newStart = minutesOfDay(startTime)
         let newEnd = minutesOfDay(endTime)
 
         return existingSessions.first { session in
-            session.dayOfWeek == dayOfWeek.rawValue &&
+            belongsToEditorWeek(session.weekStart) &&
+                session.dayOfWeek == dayOfWeek.rawValue &&
                 newStart < minutesOfDay(session.endTime) &&
                 newEnd > minutesOfDay(session.startTime)
         }
@@ -513,11 +510,16 @@ private struct SocialSessionEditorView: View {
             courtCost >= 0
     }
 
-    private var coachingWeekStart: Date {
-        if sessionsWeekStartTimestamp == 0 {
-            return SocialSessionListView.monday(of: .now)
+    private func belongsToEditorWeek(_ recordWeekStart: Date?) -> Bool {
+        let normalizedRecordWeekStart: Date
+        if let recordWeekStart {
+            normalizedRecordWeekStart = SocialSessionListView.monday(of: recordWeekStart)
+        } else if sessionsWeekStartTimestamp == 0 {
+            normalizedRecordWeekStart = SocialSessionListView.monday(of: .now)
+        } else {
+            normalizedRecordWeekStart = SocialSessionListView.monday(of: Date(timeIntervalSince1970: sessionsWeekStartTimestamp))
         }
-        return SocialSessionListView.monday(of: Date(timeIntervalSince1970: sessionsWeekStartTimestamp))
+        return Calendar.current.isDate(normalizedRecordWeekStart, inSameDayAs: editor.weekStart)
     }
 
     private var addStudentsPage: some View {

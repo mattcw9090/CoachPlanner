@@ -55,6 +55,7 @@ enum Venue: String, CaseIterable, Identifiable {
 
 @Model
 final class CoachingSession {
+    var weekStart: Date?
     var dayOfWeek: Int
     var startTime: Date
     var endTime: Date
@@ -68,6 +69,7 @@ final class CoachingSession {
     var students: [Student]
 
     init(
+        weekStart: Date? = nil,
         dayOfWeek: Weekday,
         startTime: Date,
         endTime: Date,
@@ -78,6 +80,7 @@ final class CoachingSession {
         students: [Student] = [],
         createdAt: Date = .now
     ) {
+        self.weekStart = weekStart
         self.dayOfWeek = dayOfWeek.rawValue
         self.startTime = startTime
         self.endTime = endTime
@@ -104,6 +107,7 @@ final class CoachingSession {
 
 @Model
 final class CourtBooking {
+    var weekStart: Date?
     var dayOfWeek: Int
     var startTime: Date
     var endTime: Date
@@ -112,6 +116,7 @@ final class CourtBooking {
     var createdAt: Date
 
     init(
+        weekStart: Date? = nil,
         dayOfWeek: Weekday,
         startTime: Date,
         endTime: Date,
@@ -119,6 +124,7 @@ final class CourtBooking {
         courtNumber: String,
         createdAt: Date = .now
     ) {
+        self.weekStart = weekStart
         self.dayOfWeek = dayOfWeek.rawValue
         self.startTime = startTime
         self.endTime = endTime

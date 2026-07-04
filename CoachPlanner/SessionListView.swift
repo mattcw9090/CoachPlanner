@@ -28,7 +28,6 @@ struct SessionListView: View {
 
     @State private var editor: SessionEditor?
     @State private var courtBookingEditor: CourtBookingEditor?
-    @State private var isWeekPickerPresented = false
     @State private var draftSelection: DraftSessionSelection?
     @State private var pendingDraftSelection: DraftSessionSelection?
     @State private var fileExport: FileExportItem?
@@ -51,6 +50,14 @@ struct SessionListView: View {
     private var visibleHours: Range<Int> { dayStartHour..<dayEndHour }
     private var totalGridHeight: CGFloat { CGFloat(visibleHours.count) * hourHeight }
 
+    private var sessionsForWeek: [CoachingSession] {
+        sessions.filter { belongsToVisibleWeek($0.weekStart) }
+    }
+
+    private var courtBookingsForWeek: [CourtBooking] {
+        courtBookings.filter { belongsToVisibleWeek($0.weekStart) }
+    }
+
     private var scheduleSummary: ScheduleSummary {
         var sessionsByDay = Dictionary(uniqueKeysWithValues: Weekday.allCases.map { ($0, [CoachingSession]()) })
         var courtBookingsByDay = Dictionary(uniqueKeysWithValues: Weekday.allCases.map { ($0, [CourtBooking]()) })
@@ -58,7 +65,7 @@ struct SessionListView: View {
         var confirmedSessionCount = 0
         var totalSessionFees = 0.0
 
-        for session in sessions {
+        for session in sessionsForWeek {
             sessionsByDay[session.weekday, default: []].append(session)
             if session.statusValue == .confirmed {
                 confirmedSessionCount += 1
@@ -66,7 +73,7 @@ struct SessionListView: View {
             totalSessionFees += session.sessionFee
         }
 
-        for booking in courtBookings {
+        for booking in courtBookingsForWeek {
             courtBookingsByDay[booking.weekday, default: []].append(booking)
         }
 
@@ -90,15 +97,6 @@ struct SessionListView: View {
         return Date(timeIntervalSince1970: weekStartTimestamp)
     }
 
-    private var weekEnd: Date {
-        Calendar.current.date(byAdding: .day, value: 6, to: weekStart) ?? weekStart
-    }
-
-    private var weekRangeText: String {
-        let formatter = Date.FormatStyle.dateTime.month(.abbreviated).day()
-        return "Week of \(weekStart.formatted(formatter)) – \(weekEnd.formatted(formatter))"
-    }
-
     private func moveWeek(by offset: Int) {
         let nextWeek = Calendar.current.date(byAdding: .day, value: offset * 7, to: weekStart) ?? weekStart
         setWeekStart(nextWeek)
@@ -110,6 +108,21 @@ struct SessionListView: View {
         selectedCourtBooking = nil
         selectedSwapSession = nil
         weekStartTimestamp = Self.monday(of: date).timeIntervalSince1970
+    }
+
+    private func belongsToVisibleWeek(_ recordWeekStart: Date?) -> Bool {
+        guard let recordWeekStart else { return false }
+        return Calendar.current.isDate(Self.monday(of: recordWeekStart), inSameDayAs: weekStart)
+    }
+
+    private func assignVisibleWeekToUnscopedRecordsIfNeeded() {
+        let normalizedWeekStart = Self.monday(of: weekStart)
+        for session in sessions where session.weekStart == nil {
+            session.weekStart = normalizedWeekStart
+        }
+        for booking in courtBookings where booking.weekStart == nil {
+            booking.weekStart = normalizedWeekStart
+        }
     }
 
     private func handleWeekSwipe(_ value: DragGesture.Value) {
@@ -178,13 +191,9 @@ struct SessionListView: View {
 
         NavigationStack {
             VStack(spacing: 0) {
-                weekBanner
-                    .padding(.horizontal, calendarHorizontalPadding)
-                    .padding(.top, 8)
-                    .padding(.bottom, 8)
-
                 weekSummaryStrip(summary)
                     .padding(.horizontal, calendarHorizontalPadding)
+                    .padding(.top, 8)
                     .padding(.bottom, 10)
 
                 dayHeaderRow
@@ -208,7 +217,7 @@ struct SessionListView: View {
                     } label: {
                         Label("Export Calendar", systemImage: "calendar")
                     }
-                    .disabled(sessions.isEmpty)
+                    .disabled(sessionsForWeek.isEmpty && courtBookingsForWeek.isEmpty && summary.socialSessionsByDay.values.allSatisfy(\.isEmpty))
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -217,7 +226,7 @@ struct SessionListView: View {
                     } label: {
                         Label("Send to Finance Tracker", systemImage: "dollarsign.circle")
                     }
-                    .disabled(sessions.isEmpty)
+                    .disabled(sessionsForWeek.isEmpty)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -226,7 +235,7 @@ struct SessionListView: View {
                     } label: {
                         Label(isSwapModeEnabled ? "Cancel Swap" : "Swap Sessions", systemImage: "arrow.left.arrow.right")
                     }
-                    .disabled(sessions.count < 2)
+                    .disabled(sessionsForWeek.count < 2)
                     .tint(isSwapModeEnabled ? .orange : nil)
                 }
 
@@ -236,7 +245,7 @@ struct SessionListView: View {
                     } label: {
                         Label("Reset Sessions", systemImage: "arrow.counterclockwise")
                     }
-                    .disabled(sessions.isEmpty)
+                    .disabled(sessionsForWeek.isEmpty)
                 }
 
             }
@@ -259,11 +268,6 @@ struct SessionListView: View {
             .sheet(item: $courtBookingEditor) { editor in
                 CourtBookingEditorView(editor: editor)
             }
-            .sheet(isPresented: $isWeekPickerPresented) {
-                WeekStartPickerView(currentStart: weekStart) { newStart in
-                    setWeekStart(newStart)
-                }
-            }
             .sheet(item: $fileExport) { item in
                 ICSShareSheet(url: item.url)
             }
@@ -281,6 +285,9 @@ struct SessionListView: View {
                     dismissButton: .default(Text("OK"))
                 )
             }
+            .onAppear {
+                assignVisibleWeekToUnscopedRecordsIfNeeded()
+            }
         }
     }
 
@@ -288,7 +295,7 @@ struct SessionListView: View {
         HStack(spacing: 8) {
             MetricTile(
                 title: "Sessions",
-                value: "\(sessions.count)",
+                value: "\(sessionsForWeek.count)",
                 systemImage: "calendar",
                 tint: .blue
             )
@@ -304,61 +311,6 @@ struct SessionListView: View {
                 systemImage: "dollarsign.circle.fill",
                 tint: .purple
             )
-        }
-    }
-
-    private var weekBanner: some View {
-        HStack(spacing: 8) {
-            Button {
-                moveWeek(by: -1)
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 34, height: 34)
-            }
-            .buttonStyle(.bordered)
-
-            Button {
-                isWeekPickerPresented = true
-            } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "calendar")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.tint)
-
-                    Text(weekRangeText)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.82)
-
-                    Spacer()
-
-                    Image(systemName: "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background(
-                    RoundedRectangle(cornerRadius: AppStyle.radius)
-                        .fill(AppStyle.surface)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: AppStyle.radius)
-                        .stroke(AppStyle.separator.opacity(0.12), lineWidth: 0.5)
-                )
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                moveWeek(by: 1)
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 34, height: 34)
-            }
-            .buttonStyle(.bordered)
         }
     }
 
@@ -459,7 +411,7 @@ struct SessionListView: View {
                             openSessionEditor(from: selectedCourtBooking)
                         },
                         onEdit: {
-                            courtBookingEditor = CourtBookingEditor(booking: selectedCourtBooking)
+                            courtBookingEditor = CourtBookingEditor(weekStart: weekStart, booking: selectedCourtBooking)
                             self.selectedCourtBooking = nil
                         },
                         onCancel: {
@@ -691,6 +643,7 @@ struct SessionListView: View {
 
     private func openCourtBookingEditor(with selection: DraftSessionSelection) {
         courtBookingEditor = CourtBookingEditor(
+            weekStart: weekStart,
             preselectedDay: selection.day,
             preselectedStartTime: time(for: selection.startMinutes),
             preselectedEndTime: time(for: selection.endMinutes)
@@ -861,7 +814,7 @@ struct SessionListView: View {
     }
 
     private func sendToFinanceTracker() {
-        let payloads = sessions.map { session in
+        let payloads = sessionsForWeek.map { session in
             FinanceBridge.SessionPayload(
                 sessionName: sessionName(for: session),
                 dayOfWeek: session.weekday.name,
@@ -884,7 +837,7 @@ struct SessionListView: View {
     }
 
     private func resetSessions() {
-        for session in sessions {
+        for session in sessionsForWeek {
             session.status = SessionStatus.unscheduled.rawValue
             session.courtNumber = ""
         }
@@ -916,7 +869,7 @@ struct SessionListView: View {
             "CALSCALE:GREGORIAN"
         ]
 
-        for session in sessions {
+        for session in sessionsForWeek {
             guard let eventDates = eventDates(
                 dayOfWeek: session.dayOfWeek,
                 startTime: session.startTime,
@@ -984,7 +937,7 @@ struct SessionListView: View {
             ]
         }
 
-        for booking in courtBookings {
+        for booking in courtBookingsForWeek {
             guard let eventDates = eventDates(
                 dayOfWeek: booking.dayOfWeek,
                 startTime: booking.startTime,
@@ -1656,17 +1609,20 @@ private struct SocialSessionBlock: View {
 
 struct CourtBookingEditor: Identifiable {
     let id = UUID()
+    let weekStart: Date
     let booking: CourtBooking?
     let preselectedDay: Weekday?
     let preselectedStartTime: Date?
     let preselectedEndTime: Date?
 
     init(
+        weekStart: Date,
         booking: CourtBooking? = nil,
         preselectedDay: Weekday? = nil,
         preselectedStartTime: Date? = nil,
         preselectedEndTime: Date? = nil
     ) {
+        self.weekStart = SessionListView.monday(of: booking?.weekStart ?? weekStart)
         self.booking = booking
         self.preselectedDay = preselectedDay
         self.preselectedStartTime = preselectedStartTime
@@ -1719,7 +1675,8 @@ private struct CourtBookingEditorView: View {
         let newEnd = minutes(of: endTime)
 
         return existingSessions.first { session in
-            session.dayOfWeek == dayOfWeek.rawValue &&
+            belongsToEditorWeek(session.weekStart) &&
+                session.dayOfWeek == dayOfWeek.rawValue &&
                 newStart < minutes(of: session.endTime) &&
                 newEnd > minutes(of: session.startTime)
         }
@@ -1732,6 +1689,7 @@ private struct CourtBookingEditorView: View {
 
         return existingBookings.first { booking in
             booking.persistentModelID != editingID &&
+                belongsToEditorWeek(booking.weekStart) &&
                 booking.dayOfWeek == dayOfWeek.rawValue &&
                 newStart < minutes(of: booking.endTime) &&
                 newEnd > minutes(of: booking.startTime)
@@ -1743,6 +1701,11 @@ private struct CourtBookingEditorView: View {
             !trimmedCourtNumber.isEmpty &&
             overlappingSession == nil &&
             overlappingBooking == nil
+    }
+
+    private func belongsToEditorWeek(_ recordWeekStart: Date?) -> Bool {
+        guard let recordWeekStart else { return true }
+        return Calendar.current.isDate(SessionListView.monday(of: recordWeekStart), inSameDayAs: editor.weekStart)
     }
 
     var body: some View {
@@ -1835,6 +1798,7 @@ private struct CourtBookingEditorView: View {
 
     private func save() {
         if let booking = editor.booking {
+            booking.weekStart = editor.weekStart
             booking.dayOfWeek = dayOfWeek.rawValue
             booking.startTime = startTime
             booking.endTime = endTime
@@ -1842,6 +1806,7 @@ private struct CourtBookingEditorView: View {
             booking.courtNumber = trimmedCourtNumber
         } else {
             let booking = CourtBooking(
+                weekStart: editor.weekStart,
                 dayOfWeek: dayOfWeek,
                 startTime: startTime,
                 endTime: endTime,
@@ -1858,174 +1823,6 @@ private struct CourtBookingEditorView: View {
         guard let booking = editor.booking else { return }
         modelContext.delete(booking)
         dismiss()
-    }
-}
-
-private struct WeekStartPickerView: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let currentStart: Date
-    let onSave: (Date) -> Void
-
-    @State private var selectedDate: Date
-
-    init(currentStart: Date, onSave: @escaping (Date) -> Void) {
-        self.currentStart = currentStart
-        self.onSave = onSave
-        _selectedDate = State(initialValue: currentStart)
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    MondayCalendarPicker(selection: $selectedDate)
-                        .padding(.vertical, 8)
-                } footer: {
-                    Text("Week of \(selectedDate.formatted(.dateTime.weekday(.wide).month(.abbreviated).day().year())).")
-                }
-
-                Section {
-                    Button("Use current week") {
-                        selectedDate = SessionListView.monday(of: .now)
-                    }
-                }
-            }
-            .navigationTitle("Set Week Start")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        onSave(selectedDate)
-                        dismiss()
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct MondayCalendarPicker: View {
-    @Binding var selection: Date
-    @State private var visibleMonth: Date
-
-    init(selection: Binding<Date>) {
-        self._selection = selection
-        self._visibleMonth = State(initialValue: selection.wrappedValue)
-    }
-
-    private var calendar: Calendar {
-        var cal = Calendar(identifier: .gregorian)
-        cal.firstWeekday = 2
-        return cal
-    }
-
-    private var firstDayOfMonth: Date {
-        let comps = calendar.dateComponents([.year, .month], from: visibleMonth)
-        return calendar.date(from: comps) ?? visibleMonth
-    }
-
-    private var daysInMonth: Range<Int> {
-        calendar.range(of: .day, in: .month, for: visibleMonth) ?? 1..<32
-    }
-
-    private var leadingEmptyDays: Int {
-        let weekday = calendar.component(.weekday, from: firstDayOfMonth)
-        return (weekday - calendar.firstWeekday + 7) % 7
-    }
-
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 7)
-    private let weekdayLabels = ["M", "T", "W", "T", "F", "S", "S"]
-
-    var body: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Button {
-                    stepMonth(-1)
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.body.weight(.semibold))
-                }
-                .buttonStyle(.borderless)
-
-                Spacer()
-
-                Text(visibleMonth.formatted(.dateTime.month(.wide).year()))
-                    .font(.headline)
-
-                Spacer()
-
-                Button {
-                    stepMonth(1)
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.body.weight(.semibold))
-                }
-                .buttonStyle(.borderless)
-            }
-
-            LazyVGrid(columns: columns, spacing: 4) {
-                ForEach(Array(weekdayLabels.enumerated()), id: \.offset) { _, label in
-                    Text(label)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-
-            LazyVGrid(columns: columns, spacing: 4) {
-                ForEach(0..<leadingEmptyDays, id: \.self) { _ in
-                    Color.clear.frame(height: 36)
-                }
-                ForEach(daysInMonth, id: \.self) { day in
-                    let date = calendar.date(byAdding: .day, value: day - 1, to: firstDayOfMonth) ?? firstDayOfMonth
-                    let isMonday = calendar.component(.weekday, from: date) == 2
-                    let isSelected = calendar.isDate(date, inSameDayAs: selection)
-
-                    DayCell(day: day, isMonday: isMonday, isSelected: isSelected) {
-                        selection = date
-                    }
-                }
-            }
-        }
-    }
-
-    private func stepMonth(_ delta: Int) {
-        if let new = calendar.date(byAdding: .month, value: delta, to: visibleMonth) {
-            visibleMonth = new
-        }
-    }
-}
-
-private struct DayCell: View {
-    let day: Int
-    let isMonday: Bool
-    let isSelected: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            Text("\(day)")
-                .font(.body)
-                .frame(maxWidth: .infinity, minHeight: 36)
-                .foregroundStyle(textColor)
-                .background {
-                    if isSelected {
-                        Circle().fill(Color.accentColor)
-                    }
-                }
-        }
-        .buttonStyle(.plain)
-        .disabled(!isMonday)
-    }
-
-    private var textColor: Color {
-        if !isMonday { return .secondary.opacity(0.4) }
-        if isSelected { return .white }
-        return .primary
     }
 }
 
