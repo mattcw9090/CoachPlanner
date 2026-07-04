@@ -38,7 +38,6 @@ struct SessionListView: View {
     @State private var selectedSwapSession: CoachingSession?
     @State private var swapNotice: SessionSwapNotice?
     @State private var weekDragTranslation: CGFloat = 0
-    @State private var isWeekDragging = false
     @State private var weekDragAxis: WeekDragAxis?
     @State private var isWeekCommitInProgress = false
     @State private var isWeekVerticalScrollLocked = false
@@ -197,7 +196,6 @@ struct SessionListView: View {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction) {
-            isWeekDragging = true
             isWeekVerticalScrollLocked = true
             weekDragTranslation = rubberBandedWeekOffset(value.translation.width, pageWidth: pageWidth)
         }
@@ -206,31 +204,28 @@ struct SessionListView: View {
     private func handleWeekDragEnded(_ value: DragGesture.Value, pageWidth: CGFloat) {
         defer {
             weekDragAxis = nil
-            isWeekDragging = false
         }
 
         guard canBeginWeekDrag, weekDragAxis == .horizontal else {
             isWeekVerticalScrollLocked = false
-            withAnimation(.interactiveSpring(response: 0.34, dampingFraction: 0.9, blendDuration: 0.1)) {
+            withAnimation(.snappy(duration: 0.32, extraBounce: 0.05)) {
                 weekDragTranslation = 0
             }
             return
         }
 
-        let horizontal = value.translation.width
-        let predictedHorizontal = value.predictedEndTranslation.width
-        let currentOffset = weekDragTranslation
         let pageWidth = max(pageWidth, 1)
-        let dragThreshold = min(max(pageWidth * 0.28, 86), 180)
-        let projectedThreshold = min(max(pageWidth * 0.34, 108), 220)
-        let flickDistance = abs(predictedHorizontal - horizontal)
-        let shouldMove =
-            abs(currentOffset) > dragThreshold ||
-            abs(predictedHorizontal) > projectedThreshold ||
-            (abs(currentOffset) > 36 && flickDistance > 120)
+        let currentOffset = weekDragTranslation
+        let predictedOffset = value.predictedEndTranslation.width
+
+        // Land on the next/previous week when the page is dragged past its
+        // halfway point, or when a quick flick is projected to carry it there.
+        // Otherwise settle back to the current week.
+        let landingOffset = abs(predictedOffset) > abs(currentOffset) ? predictedOffset : currentOffset
+        let shouldMove = abs(landingOffset) > pageWidth * 0.5
 
         guard shouldMove else {
-            withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86, blendDuration: 0.08)) {
+            withAnimation(.snappy(duration: 0.32, extraBounce: 0.08)) {
                 weekDragTranslation = 0
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
@@ -239,20 +234,17 @@ struct SessionListView: View {
             return
         }
 
-        let directionSource = abs(predictedHorizontal) > abs(currentOffset) ? predictedHorizontal : currentOffset
-        let direction = directionSource < 0 ? 1 : -1
+        let direction = landingOffset < 0 ? 1 : -1
         let exitOffset = direction > 0 ? -pageWidth : pageWidth
-        let remainingDistance = max(abs(exitOffset - currentOffset), 0)
-        let completionProgress = min(remainingDistance / max(pageWidth, 1), 1)
-        let completionDuration = max(0.18, min(0.34, 0.12 + completionProgress * 0.24))
-        let settleDelay = 0.04
 
+        // Slide the current page fully off screen, then swap in the new week
+        // with animation suppressed so the offset reset is invisible. Driving
+        // the swap from the animation's completion callback keeps it perfectly
+        // in sync with the end of the slide instead of guessing a delay.
         isWeekCommitInProgress = true
-        withAnimation(.timingCurve(0.16, 0.92, 0.22, 1.0, duration: completionDuration)) {
+        withAnimation(.snappy(duration: 0.3), completionCriteria: .logicallyComplete) {
             weekDragTranslation = exitOffset
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + completionDuration + settleDelay) {
+        } completion: {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
@@ -436,10 +428,6 @@ struct SessionListView: View {
             .clipped()
             .contentShape(Rectangle())
             .simultaneousGesture(weekSwipeGesture(pageWidth: pageWidth))
-            .animation(
-                isWeekDragging ? nil : .interactiveSpring(response: 0.36, dampingFraction: 0.9, blendDuration: 0.1),
-                value: weekDragTranslation
-            )
         }
     }
 
