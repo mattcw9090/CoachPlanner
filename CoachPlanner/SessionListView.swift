@@ -37,6 +37,11 @@ struct SessionListView: View {
     @State private var isSwapModeEnabled = false
     @State private var selectedSwapSession: CoachingSession?
     @State private var swapNotice: SessionSwapNotice?
+    @State private var weekDragTranslation: CGFloat = 0
+    @State private var isWeekDragging = false
+    @State private var weekDragAxis: WeekDragAxis?
+    @State private var isWeekCommitInProgress = false
+    @State private var isWeekVerticalScrollLocked = false
 
     private let dayStartHour = 6
     private let dayEndHour = 23
@@ -59,13 +64,17 @@ struct SessionListView: View {
     }
 
     private var scheduleSummary: ScheduleSummary {
+        scheduleSummary(for: weekStart)
+    }
+
+    private func scheduleSummary(for targetWeekStart: Date) -> ScheduleSummary {
         var sessionsByDay = Dictionary(uniqueKeysWithValues: Weekday.allCases.map { ($0, [CoachingSession]()) })
         var courtBookingsByDay = Dictionary(uniqueKeysWithValues: Weekday.allCases.map { ($0, [CourtBooking]()) })
         var socialSessionsByDay = Dictionary(uniqueKeysWithValues: Weekday.allCases.map { ($0, [SocialSession]()) })
         var confirmedSessionCount = 0
         var totalSessionFees = 0.0
 
-        for session in sessionsForWeek {
+        for session in sessions where belongs(session.weekStart, to: targetWeekStart) {
             sessionsByDay[session.weekday, default: []].append(session)
             if session.statusValue == .confirmed {
                 confirmedSessionCount += 1
@@ -73,11 +82,11 @@ struct SessionListView: View {
             totalSessionFees += session.sessionFee
         }
 
-        for booking in courtBookingsForWeek {
+        for booking in courtBookings where belongs(booking.weekStart, to: targetWeekStart) {
             courtBookingsByDay[booking.weekday, default: []].append(booking)
         }
 
-        for social in socialSessions where Calendar.current.isDate(social.weekStart, inSameDayAs: weekStart) {
+        for social in socialSessions where Calendar.current.isDate(Self.monday(of: social.weekStart), inSameDayAs: Self.monday(of: targetWeekStart)) {
             socialSessionsByDay[social.weekday, default: []].append(social)
         }
 
@@ -97,9 +106,12 @@ struct SessionListView: View {
         return Date(timeIntervalSince1970: weekStartTimestamp)
     }
 
-    private func moveWeek(by offset: Int) {
-        let nextWeek = Calendar.current.date(byAdding: .day, value: offset * 7, to: weekStart) ?? weekStart
-        setWeekStart(nextWeek)
+    private var previousWeekStart: Date {
+        Self.monday(of: Calendar.current.date(byAdding: .day, value: -7, to: weekStart) ?? weekStart)
+    }
+
+    private var nextWeekStart: Date {
+        Self.monday(of: Calendar.current.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart)
     }
 
     private func setWeekStart(_ date: Date) {
@@ -110,9 +122,13 @@ struct SessionListView: View {
         weekStartTimestamp = Self.monday(of: date).timeIntervalSince1970
     }
 
-    private func belongsToVisibleWeek(_ recordWeekStart: Date?) -> Bool {
+    private func belongs(_ recordWeekStart: Date?, to targetWeekStart: Date) -> Bool {
         guard let recordWeekStart else { return false }
-        return Calendar.current.isDate(Self.monday(of: recordWeekStart), inSameDayAs: weekStart)
+        return Calendar.current.isDate(Self.monday(of: recordWeekStart), inSameDayAs: Self.monday(of: targetWeekStart))
+    }
+
+    private func belongsToVisibleWeek(_ recordWeekStart: Date?) -> Bool {
+        belongs(recordWeekStart, to: weekStart)
     }
 
     private func assignVisibleWeekToUnscopedRecordsIfNeeded() {
@@ -125,34 +141,138 @@ struct SessionListView: View {
         }
     }
 
-    private func handleWeekSwipe(_ value: DragGesture.Value) {
-        guard pendingDraftSelection == nil,
-              draftSelection == nil,
-              selectedCourtBooking == nil else {
+    private var canBeginWeekDrag: Bool {
+        pendingDraftSelection == nil &&
+        draftSelection == nil &&
+        selectedCourtBooking == nil &&
+        !isWeekCommitInProgress
+    }
+
+    private func resolveWeekDragAxis(for value: DragGesture.Value) -> WeekDragAxis? {
+        let horizontal = value.translation.width
+        let vertical = value.translation.height
+        let horizontalMagnitude = abs(horizontal)
+        let verticalMagnitude = abs(vertical)
+
+        guard max(horizontalMagnitude, verticalMagnitude) > 10 else {
+            return nil
+        }
+
+        if horizontalMagnitude > verticalMagnitude * 1.12 {
+            return .horizontal
+        }
+
+        if verticalMagnitude > horizontalMagnitude * 1.05 {
+            return .vertical
+        }
+
+        return nil
+    }
+
+    private func rubberBandedWeekOffset(_ offset: CGFloat, pageWidth: CGFloat) -> CGFloat {
+        let limit = max(pageWidth, 1)
+        let magnitude = abs(offset)
+        guard magnitude > limit else {
+            return offset
+        }
+
+        let overflow = magnitude - limit
+        let resisted = limit + overflow * 0.22
+        return offset < 0 ? -resisted : resisted
+    }
+
+    private func handleWeekDragChanged(_ value: DragGesture.Value, pageWidth: CGFloat) {
+        guard canBeginWeekDrag else {
+            return
+        }
+
+        if weekDragAxis == nil {
+            weekDragAxis = resolveWeekDragAxis(for: value)
+        }
+
+        guard weekDragAxis == .horizontal else {
+            return
+        }
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isWeekDragging = true
+            isWeekVerticalScrollLocked = true
+            weekDragTranslation = rubberBandedWeekOffset(value.translation.width, pageWidth: pageWidth)
+        }
+    }
+
+    private func handleWeekDragEnded(_ value: DragGesture.Value, pageWidth: CGFloat) {
+        defer {
+            weekDragAxis = nil
+            isWeekDragging = false
+        }
+
+        guard canBeginWeekDrag, weekDragAxis == .horizontal else {
+            isWeekVerticalScrollLocked = false
+            withAnimation(.interactiveSpring(response: 0.34, dampingFraction: 0.9, blendDuration: 0.1)) {
+                weekDragTranslation = 0
+            }
             return
         }
 
         let horizontal = value.translation.width
-        let vertical = value.translation.height
-        guard abs(horizontal) > 72, abs(horizontal) > abs(vertical) * 1.6 else {
+        let predictedHorizontal = value.predictedEndTranslation.width
+        let currentOffset = weekDragTranslation
+        let pageWidth = max(pageWidth, 1)
+        let dragThreshold = min(max(pageWidth * 0.28, 86), 180)
+        let projectedThreshold = min(max(pageWidth * 0.34, 108), 220)
+        let flickDistance = abs(predictedHorizontal - horizontal)
+        let shouldMove =
+            abs(currentOffset) > dragThreshold ||
+            abs(predictedHorizontal) > projectedThreshold ||
+            (abs(currentOffset) > 36 && flickDistance > 120)
+
+        guard shouldMove else {
+            withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.86, blendDuration: 0.08)) {
+                weekDragTranslation = 0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+                isWeekVerticalScrollLocked = false
+            }
             return
         }
 
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-            moveWeek(by: horizontal < 0 ? 1 : -1)
+        let directionSource = abs(predictedHorizontal) > abs(currentOffset) ? predictedHorizontal : currentOffset
+        let direction = directionSource < 0 ? 1 : -1
+        let exitOffset = direction > 0 ? -pageWidth : pageWidth
+        let remainingDistance = max(abs(exitOffset - currentOffset), 0)
+        let completionProgress = min(remainingDistance / max(pageWidth, 1), 1)
+        let completionDuration = max(0.1, min(0.22, 0.07 + completionProgress * 0.18))
+
+        isWeekCommitInProgress = true
+        withAnimation(.timingCurve(0.2, 0.86, 0.22, 1.0, duration: completionDuration)) {
+            weekDragTranslation = exitOffset
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + completionDuration) {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                setWeekStart(Calendar.current.date(byAdding: .day, value: direction * 7, to: weekStart) ?? weekStart)
+                weekDragTranslation = 0
+                isWeekCommitInProgress = false
+                isWeekVerticalScrollLocked = false
+            }
         }
     }
 
-    private func date(for day: Weekday) -> Date {
-        Calendar.current.date(byAdding: .day, value: day.rawValue - 1, to: weekStart) ?? weekStart
+    private func date(for day: Weekday, in targetWeekStart: Date) -> Date {
+        Calendar.current.date(byAdding: .day, value: day.rawValue - 1, to: targetWeekStart) ?? targetWeekStart
     }
 
-    private func dayOfMonth(for day: Weekday) -> Int {
-        Calendar.current.component(.day, from: date(for: day))
+    private func dayOfMonth(for day: Weekday, in targetWeekStart: Date) -> Int {
+        Calendar.current.component(.day, from: date(for: day, in: targetWeekStart))
     }
 
-    private func isToday(_ day: Weekday) -> Bool {
-        Calendar.current.isDateInToday(date(for: day))
+    private func isToday(_ day: Weekday, in targetWeekStart: Date) -> Bool {
+        Calendar.current.isDateInToday(date(for: day, in: targetWeekStart))
     }
 
     private func minutesOfDay(_ date: Date) -> Int {
@@ -196,15 +316,7 @@ struct SessionListView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 10)
 
-                dayHeaderRow
-                    .padding(.horizontal, calendarHorizontalPadding)
-
-                ScrollView(.vertical) {
-                    grid(summary)
-                        .frame(maxWidth: .infinity)
-                    .padding(.horizontal, calendarHorizontalPadding)
-                    .padding(.bottom, 28)
-                }
+                weekPager(summary)
             }
             .background(AppStyle.background)
             .navigationTitle("Sessions")
@@ -291,6 +403,61 @@ struct SessionListView: View {
         }
     }
 
+    private func weekPager(_ summary: ScheduleSummary) -> some View {
+        GeometryReader { proxy in
+            let pageWidth = max(proxy.size.width, 1)
+
+            ZStack {
+                weekPage(
+                    scheduleSummary(for: previousWeekStart),
+                    weekStart: previousWeekStart,
+                    isInteractive: false
+                )
+                .offset(x: weekDragTranslation - pageWidth)
+                .allowsHitTesting(false)
+
+                weekPage(
+                    summary,
+                    weekStart: weekStart,
+                    isInteractive: true
+                )
+                .offset(x: weekDragTranslation)
+
+                weekPage(
+                    scheduleSummary(for: nextWeekStart),
+                    weekStart: nextWeekStart,
+                    isInteractive: false
+                )
+                .offset(x: weekDragTranslation + pageWidth)
+                .allowsHitTesting(false)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
+            .contentShape(Rectangle())
+            .simultaneousGesture(weekSwipeGesture(pageWidth: pageWidth))
+            .animation(
+                isWeekDragging ? nil : .interactiveSpring(response: 0.36, dampingFraction: 0.9, blendDuration: 0.1),
+                value: weekDragTranslation
+            )
+        }
+    }
+
+    private func weekPage(_ summary: ScheduleSummary, weekStart targetWeekStart: Date, isInteractive: Bool) -> some View {
+        VStack(spacing: 0) {
+            dayHeaderRow(for: targetWeekStart)
+                .padding(.horizontal, calendarHorizontalPadding)
+
+            ScrollView(.vertical) {
+                grid(summary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, calendarHorizontalPadding)
+                    .padding(.bottom, 28)
+            }
+            .scrollDisabled(isWeekVerticalScrollLocked)
+        }
+        .allowsHitTesting(isInteractive)
+    }
+
     private func weekSummaryStrip(_ summary: ScheduleSummary) -> some View {
         HStack(spacing: 8) {
             MetricTile(
@@ -314,7 +481,7 @@ struct SessionListView: View {
         }
     }
 
-    private var dayHeaderRow: some View {
+    private func dayHeaderRow(for targetWeekStart: Date) -> some View {
         HStack(spacing: 0) {
             Color.clear.frame(width: timeAxisWidth, height: dayHeaderHeight)
             ForEach(Weekday.allCases) { day in
@@ -322,13 +489,13 @@ struct SessionListView: View {
                     Text(String(day.name.prefix(3)))
                         .font(.caption2.weight(.bold))
                         .textCase(.uppercase)
-                        .foregroundStyle(isToday(day) ? Color.accentColor : Color.secondary)
-                    Text("\(dayOfMonth(for: day))")
+                        .foregroundStyle(isToday(day, in: targetWeekStart) ? Color.accentColor : Color.secondary)
+                    Text("\(dayOfMonth(for: day, in: targetWeekStart))")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(isToday(day) ? .white : .primary)
+                        .foregroundStyle(isToday(day, in: targetWeekStart) ? .white : .primary)
                         .frame(width: 28, height: 28)
                         .background {
-                            if isToday(day) {
+                            if isToday(day, in: targetWeekStart) {
                                 Circle().fill(Color.accentColor)
                             }
                         }
@@ -340,7 +507,6 @@ struct SessionListView: View {
         .padding(.bottom, 6)
         .background(AppStyle.background)
         .contentShape(Rectangle())
-        .simultaneousGesture(weekSwipeGesture)
     }
 
     private func grid(_ summary: ScheduleSummary) -> some View {
@@ -432,13 +598,15 @@ struct SessionListView: View {
         .animation(.spring(response: 0.24, dampingFraction: 0.86), value: pendingDraftSelection)
         .animation(.spring(response: 0.24, dampingFraction: 0.86), value: selectedCourtBooking?.persistentModelID)
         .contentShape(Rectangle())
-        .simultaneousGesture(weekSwipeGesture)
     }
 
-    private var weekSwipeGesture: some Gesture {
-        DragGesture(minimumDistance: 44)
+    private func weekSwipeGesture(pageWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onChanged { value in
+                handleWeekDragChanged(value, pageWidth: pageWidth)
+            }
             .onEnded { value in
-                handleWeekSwipe(value)
+                handleWeekDragEnded(value, pageWidth: pageWidth)
             }
     }
 
@@ -1086,6 +1254,11 @@ private struct SessionSwapNotice: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+}
+
+private enum WeekDragAxis {
+    case horizontal
+    case vertical
 }
 
 private struct ScheduleSummary {
