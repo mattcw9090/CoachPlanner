@@ -99,6 +99,37 @@ struct SessionListView: View {
         return "Week of \(weekStart.formatted(formatter)) – \(weekEnd.formatted(formatter))"
     }
 
+    private func moveWeek(by offset: Int) {
+        let nextWeek = Calendar.current.date(byAdding: .day, value: offset * 7, to: weekStart) ?? weekStart
+        setWeekStart(nextWeek)
+    }
+
+    private func setWeekStart(_ date: Date) {
+        pendingDraftSelection = nil
+        draftSelection = nil
+        selectedCourtBooking = nil
+        selectedSwapSession = nil
+        weekStartTimestamp = Self.monday(of: date).timeIntervalSince1970
+    }
+
+    private func handleWeekSwipe(_ value: DragGesture.Value) {
+        guard pendingDraftSelection == nil,
+              draftSelection == nil,
+              selectedCourtBooking == nil else {
+            return
+        }
+
+        let horizontal = value.translation.width
+        let vertical = value.translation.height
+        guard abs(horizontal) > 72, abs(horizontal) > abs(vertical) * 1.6 else {
+            return
+        }
+
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+            moveWeek(by: horizontal < 0 ? 1 : -1)
+        }
+    }
+
     private func date(for day: Weekday) -> Date {
         Calendar.current.date(byAdding: .day, value: day.rawValue - 1, to: weekStart) ?? weekStart
     }
@@ -230,7 +261,7 @@ struct SessionListView: View {
             }
             .sheet(isPresented: $isWeekPickerPresented) {
                 WeekStartPickerView(currentStart: weekStart) { newStart in
-                    weekStartTimestamp = newStart.timeIntervalSince1970
+                    setWeekStart(newStart)
                 }
             }
             .sheet(item: $fileExport) { item in
@@ -277,36 +308,58 @@ struct SessionListView: View {
     }
 
     private var weekBanner: some View {
-        Button {
-            isWeekPickerPresented = true
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: "calendar")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.tint)
-
-                Text(weekRangeText)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-
-                Spacer()
-
-                Image(systemName: "chevron.down")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 8) {
+            Button {
+                moveWeek(by: -1)
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 34, height: 34)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: AppStyle.radius)
-                    .fill(AppStyle.surface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: AppStyle.radius)
-                    .stroke(AppStyle.separator.opacity(0.12), lineWidth: 0.5)
-            )
+            .buttonStyle(.bordered)
+
+            Button {
+                isWeekPickerPresented = true
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "calendar")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.tint)
+
+                    Text(weekRangeText)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+
+                    Spacer()
+
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: AppStyle.radius)
+                        .fill(AppStyle.surface)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppStyle.radius)
+                        .stroke(AppStyle.separator.opacity(0.12), lineWidth: 0.5)
+                )
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                moveWeek(by: 1)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(.bordered)
         }
-        .buttonStyle(.plain)
     }
 
     private var dayHeaderRow: some View {
@@ -334,6 +387,8 @@ struct SessionListView: View {
         }
         .padding(.bottom, 6)
         .background(AppStyle.background)
+        .contentShape(Rectangle())
+        .simultaneousGesture(weekSwipeGesture)
     }
 
     private func grid(_ summary: ScheduleSummary) -> some View {
@@ -424,6 +479,15 @@ struct SessionListView: View {
         }
         .animation(.spring(response: 0.24, dampingFraction: 0.86), value: pendingDraftSelection)
         .animation(.spring(response: 0.24, dampingFraction: 0.86), value: selectedCourtBooking?.persistentModelID)
+        .contentShape(Rectangle())
+        .simultaneousGesture(weekSwipeGesture)
+    }
+
+    private var weekSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 44)
+            .onEnded { value in
+                handleWeekSwipe(value)
+            }
     }
 
     private var timeAxis: some View {

@@ -11,14 +11,15 @@ struct SocialSessionListView: View {
             SortDescriptor(\SocialSession.startTime)
         ]
     ) private var socialSessions: [SocialSession]
-    @AppStorage("weekStartTimestamp") private var weekStartTimestamp: Double = 0
+    @AppStorage("socialsWeekStartTimestamp") private var socialsWeekStartTimestamp: Double = 0
+    @AppStorage("weekStartTimestamp") private var sessionsWeekStartTimestamp: Double = 0
     @State private var editor: SocialSessionEditor?
 
     private var weekStart: Date {
-        if weekStartTimestamp == 0 {
+        if socialsWeekStartTimestamp == 0 {
             return Self.monday(of: .now)
         }
-        return Date(timeIntervalSince1970: weekStartTimestamp)
+        return Date(timeIntervalSince1970: socialsWeekStartTimestamp)
     }
 
     private var weekEnd: Date {
@@ -140,8 +141,11 @@ struct SocialSessionListView: View {
                 SocialSessionEditorView(editor: editor)
             }
             .onAppear {
-                if weekStartTimestamp == 0 {
-                    weekStartTimestamp = Self.monday(of: .now).timeIntervalSince1970
+                if socialsWeekStartTimestamp == 0 {
+                    let initialWeekStart = sessionsWeekStartTimestamp == 0
+                        ? Self.monday(of: .now)
+                        : Self.monday(of: Date(timeIntervalSince1970: sessionsWeekStartTimestamp))
+                    socialsWeekStartTimestamp = initialWeekStart.timeIntervalSince1970
                 }
             }
         }
@@ -149,7 +153,7 @@ struct SocialSessionListView: View {
 
     private func moveWeek(by offset: Int) {
         let nextWeek = Calendar.current.date(byAdding: .day, value: offset * 7, to: weekStart) ?? weekStart
-        weekStartTimestamp = Self.monday(of: nextWeek).timeIntervalSince1970
+        socialsWeekStartTimestamp = Self.monday(of: nextWeek).timeIntervalSince1970
     }
 
     private func deleteSessions(at offsets: IndexSet, from sessions: [SocialSession]) {
@@ -373,6 +377,7 @@ private struct SocialSessionEditorView: View {
     @Query(sort: \Student.name) private var students: [Student]
     @Query(sort: \Outsider.name) private var outsiders: [Outsider]
     @Query private var existingSessions: [CoachingSession]
+    @AppStorage("weekStartTimestamp") private var sessionsWeekStartTimestamp: Double = 0
 
     let editor: SocialSessionEditor
 
@@ -485,6 +490,10 @@ private struct SocialSessionEditorView: View {
     }
 
     private var overlappingSession: CoachingSession? {
+        guard Calendar.current.isDate(editor.weekStart, inSameDayAs: coachingWeekStart) else {
+            return nil
+        }
+
         let newStart = minutesOfDay(startTime)
         let newEnd = minutesOfDay(endTime)
 
@@ -502,6 +511,13 @@ private struct SocialSessionEditorView: View {
             (sessionStatus != .finished || areAllParticipantsConfirmed) &&
             shuttlecockCost >= 0 &&
             courtCost >= 0
+    }
+
+    private var coachingWeekStart: Date {
+        if sessionsWeekStartTimestamp == 0 {
+            return SocialSessionListView.monday(of: .now)
+        }
+        return SocialSessionListView.monday(of: Date(timeIntervalSince1970: sessionsWeekStartTimestamp))
     }
 
     private var addStudentsPage: some View {
