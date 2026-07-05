@@ -62,6 +62,12 @@ struct SessionListView: View {
         courtBookings.filter { belongsToVisibleWeek($0.weekStart) }
     }
 
+    private var socialSessionsForWeek: [SocialSession] {
+        socialSessions.filter {
+            Calendar.current.isDate(Self.monday(of: $0.weekStart), inSameDayAs: Self.monday(of: weekStart))
+        }
+    }
+
     private var scheduleSummary: ScheduleSummary {
         scheduleSummary(for: weekStart)
     }
@@ -318,6 +324,11 @@ struct SessionListView: View {
                     Button {
                         if let url = prepareICSFile() {
                             fileExport = FileExportItem(url: url)
+                        } else {
+                            financeSendNotice = FinanceSendNotice(
+                                title: "Nothing to Export",
+                                message: "This week has no events to include in the calendar file."
+                            )
                         }
                     } label: {
                         Label("Export Calendar", systemImage: "calendar")
@@ -957,8 +968,8 @@ struct SessionListView: View {
     }
 
     private func prepareICSFile() -> URL? {
-        let content = generateICSContent()
-        guard let data = content.data(using: .utf8) else { return nil }
+        guard let content = generateICSContent(),
+              let data = content.data(using: .utf8) else { return nil }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("CoachPlanner-Schedule.ics")
@@ -1012,13 +1023,22 @@ struct SessionListView: View {
         return studentList.isEmpty ? "\(session.venue) coaching" : studentList
     }
 
-    private func generateICSContent() -> String {
+    private func generateICSContent() -> String? {
         let calendar = Calendar.current
 
+        // DTSTAMP must be UTC per RFC 5545.
         let utcFormatter = DateFormatter()
         utcFormatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
         utcFormatter.timeZone = TimeZone(identifier: "UTC")
         utcFormatter.locale = Locale(identifier: "en_US_POSIX")
+
+        // Event times are written as floating local time (no trailing "Z"), so
+        // "6pm Tuesday" always imports as 6pm regardless of the viewer's
+        // timezone rather than being shifted by a UTC conversion.
+        let floatingFormatter = DateFormatter()
+        floatingFormatter.dateFormat = "yyyyMMdd'T'HHmmss"
+        floatingFormatter.timeZone = calendar.timeZone
+        floatingFormatter.locale = Locale(identifier: "en_US_POSIX")
 
         let stamp = utcFormatter.string(from: .now)
 
@@ -1026,8 +1046,32 @@ struct SessionListView: View {
             "BEGIN:VCALENDAR",
             "VERSION:2.0",
             "PRODID:-//CoachPlanner//Sessions//EN",
-            "CALSCALE:GREGORIAN"
+            "CALSCALE:GREGORIAN",
+            "METHOD:PUBLISH"
         ]
+
+        var eventCount = 0
+
+        // Google Calendar deduplicates by UID: any two VEVENTs sharing a UID
+        // cause all but the first to be silently dropped on import. Guarantee a
+        // unique UID per event (appending a counter only when a genuine
+        // collision occurs, so stable events keep a stable UID across exports).
+        var usedUIDs = Set<String>()
+        func uniqueUID(_ base: String) -> String {
+            var candidate = base
+            var suffix = 2
+            while usedUIDs.contains(candidate) {
+                candidate = "\(base)-\(suffix)"
+                suffix += 1
+            }
+            usedUIDs.insert(candidate)
+            return candidate + "-coachplanner@local"
+        }
+
+        func weekKey(_ recordWeekStart: Date?) -> String {
+            let normalized = Self.monday(of: recordWeekStart ?? weekStart)
+            return String(Int(normalized.timeIntervalSince1970))
+        }
 
         for session in sessionsForWeek {
             guard let eventDates = eventDates(
@@ -1037,16 +1081,16 @@ struct SessionListView: View {
                 calendar: calendar
             ) else { continue }
 
-            let dtStart = utcFormatter.string(from: eventDates.start)
-            let dtEnd = utcFormatter.string(from: eventDates.end)
-            let uid = [
-                Int(session.createdAt.timeIntervalSince1970 * 1000),
-                session.dayOfWeek,
-                minutesOfDay(session.startTime),
-                minutesOfDay(session.endTime)
-            ]
-                .map(String.init)
-                .joined(separator: "-") + "-coachplanner@local"
+            let dtStart = floatingFormatter.string(from: eventDates.start)
+            let dtEnd = floatingFormatter.string(from: eventDates.end)
+            let uid = uniqueUID([
+                "session",
+                weekKey(session.weekStart),
+                String(session.dayOfWeek),
+                String(minutesOfDay(session.startTime)),
+                String(minutesOfDay(session.endTime)),
+                String(Int(session.createdAt.timeIntervalSince1970 * 1000))
+            ].joined(separator: "-"))
             let status = session.statusValue
 
             let studentList = session.students
@@ -1093,8 +1137,10 @@ struct SessionListView: View {
                 "SUMMARY:\(icsEscape(summary))",
                 "DESCRIPTION:\(icsEscape(description))",
                 "LOCATION:\(icsEscape(location))",
+                "STATUS:\(icsStatus(for: status))",
                 "END:VEVENT"
             ]
+            eventCount += 1
         }
 
         for booking in courtBookingsForWeek {
@@ -1109,14 +1155,14 @@ struct SessionListView: View {
             let courtLabel = trimmedCourt.isEmpty ? "Court" : "Court \(trimmedCourt)"
             let location = trimmedCourt.isEmpty ? booking.venue : "\(booking.venue), \(courtLabel)"
             let summary = "COURT BOOKING"
-            let uid = [
+            let uid = uniqueUID([
                 "court",
-                String(Int(booking.createdAt.timeIntervalSince1970 * 1000)),
+                weekKey(booking.weekStart),
                 String(booking.dayOfWeek),
                 String(minutesOfDay(booking.startTime)),
-                String(minutesOfDay(booking.endTime))
-            ]
-                .joined(separator: "-") + "-coachplanner@local"
+                String(minutesOfDay(booking.endTime)),
+                String(Int(booking.createdAt.timeIntervalSince1970 * 1000))
+            ].joined(separator: "-"))
             let description = [
                 "CoachPlanner vacant court booking",
                 "Venue: \(booking.venue)",
@@ -1129,17 +1175,82 @@ struct SessionListView: View {
                 "BEGIN:VEVENT",
                 "UID:\(uid)",
                 "DTSTAMP:\(stamp)",
-                "DTSTART:\(utcFormatter.string(from: eventDates.start))",
-                "DTEND:\(utcFormatter.string(from: eventDates.end))",
+                "DTSTART:\(floatingFormatter.string(from: eventDates.start))",
+                "DTEND:\(floatingFormatter.string(from: eventDates.end))",
                 "SUMMARY:\(icsEscape(summary))",
                 "DESCRIPTION:\(icsEscape(description))",
                 "LOCATION:\(icsEscape(location))",
+                "STATUS:CONFIRMED",
                 "END:VEVENT"
             ]
+            eventCount += 1
         }
+
+        for social in socialSessionsForWeek {
+            guard let eventDates = eventDates(
+                dayOfWeek: social.dayOfWeek,
+                startTime: social.startTime,
+                endTime: social.endTime,
+                calendar: calendar
+            ) else { continue }
+
+            let trimmedCourts = social.courtNumbersList.joined(separator: ", ")
+            let hasCourts = !trimmedCourts.isEmpty
+            let courtInfo = hasCourts ? "Courts \(trimmedCourts)" : "Courts unbooked"
+            let location = hasCourts ? "\(social.venue), Courts \(trimmedCourts)" : social.venue
+
+            let attendeeList = social.students
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                .map(\.name)
+                .joined(separator: ", ")
+
+            let baseTitle = social.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let summary = baseTitle.isEmpty ? "Badminton Socials" : baseTitle
+            let uid = uniqueUID([
+                "social",
+                weekKey(social.weekStart),
+                String(social.dayOfWeek),
+                String(minutesOfDay(social.startTime)),
+                String(minutesOfDay(social.endTime)),
+                String(Int(social.createdAt.timeIntervalSince1970 * 1000))
+            ].joined(separator: "-"))
+
+            var descriptionParts: [String] = [
+                "CoachPlanner social session",
+                "Status: \(social.statusValue.rawValue)",
+                "Venue: \(social.venue)",
+                courtInfo,
+                "Day: \(social.weekday.name)",
+                "Time: \(timeRangeText(start: social.startTime, end: social.endTime))"
+            ]
+            if !attendeeList.isEmpty {
+                descriptionParts.append("Attendees: \(attendeeList)")
+            }
+            let description = descriptionParts.joined(separator: "\n")
+
+            lines += [
+                "BEGIN:VEVENT",
+                "UID:\(uid)",
+                "DTSTAMP:\(stamp)",
+                "DTSTART:\(floatingFormatter.string(from: eventDates.start))",
+                "DTEND:\(floatingFormatter.string(from: eventDates.end))",
+                "SUMMARY:\(icsEscape(summary))",
+                "DESCRIPTION:\(icsEscape(description))",
+                "LOCATION:\(icsEscape(location))",
+                "STATUS:CONFIRMED",
+                "END:VEVENT"
+            ]
+            eventCount += 1
+        }
+
+        guard eventCount > 0 else { return nil }
 
         lines.append("END:VCALENDAR")
         return lines.flatMap(foldedICSLines).joined(separator: "\r\n") + "\r\n"
+    }
+
+    private func icsStatus(for status: SessionStatus) -> String {
+        status == .confirmed ? "CONFIRMED" : "TENTATIVE"
     }
 
     private func eventDates(
