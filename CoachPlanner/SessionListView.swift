@@ -41,6 +41,8 @@ struct SessionListView: View {
     @State private var weekDragAxis: WeekDragAxis?
     @State private var isWeekCommitInProgress = false
     @State private var isWeekVerticalScrollLocked = false
+    @State private var sessionDrag: SessionDragState?
+    @State private var gridDayColumnWidth: CGFloat = 1
 
     private let dayStartHour = 6
     private let dayEndHour = 23
@@ -150,6 +152,7 @@ struct SessionListView: View {
         pendingDraftSelection == nil &&
         draftSelection == nil &&
         selectedCourtBooking == nil &&
+        sessionDrag == nil &&
         !isWeekCommitInProgress
     }
 
@@ -305,6 +308,17 @@ struct SessionListView: View {
         )
     }
 
+    private func snappedSessionStartMinutes(for yPosition: CGFloat, durationMinutes: Int) -> Int {
+        let rawMinutes = dayStartHour * 60 + Int((max(yPosition, 0) / hourHeight) * 60)
+        let snappedMinutes = Int((Double(rawMinutes) / 30.0).rounded()) * 30
+        let latestStart = dayEndHour * 60 - durationMinutes
+
+        return max(
+            dayStartHour * 60,
+            min(snappedMinutes, max(dayStartHour * 60, latestStart))
+        )
+    }
+
     var body: some View {
         let summary = scheduleSummary
 
@@ -453,7 +467,7 @@ struct SessionListView: View {
                     .padding(.horizontal, calendarHorizontalPadding)
                     .padding(.bottom, 28)
             }
-            .scrollDisabled(isWeekVerticalScrollLocked)
+            .scrollDisabled(isWeekVerticalScrollLocked || sessionDrag != nil)
         }
         .allowsHitTesting(isInteractive)
     }
@@ -534,6 +548,20 @@ struct SessionListView: View {
         .clipShape(RoundedRectangle(cornerRadius: AppStyle.radius))
         .overlay(alignment: .topLeading) {
             GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        updateGridDayColumnWidth(proxy.size.width)
+                    }
+                    .onChange(of: proxy.size.width) { _, newWidth in
+                        updateGridDayColumnWidth(newWidth)
+                    }
+
+                if let sessionDrag {
+                    sessionDragPreview(sessionDrag, gridWidth: proxy.size.width)
+                        .zIndex(3)
+                        .allowsHitTesting(false)
+                }
+
                 if pendingDraftSelection != nil || selectedCourtBooking != nil {
                     Color.black.opacity(0.001)
                         .contentShape(Rectangle())
@@ -593,8 +621,10 @@ struct SessionListView: View {
                     .zIndex(5)
                 }
             }
-            .allowsHitTesting(pendingDraftSelection != nil || selectedCourtBooking != nil)
+            .allowsHitTesting(sessionDrag != nil || pendingDraftSelection != nil || selectedCourtBooking != nil)
         }
+        .animation(.spring(response: 0.2, dampingFraction: 0.82), value: sessionDrag?.targetDay.rawValue)
+        .animation(.spring(response: 0.2, dampingFraction: 0.82), value: sessionDrag?.targetStartMinutes)
         .animation(.spring(response: 0.24, dampingFraction: 0.86), value: pendingDraftSelection)
         .animation(.spring(response: 0.24, dampingFraction: 0.86), value: selectedCourtBooking?.persistentModelID)
         .contentShape(Rectangle())
@@ -608,6 +638,15 @@ struct SessionListView: View {
             .onEnded { value in
                 handleWeekDragEnded(value, pageWidth: pageWidth)
             }
+    }
+
+    private func updateGridDayColumnWidth(_ gridWidth: CGFloat) {
+        let width = max((gridWidth - timeAxisWidth) / CGFloat(Weekday.allCases.count), 1)
+        guard abs(width - gridDayColumnWidth) > 0.5 else { return }
+
+        DispatchQueue.main.async {
+            gridDayColumnWidth = width
+        }
     }
 
     private var timeAxis: some View {
@@ -662,6 +701,7 @@ struct SessionListView: View {
             }
 
             ForEach(summary.sessions(for: day)) { session in
+                let isDragging = sessionDrag?.session.persistentModelID == session.persistentModelID
                 SessionBlock(
                     session: session,
                     isSwapModeEnabled: isSwapModeEnabled,
@@ -671,9 +711,11 @@ struct SessionListView: View {
                     .frame(height: blockHeight(for: session))
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: session))
+                    .opacity(isDragging ? 0.22 : 1)
                     .onTapGesture {
                         handleSessionTap(session)
                     }
+                    .highPriorityGesture(sessionDragGesture(for: session, from: day))
             }
 
             ForEach(summary.courtBookings(for: day)) { booking in
@@ -807,6 +849,172 @@ struct SessionListView: View {
 
     private func canSwap(_ session: CoachingSession) -> Bool {
         session.statusValue == .unscheduled || session.statusValue == .pending
+    }
+
+    private func canDragSession(_ session: CoachingSession) -> Bool {
+        session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !isSwapModeEnabled &&
+            pendingDraftSelection == nil &&
+            draftSelection == nil &&
+            selectedCourtBooking == nil &&
+            !isWeekCommitInProgress
+    }
+
+    private func sessionDragGesture(for session: CoachingSession, from day: Weekday) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.28, maximumDistance: 18)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .onChanged { value in
+                switch value {
+                case .first(true):
+                    beginSessionDrag(session, from: day)
+                case let .second(true, dragValue):
+                    if let dragValue {
+                        handleSessionDragChanged(session, from: day, value: dragValue)
+                    } else {
+                        beginSessionDrag(session, from: day)
+                    }
+                default:
+                    break
+                }
+            }
+            .onEnded { _ in
+                handleSessionDragEnded()
+            }
+    }
+
+    private func beginSessionDrag(_ session: CoachingSession, from day: Weekday) {
+        guard canDragSession(session),
+              sessionDrag == nil else { return }
+
+        let startMinutes = minutesOfDay(session.startTime)
+        let endMinutes = minutesOfDay(session.endTime)
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            pendingDraftSelection = nil
+            selectedCourtBooking = nil
+            sessionDrag = SessionDragState(
+                session: session,
+                targetDay: day,
+                targetStartMinutes: startMinutes,
+                targetEndMinutes: endMinutes,
+                isValid: true
+            )
+        }
+    }
+
+    private func handleSessionDragChanged(_ session: CoachingSession, from day: Weekday, value: DragGesture.Value) {
+        guard canDragSession(session) else { return }
+
+        let dayColumnWidth = max(gridDayColumnWidth, 1)
+        let duration = durationMinutes(for: session)
+        let originalStart = minutesOfDay(session.startTime)
+        let originalYOffset = CGFloat(originalStart - dayStartHour * 60) / 60.0 * hourHeight
+        let targetStart = snappedSessionStartMinutes(
+            for: originalYOffset + value.translation.height,
+            durationMinutes: duration
+        )
+        let dayOffset = Int((value.translation.width / dayColumnWidth).rounded())
+        let targetDayRaw = min(max(day.rawValue + dayOffset, Weekday.monday.rawValue), Weekday.sunday.rawValue)
+        let targetDay = Weekday(rawValue: targetDayRaw) ?? day
+        let targetEnd = targetStart + duration
+        let isValid = isValidSessionMove(
+            session,
+            targetDay: targetDay,
+            startMinutes: targetStart,
+            endMinutes: targetEnd
+        )
+
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            pendingDraftSelection = nil
+            selectedCourtBooking = nil
+            sessionDrag = SessionDragState(
+                session: session,
+                targetDay: targetDay,
+                targetStartMinutes: targetStart,
+                targetEndMinutes: targetEnd,
+                isValid: isValid
+            )
+        }
+    }
+
+    private func handleSessionDragEnded() {
+        guard let sessionDrag else {
+            return
+        }
+
+        defer {
+            withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+                self.sessionDrag = nil
+            }
+        }
+
+        guard sessionDrag.isValid else {
+            return
+        }
+
+        sessionDrag.session.dayOfWeek = sessionDrag.targetDay.rawValue
+        sessionDrag.session.startTime = time(for: sessionDrag.targetStartMinutes)
+        sessionDrag.session.endTime = time(for: sessionDrag.targetEndMinutes)
+    }
+
+    private func isValidSessionMove(
+        _ movingSession: CoachingSession,
+        targetDay: Weekday,
+        startMinutes: Int,
+        endMinutes: Int
+    ) -> Bool {
+        guard startMinutes >= dayStartHour * 60,
+              endMinutes <= dayEndHour * 60,
+              endMinutes > startMinutes else {
+            return false
+        }
+
+        let movingID = movingSession.persistentModelID
+        let hasSessionOverlap = sessions.contains { session in
+            session.persistentModelID != movingID &&
+                belongsToVisibleWeek(session.weekStart) &&
+                session.dayOfWeek == targetDay.rawValue &&
+                startMinutes < minutesOfDay(session.endTime) &&
+                endMinutes > minutesOfDay(session.startTime)
+        }
+        guard !hasSessionOverlap else { return false }
+
+        let hasCourtBookingOverlap = courtBookings.contains { booking in
+            belongsToVisibleWeek(booking.weekStart) &&
+                booking.dayOfWeek == targetDay.rawValue &&
+                startMinutes < minutesOfDay(booking.endTime) &&
+                endMinutes > minutesOfDay(booking.startTime)
+        }
+        guard !hasCourtBookingOverlap else { return false }
+
+        let hasSocialOverlap = socialSessions.contains { social in
+            Calendar.current.isDate(Self.monday(of: social.weekStart), inSameDayAs: weekStart) &&
+                social.dayOfWeek == targetDay.rawValue &&
+                startMinutes < minutesOfDay(social.endTime) &&
+                endMinutes > minutesOfDay(social.startTime)
+        }
+
+        return !hasSocialOverlap
+    }
+
+    private func sessionDragPreview(_ drag: SessionDragState, gridWidth: CGFloat) -> some View {
+        let dayColumnWidth = max((gridWidth - timeAxisWidth) / CGFloat(Weekday.allCases.count), 1)
+        let x = timeAxisWidth + CGFloat(drag.targetDay.rawValue - 1) * dayColumnWidth + dayColumnWidth / 2
+        let y = CGFloat(drag.targetStartMinutes - dayStartHour * 60) / 60.0 * hourHeight + height(for: drag) / 2
+
+        return SessionBlock(session: drag.session)
+            .frame(width: max(dayColumnWidth - 4, 24), height: height(for: drag))
+            .scaleEffect(1.02)
+            .opacity(drag.isValid ? 0.94 : 0.72)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(drag.isValid ? Color.accentColor.opacity(0.8) : Color.red.opacity(0.9), lineWidth: 2)
+            )
+            .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 6)
+            .position(x: x, y: y)
     }
 
     private func openCourtBookingEditor(with selection: DraftSessionSelection) {
@@ -951,6 +1159,11 @@ struct SessionListView: View {
 
     private func height(for selection: DraftSessionSelection) -> CGFloat {
         let duration = selection.endMinutes - selection.startMinutes
+        return max(CGFloat(duration) / 60.0 * hourHeight - 5, 30)
+    }
+
+    private func height(for drag: SessionDragState) -> CGFloat {
+        let duration = drag.targetEndMinutes - drag.targetStartMinutes
         return max(CGFloat(duration) / 60.0 * hourHeight - 5, 30)
     }
 
@@ -1489,6 +1702,14 @@ private struct DraftSessionSelection: Equatable {
     let day: Weekday
     let startMinutes: Int
     let endMinutes: Int
+}
+
+private struct SessionDragState {
+    let session: CoachingSession
+    let targetDay: Weekday
+    let targetStartMinutes: Int
+    let targetEndMinutes: Int
+    let isValid: Bool
 }
 
 private struct DraftSessionBlock: View {
