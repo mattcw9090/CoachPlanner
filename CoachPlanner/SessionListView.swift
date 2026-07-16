@@ -162,15 +162,18 @@ struct SessionListView: View {
         let horizontalMagnitude = abs(horizontal)
         let verticalMagnitude = abs(vertical)
 
-        guard max(horizontalMagnitude, verticalMagnitude) > 10 else {
+        guard max(horizontalMagnitude, verticalMagnitude) > 12 else {
             return nil
         }
 
-        if horizontalMagnitude > verticalMagnitude * 1.12 {
+        // Bias ambiguous diagonal movement toward vertical scrolling. A week
+        // swipe should only take over once the horizontal intent is clear.
+        if horizontalMagnitude > 20,
+           horizontalMagnitude > verticalMagnitude * 1.35 {
             return .horizontal
         }
 
-        if verticalMagnitude > horizontalMagnitude * 1.05 {
+        if verticalMagnitude > 12 {
             return .vertical
         }
 
@@ -467,7 +470,11 @@ struct SessionListView: View {
                     .padding(.horizontal, calendarHorizontalPadding)
                     .padding(.bottom, 28)
             }
-            .scrollDisabled(isWeekVerticalScrollLocked || sessionDrag != nil)
+            .scrollDisabled(
+                isWeekVerticalScrollLocked ||
+                    sessionDrag != nil ||
+                    draftSelection != nil
+            )
         }
         .allowsHitTesting(isInteractive)
     }
@@ -555,6 +562,62 @@ struct SessionListView: View {
                     .onChange(of: proxy.size.width) { _, newWidth in
                         updateGridDayColumnWidth(newWidth)
                     }
+                    .allowsHitTesting(false)
+
+                SessionGridInteractionOverlay(
+                    isEnabled: pendingDraftSelection == nil &&
+                        selectedCourtBooking == nil &&
+                        !isWeekCommitInProgress,
+                    containsSession: { location in
+                        sessionAtGridLocation(
+                            at: location,
+                            gridWidth: proxy.size.width,
+                            summary: summary
+                        ) != nil
+                    },
+                    canMoveSession: { location in
+                        guard let session = sessionAtGridLocation(
+                            at: location,
+                            gridWidth: proxy.size.width,
+                            summary: summary
+                        ) else {
+                            return false
+                        }
+                        return canDragSession(session)
+                    },
+                    onTap: { location in
+                        guard let session = sessionAtGridLocation(
+                            at: location,
+                            gridWidth: proxy.size.width,
+                            summary: summary
+                        ) else { return }
+                        handleSessionTap(session)
+                    },
+                    onMoveBegan: { location in
+                        guard let session = sessionAtGridLocation(
+                            at: location,
+                            gridWidth: proxy.size.width,
+                            summary: summary
+                        ) else { return }
+                        beginSessionDrag(session, from: session.weekday)
+                    },
+                    onMoveChanged: { translation in
+                        guard let sessionDrag else { return }
+                        handleSessionDragChanged(
+                            sessionDrag.session,
+                            from: sessionDrag.session.weekday,
+                            translation: translation
+                        )
+                    },
+                    onMoveEnded: {
+                        handleSessionDragEnded()
+                    },
+                    onMoveCancelled: {
+                        cancelSessionDrag()
+                    }
+                )
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .zIndex(2)
 
                 if let sessionDrag {
                     sessionDragPreview(sessionDrag, gridWidth: proxy.size.width)
@@ -621,7 +684,6 @@ struct SessionListView: View {
                     .zIndex(5)
                 }
             }
-            .allowsHitTesting(sessionDrag != nil || pendingDraftSelection != nil || selectedCourtBooking != nil)
         }
         .animation(.spring(response: 0.2, dampingFraction: 0.82), value: sessionDrag?.targetDay.rawValue)
         .animation(.spring(response: 0.2, dampingFraction: 0.82), value: sessionDrag?.targetStartMinutes)
@@ -646,6 +708,34 @@ struct SessionListView: View {
 
         DispatchQueue.main.async {
             gridDayColumnWidth = width
+        }
+    }
+
+    private func sessionAtGridLocation(
+        at location: CGPoint,
+        gridWidth: CGFloat,
+        summary: ScheduleSummary
+    ) -> CoachingSession? {
+        guard location.y >= 0,
+              location.y <= totalGridHeight,
+              location.x >= timeAxisWidth else {
+            return nil
+        }
+
+        let dayColumnWidth = max(
+            (gridWidth - timeAxisWidth) / CGFloat(Weekday.allCases.count),
+            1
+        )
+        let dayIndex = Int((location.x - timeAxisWidth) / dayColumnWidth)
+        guard Weekday.allCases.indices.contains(dayIndex) else { return nil }
+
+        let day = Weekday.allCases[dayIndex]
+        let minuteAtLocation = Double(dayStartHour * 60) +
+            Double(location.y / hourHeight) * 60
+
+        return summary.sessions(for: day).last { session in
+            minuteAtLocation >= Double(minutesOfDay(session.startTime)) &&
+                minuteAtLocation < Double(minutesOfDay(session.endTime))
         }
     }
 
@@ -677,6 +767,7 @@ struct SessionListView: View {
 
             TimeSlotLongPressOverlay(
                 day: day,
+                isEnabled: canBeginGridSelection,
                 onChanged: { day, startY, currentY in
                     draftSelection = selection(for: day, startY: startY, currentY: currentY)
                 },
@@ -712,10 +803,6 @@ struct SessionListView: View {
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: session))
                     .opacity(isDragging ? 0.22 : 1)
-                    .onTapGesture {
-                        handleSessionTap(session)
-                    }
-                    .highPriorityGesture(sessionDragGesture(for: session, from: day))
             }
 
             ForEach(summary.courtBookings(for: day)) { booking in
@@ -851,6 +938,14 @@ struct SessionListView: View {
         session.statusValue == .unscheduled || session.statusValue == .pending
     }
 
+    private var canBeginGridSelection: Bool {
+        !isSwapModeEnabled &&
+            pendingDraftSelection == nil &&
+            selectedCourtBooking == nil &&
+            sessionDrag == nil &&
+            !isWeekCommitInProgress
+    }
+
     private func canDragSession(_ session: CoachingSession) -> Bool {
         session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             !isSwapModeEnabled &&
@@ -858,28 +953,6 @@ struct SessionListView: View {
             draftSelection == nil &&
             selectedCourtBooking == nil &&
             !isWeekCommitInProgress
-    }
-
-    private func sessionDragGesture(for session: CoachingSession, from day: Weekday) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.28, maximumDistance: 18)
-            .sequenced(before: DragGesture(minimumDistance: 0))
-            .onChanged { value in
-                switch value {
-                case .first(true):
-                    beginSessionDrag(session, from: day)
-                case let .second(true, dragValue):
-                    if let dragValue {
-                        handleSessionDragChanged(session, from: day, value: dragValue)
-                    } else {
-                        beginSessionDrag(session, from: day)
-                    }
-                default:
-                    break
-                }
-            }
-            .onEnded { _ in
-                handleSessionDragEnded()
-            }
     }
 
     private func beginSessionDrag(_ session: CoachingSession, from day: Weekday) {
@@ -903,7 +976,11 @@ struct SessionListView: View {
         }
     }
 
-    private func handleSessionDragChanged(_ session: CoachingSession, from day: Weekday, value: DragGesture.Value) {
+    private func handleSessionDragChanged(
+        _ session: CoachingSession,
+        from day: Weekday,
+        translation: CGSize
+    ) {
         guard canDragSession(session) else { return }
 
         let dayColumnWidth = max(gridDayColumnWidth, 1)
@@ -911,10 +988,10 @@ struct SessionListView: View {
         let originalStart = minutesOfDay(session.startTime)
         let originalYOffset = CGFloat(originalStart - dayStartHour * 60) / 60.0 * hourHeight
         let targetStart = snappedSessionStartMinutes(
-            for: originalYOffset + value.translation.height,
+            for: originalYOffset + translation.height,
             durationMinutes: duration
         )
-        let dayOffset = Int((value.translation.width / dayColumnWidth).rounded())
+        let dayOffset = Int((translation.width / dayColumnWidth).rounded())
         let targetDayRaw = min(max(day.rawValue + dayOffset, Weekday.monday.rawValue), Weekday.sunday.rawValue)
         let targetDay = Weekday(rawValue: targetDayRaw) ?? day
         let targetEnd = targetStart + duration
@@ -958,6 +1035,14 @@ struct SessionListView: View {
         sessionDrag.session.dayOfWeek = sessionDrag.targetDay.rawValue
         sessionDrag.session.startTime = time(for: sessionDrag.targetStartMinutes)
         sessionDrag.session.endTime = time(for: sessionDrag.targetEndMinutes)
+    }
+
+    private func cancelSessionDrag() {
+        guard sessionDrag != nil else { return }
+
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+            sessionDrag = nil
+        }
     }
 
     private func isValidSessionMove(
@@ -1606,6 +1691,7 @@ private struct ICSShareSheet: UIViewControllerRepresentable {
 
 private struct TimeSlotLongPressOverlay: UIViewRepresentable {
     let day: Weekday
+    let isEnabled: Bool
     let onChanged: (Weekday, CGFloat, CGFloat) -> Void
     let onEnded: (Weekday, CGFloat, CGFloat) -> Void
     let onCancelled: () -> Void
@@ -1627,12 +1713,14 @@ private struct TimeSlotLongPressOverlay: UIViewRepresentable {
             target: context.coordinator,
             action: #selector(Coordinator.handleLongPress(_:))
         )
-        recognizer.minimumPressDuration = 0.35
-        recognizer.allowableMovement = 12
+        recognizer.minimumPressDuration = GridGestureTuning.holdDuration
+        recognizer.allowableMovement = GridGestureTuning.preHoldMovementTolerance
         recognizer.cancelsTouchesInView = false
         recognizer.delaysTouchesBegan = false
         recognizer.delaysTouchesEnded = false
         recognizer.delegate = context.coordinator
+        recognizer.isEnabled = isEnabled
+        context.coordinator.recognizer = recognizer
 
         view.addGestureRecognizer(recognizer)
         return view
@@ -1643,6 +1731,7 @@ private struct TimeSlotLongPressOverlay: UIViewRepresentable {
         context.coordinator.onChanged = onChanged
         context.coordinator.onEnded = onEnded
         context.coordinator.onCancelled = onCancelled
+        context.coordinator.recognizer?.isEnabled = isEnabled
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
@@ -1650,7 +1739,9 @@ private struct TimeSlotLongPressOverlay: UIViewRepresentable {
         var onChanged: (Weekday, CGFloat, CGFloat) -> Void
         var onEnded: (Weekday, CGFloat, CGFloat) -> Void
         var onCancelled: () -> Void
+        weak var recognizer: UILongPressGestureRecognizer?
         private var startY: CGFloat?
+        private let feedbackGenerator = UIImpactFeedbackGenerator(style: .light)
 
         init(
             day: Weekday,
@@ -1670,6 +1761,7 @@ private struct TimeSlotLongPressOverlay: UIViewRepresentable {
             switch recognizer.state {
             case .began:
                 startY = locationY
+                feedbackGenerator.impactOccurred()
                 onChanged(day, locationY, locationY)
             case .changed:
                 guard let startY else { return }
@@ -1682,8 +1774,11 @@ private struct TimeSlotLongPressOverlay: UIViewRepresentable {
                 onEnded(day, startY, locationY)
                 self.startY = nil
             case .cancelled, .failed:
+                let wasActive = startY != nil
                 startY = nil
-                onCancelled()
+                if wasActive {
+                    onCancelled()
+                }
             default:
                 break
             }
@@ -1693,9 +1788,174 @@ private struct TimeSlotLongPressOverlay: UIViewRepresentable {
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
         ) -> Bool {
-            false
+            otherGestureRecognizer is UIPanGestureRecognizer
         }
     }
+}
+
+private struct SessionGridInteractionOverlay: UIViewRepresentable {
+    let isEnabled: Bool
+    let containsSession: (CGPoint) -> Bool
+    let canMoveSession: (CGPoint) -> Bool
+    let onTap: (CGPoint) -> Void
+    let onMoveBegan: (CGPoint) -> Void
+    let onMoveChanged: (CGSize) -> Void
+    let onMoveEnded: () -> Void
+    let onMoveCancelled: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            isEnabled: isEnabled,
+            containsSession: containsSession,
+            canMoveSession: canMoveSession,
+            onTap: onTap,
+            onMoveBegan: onMoveBegan,
+            onMoveChanged: onMoveChanged,
+            onMoveEnded: onMoveEnded,
+            onMoveCancelled: onMoveCancelled
+        )
+    }
+
+    func makeUIView(context: Context) -> InteractionView {
+        let view = InteractionView(frame: .zero)
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.isUserInteractionEnabled = true
+        let coordinator = context.coordinator
+        view.shouldReceiveTouch = { [weak coordinator] location in
+            guard let coordinator else { return false }
+            return coordinator.isEnabled && coordinator.containsSession(location)
+        }
+
+        let tapRecognizer = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleTap(_:))
+        )
+        tapRecognizer.cancelsTouchesInView = false
+
+        let moveRecognizer = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleMove(_:))
+        )
+        moveRecognizer.minimumPressDuration = GridGestureTuning.holdDuration
+        moveRecognizer.allowableMovement = GridGestureTuning.preHoldMovementTolerance
+        moveRecognizer.cancelsTouchesInView = false
+        moveRecognizer.delaysTouchesBegan = false
+        moveRecognizer.delaysTouchesEnded = false
+        moveRecognizer.delegate = context.coordinator
+
+        context.coordinator.moveRecognizer = moveRecognizer
+        view.addGestureRecognizer(tapRecognizer)
+        view.addGestureRecognizer(moveRecognizer)
+        return view
+    }
+
+    func updateUIView(_ uiView: InteractionView, context: Context) {
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.containsSession = containsSession
+        context.coordinator.canMoveSession = canMoveSession
+        context.coordinator.onTap = onTap
+        context.coordinator.onMoveBegan = onMoveBegan
+        context.coordinator.onMoveChanged = onMoveChanged
+        context.coordinator.onMoveEnded = onMoveEnded
+        context.coordinator.onMoveCancelled = onMoveCancelled
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var isEnabled: Bool
+        var containsSession: (CGPoint) -> Bool
+        var canMoveSession: (CGPoint) -> Bool
+        var onTap: (CGPoint) -> Void
+        var onMoveBegan: (CGPoint) -> Void
+        var onMoveChanged: (CGSize) -> Void
+        var onMoveEnded: () -> Void
+        var onMoveCancelled: () -> Void
+        weak var moveRecognizer: UILongPressGestureRecognizer?
+        private var startLocation: CGPoint?
+        private let feedbackGenerator = UIImpactFeedbackGenerator(style: .light)
+
+        init(
+            isEnabled: Bool,
+            containsSession: @escaping (CGPoint) -> Bool,
+            canMoveSession: @escaping (CGPoint) -> Bool,
+            onTap: @escaping (CGPoint) -> Void,
+            onMoveBegan: @escaping (CGPoint) -> Void,
+            onMoveChanged: @escaping (CGSize) -> Void,
+            onMoveEnded: @escaping () -> Void,
+            onMoveCancelled: @escaping () -> Void
+        ) {
+            self.isEnabled = isEnabled
+            self.containsSession = containsSession
+            self.canMoveSession = canMoveSession
+            self.onTap = onTap
+            self.onMoveBegan = onMoveBegan
+            self.onMoveChanged = onMoveChanged
+            self.onMoveEnded = onMoveEnded
+            self.onMoveCancelled = onMoveCancelled
+        }
+
+        @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
+            onTap(recognizer.location(in: recognizer.view))
+        }
+
+        @objc func handleMove(_ recognizer: UILongPressGestureRecognizer) {
+            let location = recognizer.location(in: recognizer.view)
+
+            switch recognizer.state {
+            case .began:
+                startLocation = location
+                feedbackGenerator.impactOccurred()
+                onMoveBegan(location)
+            case .changed:
+                guard let startLocation else { return }
+                onMoveChanged(
+                    CGSize(
+                        width: location.x - startLocation.x,
+                        height: location.y - startLocation.y
+                    )
+                )
+            case .ended:
+                guard startLocation != nil else { return }
+                onMoveEnded()
+                startLocation = nil
+            case .cancelled, .failed:
+                let wasActive = startLocation != nil
+                startLocation = nil
+                if wasActive {
+                    onMoveCancelled()
+                }
+            default:
+                break
+            }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard gestureRecognizer === moveRecognizer else { return true }
+            let location = gestureRecognizer.location(in: gestureRecognizer.view)
+            return isEnabled && canMoveSession(location)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            otherGestureRecognizer is UIPanGestureRecognizer
+        }
+    }
+
+    final class InteractionView: UIView {
+        var shouldReceiveTouch: (CGPoint) -> Bool = { _ in false }
+
+        override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+            super.point(inside: point, with: event) && shouldReceiveTouch(point)
+        }
+    }
+}
+
+private enum GridGestureTuning {
+    static let holdDuration: TimeInterval = 0.42
+    static let preHoldMovementTolerance: CGFloat = 9
 }
 
 private struct DraftSessionSelection: Equatable {
