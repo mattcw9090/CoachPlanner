@@ -446,19 +446,28 @@ struct SocialSessionEditor: Identifiable {
     let preselectedDay: Weekday?
     let preselectedStartTime: Date?
     let preselectedEndTime: Date?
+    let preselectedVenue: Venue?
+    let preselectedCourtNumbers: String?
+    let consumedCourtBooking: CourtBooking?
 
     init(
         session: SocialSession? = nil,
         weekStart: Date,
         preselectedDay: Weekday? = nil,
         preselectedStartTime: Date? = nil,
-        preselectedEndTime: Date? = nil
+        preselectedEndTime: Date? = nil,
+        preselectedVenue: Venue? = nil,
+        preselectedCourtNumbers: String? = nil,
+        consumedCourtBooking: CourtBooking? = nil
     ) {
         self.session = session
         self.weekStart = SocialSessionListView.monday(of: weekStart)
         self.preselectedDay = preselectedDay
         self.preselectedStartTime = preselectedStartTime
         self.preselectedEndTime = preselectedEndTime
+        self.preselectedVenue = preselectedVenue
+        self.preselectedCourtNumbers = preselectedCourtNumbers
+        self.consumedCourtBooking = consumedCourtBooking
     }
 }
 
@@ -506,16 +515,17 @@ struct SocialSessionEditorView: View {
         let calendar = Calendar.current
         let defaultStart = calendar.date(bySettingHour: 19, minute: 0, second: 0, of: .now) ?? .now
         let defaultEnd = calendar.date(bySettingHour: 21, minute: 0, second: 0, of: .now) ?? .now
+        let initialCourtNumbers = editor.session?.courtNumbers ?? editor.preselectedCourtNumbers ?? ""
 
         _title = State(initialValue: editor.session?.title ?? "Badminton Socials")
         _dayOfWeek = State(initialValue: editor.session?.weekday ?? editor.preselectedDay ?? .friday)
         _startTime = State(initialValue: editor.session?.startTime ?? editor.preselectedStartTime ?? defaultStart)
         _endTime = State(initialValue: editor.session?.endTime ?? editor.preselectedEndTime ?? defaultEnd)
-        _venue = State(initialValue: editor.session?.venueValue ?? .pbaMalaga)
+        _venue = State(initialValue: editor.session?.venueValue ?? editor.preselectedVenue ?? .pbaMalaga)
         _sessionStatus = State(initialValue: editor.session?.statusValue ?? .planned)
-        _courtNumbers = State(initialValue: editor.session?.courtNumbers ?? "")
+        _courtNumbers = State(initialValue: initialCourtNumbers)
         _areCourtsBooked = State(
-            initialValue: editor.session?.areCourtsBooked ?? !(editor.session?.courtNumbersList.isEmpty ?? true)
+            initialValue: editor.session?.areCourtsBooked ?? !initialCourtNumbers.isEmpty
         )
         _shuttlecockCostText = State(initialValue: Self.costText(for: editor.session?.shuttlecockCost ?? 0))
         _courtCostText = State(initialValue: Self.costText(for: editor.session?.courtCost ?? 0))
@@ -593,10 +603,29 @@ struct SocialSessionEditorView: View {
         }
     }
 
+    private var isUsingSelectedCourtBooking: Bool {
+        guard let booking = editor.consumedCourtBooking else { return true }
+
+        let selectedCourtNumbers = Set(
+            trimmedCourtNumbers
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        )
+        let bookingCourtNumber = booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return dayOfWeek.rawValue == booking.dayOfWeek &&
+            minutesOfDay(startTime) >= minutesOfDay(booking.startTime) &&
+            minutesOfDay(endTime) <= minutesOfDay(booking.endTime) &&
+            venue.rawValue == booking.venue &&
+            areCourtsBooked &&
+            selectedCourtNumbers.contains(bookingCourtNumber)
+    }
+
     private var canSave: Bool {
         trimmedTitle.isEmpty == false &&
             isTimeValid &&
             overlappingSession == nil &&
+            isUsingSelectedCourtBooking &&
             (sessionStatus != .finished || areAllParticipantsConfirmed) &&
             shuttlecockCost >= 0 &&
             courtCost >= 0
@@ -791,6 +820,9 @@ struct SocialSessionEditorView: View {
                 } footer: {
                     if !isTimeValid {
                         Text("End time must be after start time.")
+                            .foregroundStyle(.red)
+                    } else if !isUsingSelectedCourtBooking {
+                        Text("Use a time inside the selected vacant court booking, keeping its venue and court number.")
                             .foregroundStyle(.red)
                     } else if let overlap = overlappingSession {
                         Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(start: overlap.startTime, end: overlap.endTime)) at \(overlap.venue).")
@@ -1075,6 +1107,7 @@ struct SocialSessionEditorView: View {
                 attendances: attendances
             )
             modelContext.insert(session)
+            consumeCourtBookingIfNeeded()
         }
 
         dismiss()
@@ -1091,6 +1124,37 @@ struct SocialSessionEditorView: View {
         selectedStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
         paymentStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
         modelContext.delete(outsider)
+    }
+
+    private func consumeCourtBookingIfNeeded() {
+        guard let booking = editor.consumedCourtBooking else { return }
+
+        let bookingStart = minutesOfDay(booking.startTime)
+        let bookingEnd = minutesOfDay(booking.endTime)
+        let selectedStart = minutesOfDay(startTime)
+        let selectedEnd = minutesOfDay(endTime)
+        let originalEndTime = booking.endTime
+
+        if selectedStart <= bookingStart && selectedEnd >= bookingEnd {
+            modelContext.delete(booking)
+        } else if selectedStart <= bookingStart {
+            booking.startTime = endTime
+        } else if selectedEnd >= bookingEnd {
+            booking.endTime = startTime
+        } else {
+            booking.endTime = startTime
+            if let bookingVenue = Venue(rawValue: booking.venue) {
+                let trailingBooking = CourtBooking(
+                    weekStart: booking.weekStart ?? editor.weekStart,
+                    dayOfWeek: booking.weekday,
+                    startTime: endTime,
+                    endTime: originalEndTime,
+                    venue: bookingVenue,
+                    courtNumber: booking.courtNumber
+                )
+                modelContext.insert(trailingBooking)
+            }
+        }
     }
 
     private func minutesOfDay(_ date: Date) -> Int {

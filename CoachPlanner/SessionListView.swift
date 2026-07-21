@@ -745,6 +745,9 @@ struct SessionListView: View {
                         onSession: {
                             openSessionEditor(from: selectedCourtBooking)
                         },
+                        onSocials: {
+                            openSocialSessionEditor(from: selectedCourtBooking)
+                        },
                         onEdit: {
                             courtBookingEditor = CourtBookingEditor(weekStart: weekStart, booking: selectedCourtBooking)
                             self.selectedCourtBooking = nil
@@ -900,6 +903,16 @@ struct SessionListView: View {
                     .frame(height: blockHeight(for: social))
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: social))
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        guard !isBulkSelectionModeEnabled else { return }
+                        pendingDraftSelection = nil
+                        selectedCourtBooking = nil
+                        socialSessionEditor = SocialSessionEditor(
+                            session: social,
+                            weekStart: social.weekStart
+                        )
+                    }
             }
         }
         .frame(maxWidth: .infinity)
@@ -1275,6 +1288,24 @@ struct SessionListView: View {
             preselectedCourtNumber: booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines),
             consumedCourtBooking: booking,
             weekStart: weekStart
+        )
+        selectedCourtBooking = nil
+    }
+
+    private func openSocialSessionEditor(from booking: CourtBooking) {
+        guard canTakeSession(from: booking),
+              let venue = Venue(rawValue: booking.venue) else {
+            return
+        }
+
+        socialSessionEditor = SocialSessionEditor(
+            weekStart: weekStart,
+            preselectedDay: booking.weekday,
+            preselectedStartTime: booking.startTime,
+            preselectedEndTime: booking.endTime,
+            preselectedVenue: venue,
+            preselectedCourtNumbers: booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines),
+            consumedCourtBooking: booking
         )
         selectedCourtBooking = nil
     }
@@ -2277,12 +2308,13 @@ private struct DraftTypePopover: View {
 }
 
 private struct VacantCourtPopover: View {
-    static let width: CGFloat = 226
+    static let width: CGFloat = 270
 
     let title: String
     let detail: String
     let canAddSession: Bool
     let onSession: () -> Void
+    let onSocials: () -> Void
     let onEdit: () -> Void
     let onCancel: () -> Void
 
@@ -2320,6 +2352,14 @@ private struct VacantCourtPopover: View {
                     tint: .accentColor,
                     isEnabled: canAddSession,
                     action: onSession
+                )
+
+                DraftTypeButton(
+                    title: "Socials",
+                    systemImage: "figure.badminton",
+                    tint: .purple,
+                    isEnabled: canAddSession,
+                    action: onSocials
                 )
 
                 DraftTypeButton(
