@@ -1021,6 +1021,8 @@ struct SocialSessionEditorView: View {
                 OutsiderEditorView(editor: editor)
             }
         }
+        .presentationContentInteraction(.scrolls)
+        .interactiveDismissDisabled()
     }
 
     private func save() {
