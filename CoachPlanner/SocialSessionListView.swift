@@ -811,74 +811,76 @@ struct SocialSessionEditorView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(isShowingHiddenOutsiders ? hiddenOutsiders : availableOutsiders) { outsider in
-                            HStack(spacing: 10) {
-                                Button {
-                                    if isShowingHiddenOutsiders {
-                                        unhideOutsider(outsider)
-                                    } else {
-                                        addOutsiderToSocial(outsider)
-                                    }
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: "person.crop.circle.badge.questionmark")
-                                            .font(.caption.weight(.bold))
-                                            .foregroundStyle(.purple)
-                                            .frame(width: 24, height: 24)
-                                            .background(Circle().fill(Color.purple.opacity(0.14)))
-
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(outsider.name)
-                                                .foregroundStyle(.primary)
-                                                .lineLimit(1)
-                                            Text(outsider.displayContactDetail)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-
-                                        Spacer()
-
-                                        Image(systemName: isShowingHiddenOutsiders ? "eye" : "plus.circle.fill")
-                                            .foregroundStyle(isShowingHiddenOutsiders ? Color.gray : Color.accentColor)
-                                    }
+                List {
+                    ForEach(isShowingHiddenOutsiders ? hiddenOutsiders : availableOutsiders) { outsider in
+                        HStack(spacing: 10) {
+                            Button {
+                                if isShowingHiddenOutsiders {
+                                    unhideOutsider(outsider)
+                                } else {
+                                    addOutsiderToSocial(outsider)
                                 }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(
-                                    isShowingHiddenOutsiders ? "Unhide \(outsider.name)" : "Add \(outsider.name) to this social"
-                                )
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "person.crop.circle.badge.questionmark")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(.purple)
+                                        .frame(width: 24, height: 24)
+                                        .background(Circle().fill(Color.purple.opacity(0.14)))
 
-                                if !isShowingHiddenOutsiders {
-                                    Button {
-                                        hideOutsiderFromSocial(outsider)
-                                    } label: {
-                                        Image(systemName: "eye.slash")
-                                            .foregroundStyle(.orange)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(outsider.name)
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text(outsider.displayContactDetail)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
                                     }
-                                    .buttonStyle(.borderless)
-                                    .accessibilityLabel("Hide \(outsider.name) from this social")
+
+                                    Spacer()
+
+                                    Image(systemName: isShowingHiddenOutsiders ? "eye" : "plus.circle.fill")
+                                        .foregroundStyle(isShowingHiddenOutsiders ? Color.gray : Color.accentColor)
                                 }
                             }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 9)
-                            .background(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .fill(AppStyle.surface)
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(
+                                isShowingHiddenOutsiders ? "Unhide \(outsider.name)" : "Add \(outsider.name) to this social"
                             )
-                            .contextMenu {
-                                Button(role: .destructive) {
-                                    outsiderPendingDeletion = outsider
+
+                            if !isShowingHiddenOutsiders {
+                                Button {
+                                    hideOutsiderFromSocial(outsider)
                                 } label: {
-                                    Label("Delete Outsider", systemImage: "trash")
+                                    Image(systemName: "eye.slash")
+                                        .foregroundStyle(.orange)
                                 }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Hide \(outsider.name) from this social")
+                            }
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(AppStyle.surface)
+                        )
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                outsiderPendingDeletion = outsider
+                            } label: {
+                                Label("Delete", systemImage: "trash")
                             }
                         }
                     }
-                    .padding(.vertical, 2)
                 }
-                .frame(maxHeight: 230)
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .frame(height: 230)
             }
         }
         .padding(.top, 8)
@@ -1139,7 +1141,7 @@ struct SocialSessionEditorView: View {
                 } footer: {
                     Text(
                         addPeoplePage == .outsiders
-                            ? "Swipe sideways to switch lists. Press and hold an outsider to delete their record."
+                            ? "Swipe right to return to students, or swipe an outsider left to delete their record."
                             : "Swipe sideways to switch between students and outsiders."
                     )
                 }
