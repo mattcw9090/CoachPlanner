@@ -1520,7 +1520,6 @@ struct SessionListView: View {
 
             let trimmedCourt = session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
             let isCourtBooked = !trimmedCourt.isEmpty
-            let courtInfo = trimmedCourt.isEmpty ? "Court unbooked" : "Court \(trimmedCourt)"
             let location = trimmedCourt.isEmpty ? session.venue : "\(session.venue), Court \(trimmedCourt)"
 
             let baseSummary = studentList.isEmpty
@@ -1532,22 +1531,6 @@ struct SessionListView: View {
                 isCourtBooked: isCourtBooked
             )
 
-            var descriptionParts: [String] = [
-                "CoachPlanner session",
-                "Status: \(status.rawValue)",
-                "Venue: \(session.venue)",
-                courtInfo,
-                "Day: \(session.weekday.name)",
-                "Time: \(timeRangeText(start: session.startTime, end: session.endTime))",
-                "Session fee: \(session.sessionFee.formatted(.currency(code: AppStyle.currencyCode).precision(.fractionLength(0...2))))"
-            ]
-            if !studentList.isEmpty {
-                descriptionParts.append("Students: \(studentList)")
-            } else {
-                descriptionParts.append("Students: None assigned")
-            }
-            let description = descriptionParts.joined(separator: "\n")
-
             lines += [
                 "BEGIN:VEVENT",
                 "UID:\(uid)",
@@ -1555,7 +1538,6 @@ struct SessionListView: View {
                 "DTSTART:\(dtStart)",
                 "DTEND:\(dtEnd)",
                 "SUMMARY:\(icsEscape(summary))",
-                "DESCRIPTION:\(icsEscape(description))",
                 "LOCATION:\(icsEscape(location))",
                 "STATUS:\(icsStatus(for: status))",
                 "END:VEVENT"
@@ -1583,14 +1565,6 @@ struct SessionListView: View {
                 String(minutesOfDay(booking.endTime)),
                 String(Int(booking.createdAt.timeIntervalSince1970 * 1000))
             ].joined(separator: "-"))
-            let description = [
-                "CoachPlanner vacant court booking",
-                "Venue: \(booking.venue)",
-                courtLabel,
-                "Day: \(booking.weekday.name)",
-                "Time: \(timeRangeText(start: booking.startTime, end: booking.endTime))"
-            ].joined(separator: "\n")
-
             lines += [
                 "BEGIN:VEVENT",
                 "UID:\(uid)",
@@ -1598,7 +1572,6 @@ struct SessionListView: View {
                 "DTSTART:\(floatingFormatter.string(from: eventDates.start))",
                 "DTEND:\(floatingFormatter.string(from: eventDates.end))",
                 "SUMMARY:\(icsEscape(summary))",
-                "DESCRIPTION:\(icsEscape(description))",
                 "LOCATION:\(icsEscape(location))",
                 "STATUS:CONFIRMED",
                 "END:VEVENT"
@@ -1616,13 +1589,7 @@ struct SessionListView: View {
 
             let trimmedCourts = social.courtNumbersList.joined(separator: ", ")
             let hasCourts = !trimmedCourts.isEmpty
-            let courtInfo = hasCourts ? "Courts \(trimmedCourts)" : "Courts unbooked"
             let location = hasCourts ? "\(social.venue), Courts \(trimmedCourts)" : social.venue
-
-            let attendeeList = social.students
-                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-                .map(\.name)
-                .joined(separator: ", ")
 
             let baseTitle = social.title.trimmingCharacters(in: .whitespacesAndNewlines)
             let summary = baseTitle.isEmpty ? "Badminton Socials" : baseTitle
@@ -1635,19 +1602,6 @@ struct SessionListView: View {
                 String(Int(social.createdAt.timeIntervalSince1970 * 1000))
             ].joined(separator: "-"))
 
-            var descriptionParts: [String] = [
-                "CoachPlanner social session",
-                "Status: \(social.statusValue.rawValue)",
-                "Venue: \(social.venue)",
-                courtInfo,
-                "Day: \(social.weekday.name)",
-                "Time: \(timeRangeText(start: social.startTime, end: social.endTime))"
-            ]
-            if !attendeeList.isEmpty {
-                descriptionParts.append("Attendees: \(attendeeList)")
-            }
-            let description = descriptionParts.joined(separator: "\n")
-
             lines += [
                 "BEGIN:VEVENT",
                 "UID:\(uid)",
@@ -1655,7 +1609,6 @@ struct SessionListView: View {
                 "DTSTART:\(floatingFormatter.string(from: eventDates.start))",
                 "DTEND:\(floatingFormatter.string(from: eventDates.end))",
                 "SUMMARY:\(icsEscape(summary))",
-                "DESCRIPTION:\(icsEscape(description))",
                 "LOCATION:\(icsEscape(location))",
                 "STATUS:CONFIRMED",
                 "END:VEVENT"
@@ -1719,11 +1672,6 @@ struct SessionListView: View {
             title += "?"
         }
         return title
-    }
-
-    private func timeRangeText(start: Date, end: Date) -> String {
-        let formatter = Date.FormatStyle.dateTime.hour().minute()
-        return "\(start.formatted(formatter))-\(end.formatted(formatter))"
     }
 
     private func icsEscape(_ string: String) -> String {
