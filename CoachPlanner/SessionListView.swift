@@ -34,9 +34,6 @@ struct SessionListView: View {
     @State private var financeSendNotice: FinanceSendNotice?
     @State private var selectedCourtBooking: CourtBooking?
     @State private var isResetConfirmationPresented = false
-    @State private var isSwapModeEnabled = false
-    @State private var selectedSwapSession: CoachingSession?
-    @State private var swapNotice: SessionSwapNotice?
     @State private var bulkSelectionAction: BulkSessionAction?
     @State private var bulkSessionSelection: Set<PersistentIdentifier> = []
     @State private var isMassCourtBookingSheetPresented = false
@@ -159,7 +156,6 @@ struct SessionListView: View {
         pendingDraftSelection = nil
         draftSelection = nil
         selectedCourtBooking = nil
-        selectedSwapSession = nil
         cancelBulkSelection()
         weekStartTimestamp = Self.monday(of: date).timeIntervalSince1970
     }
@@ -285,9 +281,9 @@ struct SessionListView: View {
         let direction = landingOffset < 0 ? 1 : -1
         let exitOffset = direction > 0 ? -pageWidth : pageWidth
 
-        // Slide the current page fully off screen, then swap in the new week
-        // with animation suppressed so the offset reset is invisible. Driving
-        // the swap from the animation's completion callback keeps it perfectly
+        // Slide the current page fully off screen, then show the new week with
+        // animation suppressed so the offset reset is invisible. Updating from
+        // the animation's completion callback keeps it perfectly
         // in sync with the end of the slide instead of guessing a delay.
         isWeekCommitInProgress = true
         withAnimation(.snappy(duration: 0.3), completionCriteria: .logicallyComplete) {
@@ -411,16 +407,6 @@ struct SessionListView: View {
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        toggleSwapMode()
-                    } label: {
-                        Label(isSwapModeEnabled ? "Cancel Swap" : "Swap Sessions", systemImage: "arrow.left.arrow.right")
-                    }
-                    .disabled(sessionsForWeek.count < 2 || isBulkSelectionModeEnabled)
-                    .tint(isSwapModeEnabled ? .orange : nil)
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
                     if isBulkSelectionModeEnabled {
                         Button {
                             cancelBulkSelection()
@@ -445,7 +431,7 @@ struct SessionListView: View {
                         } label: {
                             Label("Bulk Actions", systemImage: "checklist")
                         }
-                        .disabled(isSwapModeEnabled || sessionsForWeek.isEmpty)
+                        .disabled(sessionsForWeek.isEmpty)
                     }
                 }
 
@@ -496,13 +482,6 @@ struct SessionListView: View {
                 ICSShareSheet(url: item.url)
             }
             .alert(item: $financeSendNotice) { notice in
-                Alert(
-                    title: Text(notice.title),
-                    message: Text(notice.message),
-                    dismissButton: .default(Text("OK"))
-                )
-            }
-            .alert(item: $swapNotice) { notice in
                 Alert(
                     title: Text(notice.title),
                     message: Text(notice.message),
@@ -886,9 +865,6 @@ struct SessionListView: View {
                 let isDragging = sessionDrag?.session.persistentModelID == session.persistentModelID
                 SessionBlock(
                     session: session,
-                    isSwapModeEnabled: isSwapModeEnabled,
-                    isSwapEligible: canSwap(session),
-                    isSwapSelected: selectedSwapSession?.persistentModelID == session.persistentModelID,
                     bulkSelectionAction: bulkSelectionAction,
                     isBulkSelectionEligible: isEligibleForBulkSelection(session),
                     isBulkSelectionSelected: bulkSessionSelection.contains(session.persistentModelID)
@@ -905,8 +881,7 @@ struct SessionListView: View {
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: booking))
                     .onTapGesture {
-                        guard !isSwapModeEnabled,
-                              !isBulkSelectionModeEnabled else { return }
+                        guard !isBulkSelectionModeEnabled else { return }
                         pendingDraftSelection = nil
                         selectedCourtBooking = booking
                     }
@@ -1000,41 +975,10 @@ struct SessionListView: View {
             return
         }
 
-        guard isSwapModeEnabled else {
-            editor = SessionEditor(session: session, weekStart: weekStart)
-            return
-        }
-
-        guard canSwap(session) else {
-            swapNotice = SessionSwapNotice(
-                title: "Can't Swap Session",
-                message: "Only Unscheduled or Pending sessions can be swapped."
-            )
-            return
-        }
-
-        if selectedSwapSession?.persistentModelID == session.persistentModelID {
-            selectedSwapSession = nil
-            return
-        }
-
-        guard let firstSession = selectedSwapSession else {
-            selectedSwapSession = session
-            return
-        }
-
-        swapSessions(firstSession, session)
-    }
-
-    private func toggleSwapMode() {
-        cancelBulkSelection()
-        isSwapModeEnabled.toggle()
-        selectedSwapSession = nil
+        editor = SessionEditor(session: session, weekStart: weekStart)
     }
 
     private func beginBulkSelection(_ action: BulkSessionAction) {
-        isSwapModeEnabled = false
-        selectedSwapSession = nil
         pendingDraftSelection = nil
         draftSelection = nil
         selectedCourtBooking = nil
@@ -1126,48 +1070,8 @@ struct SessionListView: View {
         session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func swapSessions(_ firstSession: CoachingSession, _ secondSession: CoachingSession) {
-        guard canSwap(firstSession), canSwap(secondSession) else {
-            swapNotice = SessionSwapNotice(
-                title: "Can't Swap Sessions",
-                message: "Only Unscheduled or Pending sessions can be swapped."
-            )
-            selectedSwapSession = nil
-            return
-        }
-
-        let firstDuration = durationMinutes(for: firstSession)
-        let secondDuration = durationMinutes(for: secondSession)
-
-        guard firstDuration == secondDuration else {
-            swapNotice = SessionSwapNotice(
-                title: "Can't Swap Sessions",
-                message: "Only sessions with the same duration can be swapped. This is \(durationText(firstDuration)) and \(durationText(secondDuration))."
-            )
-            selectedSwapSession = nil
-            return
-        }
-
-        let firstStudents = firstSession.students
-        let firstFee = firstSession.sessionFee
-
-        firstSession.students = secondSession.students
-        firstSession.sessionFee = secondSession.sessionFee
-
-        secondSession.students = firstStudents
-        secondSession.sessionFee = firstFee
-
-        selectedSwapSession = nil
-        isSwapModeEnabled = false
-    }
-
-    private func canSwap(_ session: CoachingSession) -> Bool {
-        session.statusValue == .unscheduled || session.statusValue == .pending
-    }
-
     private var canBeginGridSelection: Bool {
-        !isSwapModeEnabled &&
-            !isBulkSelectionModeEnabled &&
+        !isBulkSelectionModeEnabled &&
             pendingDraftSelection == nil &&
             selectedCourtBooking == nil &&
             sessionDrag == nil &&
@@ -1176,7 +1080,6 @@ struct SessionListView: View {
 
     private func canDragSession(_ session: CoachingSession) -> Bool {
         isCourtUnbooked(session) &&
-            !isSwapModeEnabled &&
             !isBulkSelectionModeEnabled &&
             pendingDraftSelection == nil &&
             draftSelection == nil &&
@@ -1373,16 +1276,6 @@ struct SessionListView: View {
 
     private func durationMinutes(for session: CoachingSession) -> Int {
         minutesOfDay(session.endTime) - minutesOfDay(session.startTime)
-    }
-
-    private func durationText(_ minutes: Int) -> String {
-        if minutes % 60 == 0 {
-            return "\(minutes / 60)h"
-        }
-
-        let hours = minutes / 60
-        let remainingMinutes = minutes % 60
-        return hours == 0 ? "\(remainingMinutes)m" : "\(hours)h \(remainingMinutes)m"
     }
 
     private func draftPopoverX(for selection: DraftSessionSelection, gridWidth: CGFloat) -> CGFloat {
@@ -1872,12 +1765,6 @@ private struct FileExportItem: Identifiable {
 }
 
 private struct FinanceSendNotice: Identifiable {
-    let id = UUID()
-    let title: String
-    let message: String
-}
-
-private struct SessionSwapNotice: Identifiable {
     let id = UUID()
     let title: String
     let message: String
@@ -2517,9 +2404,6 @@ private struct DraftTypeButton: View {
 
 private struct SessionBlock: View {
     let session: CoachingSession
-    var isSwapModeEnabled = false
-    var isSwapEligible = true
-    var isSwapSelected = false
     var bulkSelectionAction: BulkSessionAction?
     var isBulkSelectionEligible = false
     var isBulkSelectionSelected = false
@@ -2558,29 +2442,26 @@ private struct SessionBlock: View {
     }
 
     private var strokeOpacity: Double {
-        if isSwapSelected || isBulkSelectionSelected { return 0.95 }
+        if isBulkSelectionSelected { return 0.95 }
         return isCourtBooked ? 0.36 : 0.68
     }
 
     private var strokeWidth: CGFloat {
-        isSwapSelected || isBulkSelectionSelected ? 2.4 : (isCourtBooked ? 0.75 : 1.1)
+        isBulkSelectionSelected ? 2.4 : (isCourtBooked ? 0.75 : 1.1)
     }
 
     private var strokeColor: Color {
         if isBulkSelectionSelected { return .blue }
-        if isSwapSelected { return .orange }
         return color
     }
 
     private var shadowColor: Color {
         if isBulkSelectionSelected { return Color.blue.opacity(0.28) }
-        if isSwapSelected { return Color.orange.opacity(0.28) }
         return isCourtBooked ? .clear : color.opacity(0.14)
     }
 
     private var isModeLocked: Bool {
-        (isSwapModeEnabled && !isSwapEligible) ||
-            (bulkSelectionAction != nil && !isBulkSelectionEligible)
+        bulkSelectionAction != nil && !isBulkSelectionEligible
     }
 
     var body: some View {
@@ -2594,21 +2475,6 @@ private struct SessionBlock: View {
                 .foregroundStyle(isBulkSelectionEligible ? Color.blue : Color.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-            } else if isSwapSelected {
-                Text("Swap from")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-            } else if isSwapModeEnabled && isSwapEligible {
-                Text("Tap to swap")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.orange.opacity(0.9))
-                    .lineLimit(1)
-            } else if isSwapModeEnabled {
-                Text("Locked")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
 
             Text(studentNames.isEmpty ? "No students" : studentNames)
