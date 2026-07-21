@@ -496,7 +496,11 @@ struct SocialSessionEditorView: View {
     @State private var selectedStatusByOutsiderID: [PersistentIdentifier: SessionStatus]
     @State private var paymentStatusByStudentID: [PersistentIdentifier: SocialPaymentStatus]
     @State private var paymentStatusByOutsiderID: [PersistentIdentifier: SocialPaymentStatus]
+    @State private var hiddenStudentIDs: Set<PersistentIdentifier>
+    @State private var hiddenOutsiderIDs: Set<PersistentIdentifier>
     @State private var addPeoplePage: SocialPeoplePage = .students
+    @State private var isShowingHiddenStudents = false
+    @State private var isShowingHiddenOutsiders = false
     @State private var studentSearch = ""
     @State private var outsiderSearch = ""
     @State private var outsiderEditor: OutsiderEditor?
@@ -533,6 +537,12 @@ struct SocialSessionEditorView: View {
         _selectedStatusByOutsiderID = State(initialValue: Self.initialOutsiderStatuses(for: editor.session))
         _paymentStatusByStudentID = State(initialValue: Self.initialStudentPaymentStatuses(for: editor.session))
         _paymentStatusByOutsiderID = State(initialValue: Self.initialOutsiderPaymentStatuses(for: editor.session))
+        _hiddenStudentIDs = State(
+            initialValue: Set(editor.session?.hiddenStudents.map(\.persistentModelID) ?? [])
+        )
+        _hiddenOutsiderIDs = State(
+            initialValue: Set(editor.session?.hiddenOutsiders.map(\.persistentModelID) ?? [])
+        )
     }
 
     private var selectedStudents: [Student] {
@@ -545,7 +555,19 @@ struct SocialSessionEditorView: View {
         let trimmed = studentSearch.trimmingCharacters(in: .whitespacesAndNewlines)
         return students
             .filter { selectedStatusByStudentID[$0.persistentModelID] == nil }
+            .filter { !hiddenStudentIDs.contains($0.persistentModelID) }
             .filter { trimmed.isEmpty || $0.name.localizedCaseInsensitiveContains(trimmed) }
+    }
+
+    private var hiddenStudents: [Student] {
+        let trimmed = studentSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return students
+            .filter { hiddenStudentIDs.contains($0.persistentModelID) }
+            .filter { trimmed.isEmpty || $0.name.localizedCaseInsensitiveContains(trimmed) }
+    }
+
+    private var hiddenStudentCount: Int {
+        students.filter { hiddenStudentIDs.contains($0.persistentModelID) }.count
     }
 
     private var selectedOutsiders: [Outsider] {
@@ -558,7 +580,19 @@ struct SocialSessionEditorView: View {
         let trimmed = outsiderSearch.trimmingCharacters(in: .whitespacesAndNewlines)
         return outsiders
             .filter { selectedStatusByOutsiderID[$0.persistentModelID] == nil }
+            .filter { !hiddenOutsiderIDs.contains($0.persistentModelID) }
             .filter { trimmed.isEmpty || $0.name.localizedCaseInsensitiveContains(trimmed) }
+    }
+
+    private var hiddenOutsiders: [Outsider] {
+        let trimmed = outsiderSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return outsiders
+            .filter { hiddenOutsiderIDs.contains($0.persistentModelID) }
+            .filter { trimmed.isEmpty || $0.name.localizedCaseInsensitiveContains(trimmed) }
+    }
+
+    private var hiddenOutsiderCount: Int {
+        outsiders.filter { hiddenOutsiderIDs.contains($0.persistentModelID) }.count
     }
 
     private var participantCountForSplit: Int {
@@ -645,48 +679,87 @@ struct SocialSessionEditorView: View {
 
     private var addStudentsPage: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TextField("Search students", text: $studentSearch)
-                .textInputAutocapitalization(.words)
-                .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 8) {
+                TextField("Search students", text: $studentSearch)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.roundedBorder)
 
-            if availableStudents.isEmpty {
-                Text(students.isEmpty ? "Add students in the Students tab first." : "No matching students.")
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isShowingHiddenStudents.toggle()
+                    }
+                } label: {
+                    Label(
+                        isShowingHiddenStudents ? "Available" : "Hidden \(hiddenStudentCount)",
+                        systemImage: isShowingHiddenStudents ? "person.badge.plus" : "eye.slash"
+                    )
+                    .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            if isShowingHiddenStudents && hiddenStudents.isEmpty {
+                Text(hiddenStudentCount == 0 ? "No hidden students for this social." : "No matching hidden students.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+            } else if !isShowingHiddenStudents && availableStudents.isEmpty {
+                Text(students.isEmpty ? "Add students in the Students tab first." : "No matching available students.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(availableStudents) { student in
-                            Button {
-                                selectedStatusByStudentID[student.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
-                                paymentStatusByStudentID[student.persistentModelID] = .unpaid
-                                studentSearch = ""
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "person.fill")
-                                        .font(.caption.weight(.bold))
-                                        .foregroundStyle(.blue)
-                                        .frame(width: 24, height: 24)
-                                        .background(Circle().fill(Color.blue.opacity(0.14)))
+                        ForEach(isShowingHiddenStudents ? hiddenStudents : availableStudents) { student in
+                            HStack(spacing: 8) {
+                                Button {
+                                    if isShowingHiddenStudents {
+                                        unhideStudent(student)
+                                    } else {
+                                        addStudentToSocial(student)
+                                    }
+                                } label: {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "person.fill")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundStyle(.blue)
+                                            .frame(width: 24, height: 24)
+                                            .background(Circle().fill(Color.blue.opacity(0.14)))
 
-                                    Text(student.name)
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(1)
+                                        Text(student.name)
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
 
-                                    Spacer()
+                                        Spacer()
 
-                                    Image(systemName: "plus.circle.fill")
-                                        .foregroundStyle(.tint)
+                                        Image(systemName: isShowingHiddenStudents ? "eye" : "plus.circle.fill")
+                                            .foregroundStyle(isShowingHiddenStudents ? Color.gray : Color.accentColor)
+                                    }
                                 }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 9)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(AppStyle.surface)
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(
+                                    isShowingHiddenStudents ? "Unhide \(student.name)" : "Add \(student.name) to this social"
                                 )
+
+                                if !isShowingHiddenStudents {
+                                    Button {
+                                        hideStudentFromSocial(student)
+                                    } label: {
+                                        Image(systemName: "eye.slash")
+                                            .foregroundStyle(.orange)
+                                            .frame(width: 28, height: 28)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel("Hide \(student.name) from this social")
+                                }
                             }
-                            .buttonStyle(.plain)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(AppStyle.surface)
+                            )
                         }
                     }
                     .padding(.vertical, 2)
@@ -712,21 +785,41 @@ struct SocialSessionEditorView: View {
                         .labelStyle(.iconOnly)
                 }
                 .buttonStyle(.bordered)
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isShowingHiddenOutsiders.toggle()
+                    }
+                } label: {
+                    Label(
+                        isShowingHiddenOutsiders ? "Available" : "Hidden \(hiddenOutsiderCount)",
+                        systemImage: isShowingHiddenOutsiders ? "person.badge.plus" : "eye.slash"
+                    )
+                    .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
 
-            if availableOutsiders.isEmpty {
-                Text(outsiders.isEmpty ? "Create an outsider to add non-students." : "No matching outsiders.")
+            if isShowingHiddenOutsiders && hiddenOutsiders.isEmpty {
+                Text(hiddenOutsiderCount == 0 ? "No hidden outsiders for this social." : "No matching hidden outsiders.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
+            } else if !isShowingHiddenOutsiders && availableOutsiders.isEmpty {
+                Text(outsiders.isEmpty ? "Create an outsider to add non-students." : "No matching available outsiders.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(availableOutsiders) { outsider in
+                        ForEach(isShowingHiddenOutsiders ? hiddenOutsiders : availableOutsiders) { outsider in
                             HStack(spacing: 10) {
                                 Button {
-                                    selectedStatusByOutsiderID[outsider.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
-                                    paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
-                                    outsiderSearch = ""
+                                    if isShowingHiddenOutsiders {
+                                        unhideOutsider(outsider)
+                                    } else {
+                                        addOutsiderToSocial(outsider)
+                                    }
                                 } label: {
                                     HStack(spacing: 10) {
                                         Image(systemName: "person.crop.circle.badge.questionmark")
@@ -747,11 +840,25 @@ struct SocialSessionEditorView: View {
 
                                         Spacer()
 
-                                        Image(systemName: "plus.circle.fill")
-                                            .foregroundStyle(.tint)
+                                        Image(systemName: isShowingHiddenOutsiders ? "eye" : "plus.circle.fill")
+                                            .foregroundStyle(isShowingHiddenOutsiders ? Color.gray : Color.accentColor)
                                     }
                                 }
                                 .buttonStyle(.plain)
+                                .accessibilityLabel(
+                                    isShowingHiddenOutsiders ? "Unhide \(outsider.name)" : "Add \(outsider.name) to this social"
+                                )
+
+                                if !isShowingHiddenOutsiders {
+                                    Button {
+                                        hideOutsiderFromSocial(outsider)
+                                    } label: {
+                                        Image(systemName: "eye.slash")
+                                            .foregroundStyle(.orange)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel("Hide \(outsider.name) from this social")
+                                }
 
                                 Button(role: .destructive) {
                                     deleteOutsider(outsider)
@@ -920,6 +1027,13 @@ struct SocialSessionEditorView: View {
                                 .tint(.blue)
                             }
                             .swipeActions(edge: .trailing) {
+                                Button {
+                                    hideStudentFromSocial(student)
+                                } label: {
+                                    Label("Hide", systemImage: "eye.slash")
+                                }
+                                .tint(.orange)
+
                                 Button(role: .destructive) {
                                     selectedStatusByStudentID.removeValue(forKey: student.persistentModelID)
                                     paymentStatusByStudentID.removeValue(forKey: student.persistentModelID)
@@ -978,6 +1092,13 @@ struct SocialSessionEditorView: View {
                                 .tint(.blue)
                             }
                             .swipeActions(edge: .trailing) {
+                                Button {
+                                    hideOutsiderFromSocial(outsider)
+                                } label: {
+                                    Label("Hide", systemImage: "eye.slash")
+                                }
+                                .tint(.orange)
+
                                 Button(role: .destructive) {
                                     selectedStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
                                     paymentStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
@@ -991,7 +1112,7 @@ struct SocialSessionEditorView: View {
                     Text("Name List")
                 } footer: {
                     if !selectedStudents.isEmpty || !selectedOutsiders.isEmpty {
-                        Text("Swipe right to ask, or swipe left to remove.")
+                        Text("Swipe right to ask, or swipe left to remove or hide.")
                     }
                 }
 
@@ -1060,6 +1181,7 @@ struct SocialSessionEditorView: View {
     }
 
     private func addCreatedOutsiderToSession(_ outsider: Outsider) {
+        hiddenOutsiderIDs.remove(outsider.persistentModelID)
         selectedStatusByOutsiderID[outsider.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
         paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
         outsiderSearch = ""
@@ -1067,9 +1189,61 @@ struct SocialSessionEditorView: View {
         UISelectionFeedbackGenerator().selectionChanged()
     }
 
+    private func addStudentToSocial(_ student: Student) {
+        hiddenStudentIDs.remove(student.persistentModelID)
+        selectedStatusByStudentID[student.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
+        paymentStatusByStudentID[student.persistentModelID] = .unpaid
+        studentSearch = ""
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func hideStudentFromSocial(_ student: Student) {
+        selectedStatusByStudentID.removeValue(forKey: student.persistentModelID)
+        paymentStatusByStudentID.removeValue(forKey: student.persistentModelID)
+        hiddenStudentIDs.insert(student.persistentModelID)
+        studentSearch = ""
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func unhideStudent(_ student: Student) {
+        hiddenStudentIDs.remove(student.persistentModelID)
+        studentSearch = ""
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func addOutsiderToSocial(_ outsider: Outsider) {
+        hiddenOutsiderIDs.remove(outsider.persistentModelID)
+        selectedStatusByOutsiderID[outsider.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
+        paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
+        outsiderSearch = ""
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func hideOutsiderFromSocial(_ outsider: Outsider) {
+        selectedStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
+        paymentStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
+        hiddenOutsiderIDs.insert(outsider.persistentModelID)
+        outsiderSearch = ""
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func unhideOutsider(_ outsider: Outsider) {
+        hiddenOutsiderIDs.remove(outsider.persistentModelID)
+        outsiderSearch = ""
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
     private func save() {
         let selected = students.filter { selectedStatusByStudentID[$0.persistentModelID] != nil }
         let selectedOutsiders = outsiders.filter { selectedStatusByOutsiderID[$0.persistentModelID] != nil }
+        let excludedStudents = students.filter {
+            selectedStatusByStudentID[$0.persistentModelID] == nil &&
+                hiddenStudentIDs.contains($0.persistentModelID)
+        }
+        let excludedOutsiders = outsiders.filter {
+            selectedStatusByOutsiderID[$0.persistentModelID] == nil &&
+                hiddenOutsiderIDs.contains($0.persistentModelID)
+        }
         let attendances = attendanceModels(for: selected, outsiders: selectedOutsiders)
 
         if let session = editor.session {
@@ -1089,6 +1263,8 @@ struct SocialSessionEditorView: View {
             session.shuttlecockCost = sessionStatus == .finished ? shuttlecockCost : 0
             session.courtCost = sessionStatus == .finished ? courtCost : 0
             session.students = selected
+            session.hiddenStudents = excludedStudents
+            session.hiddenOutsiders = excludedOutsiders
             session.attendances = attendances
         } else {
             let session = SocialSession(
@@ -1104,6 +1280,8 @@ struct SocialSessionEditorView: View {
                 shuttlecockCost: sessionStatus == .finished ? shuttlecockCost : 0,
                 courtCost: sessionStatus == .finished ? courtCost : 0,
                 students: selected,
+                hiddenStudents: excludedStudents,
+                hiddenOutsiders: excludedOutsiders,
                 attendances: attendances
             )
             modelContext.insert(session)
@@ -1123,6 +1301,7 @@ struct SocialSessionEditorView: View {
     private func deleteOutsider(_ outsider: Outsider) {
         selectedStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
         paymentStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
+        hiddenOutsiderIDs.remove(outsider.persistentModelID)
         modelContext.delete(outsider)
     }
 

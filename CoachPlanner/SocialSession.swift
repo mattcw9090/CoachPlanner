@@ -33,6 +33,12 @@ final class SocialSession {
     @Relationship(deleteRule: .nullify)
     var students: [Student]
 
+    @Relationship(deleteRule: .nullify)
+    var hiddenStudents: [Student] = []
+
+    @Relationship(deleteRule: .nullify)
+    var hiddenOutsiders: [Outsider] = []
+
     @Relationship(deleteRule: .cascade)
     var attendances: [SocialAttendance] = []
 
@@ -49,6 +55,8 @@ final class SocialSession {
         shuttlecockCost: Double = 0,
         courtCost: Double = 0,
         students: [Student] = [],
+        hiddenStudents: [Student] = [],
+        hiddenOutsiders: [Outsider] = [],
         attendances: [SocialAttendance] = [],
         createdAt: Date = .now
     ) {
@@ -64,6 +72,8 @@ final class SocialSession {
         self.shuttlecockCost = shuttlecockCost
         self.courtCost = courtCost
         self.students = students
+        self.hiddenStudents = hiddenStudents
+        self.hiddenOutsiders = hiddenOutsiders
         self.attendances = attendances
         self.createdAt = createdAt
     }
