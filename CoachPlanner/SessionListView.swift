@@ -1531,17 +1531,24 @@ struct SessionListView: View {
                 isCourtBooked: isCourtBooked
             )
 
-            lines += [
+            var eventLines = [
                 "BEGIN:VEVENT",
                 "UID:\(uid)",
                 "DTSTAMP:\(stamp)",
                 "DTSTART:\(dtStart)",
                 "DTEND:\(dtEnd)",
-                "SUMMARY:\(icsEscape(summary))",
+                "SUMMARY:\(icsEscape(summary))"
+            ]
+            if let description = session.sessionDescription?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !description.isEmpty {
+                eventLines.append("DESCRIPTION:\(icsEscape(description))")
+            }
+            eventLines += [
                 "LOCATION:\(icsEscape(location))",
                 "STATUS:\(icsStatus(for: status))",
                 "END:VEVENT"
             ]
+            lines += eventLines
             eventCount += 1
         }
 

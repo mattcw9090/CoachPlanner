@@ -54,6 +54,7 @@ struct SessionEditorView: View {
     @State private var isCourtBooked: Bool
     @State private var courtNumber: String
     @State private var sessionFeeText: String
+    @State private var sessionDescription: String
     @State private var selectedStudentIDs: Set<PersistentIdentifier>
     @State private var studentSearch: String = ""
     @State private var hasUserAdjustedStart: Bool = false
@@ -81,6 +82,7 @@ struct SessionEditorView: View {
         )
         _courtNumber = State(initialValue: existingCourtNumber)
         _sessionFeeText = State(initialValue: Self.feeText(for: editor.session?.sessionFee ?? 0))
+        _sessionDescription = State(initialValue: editor.session?.sessionDescription ?? "")
         _selectedStudentIDs = State(
             initialValue: Set(editor.session?.students.map(\.persistentModelID) ?? [])
         )
@@ -113,6 +115,11 @@ struct SessionEditorView: View {
             return false
         }
         return value > 0
+    }
+
+    private var normalizedSessionDescription: String? {
+        let trimmed = sessionDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private var overlappingSession: CoachingSession? {
@@ -336,6 +343,15 @@ struct SessionEditorView: View {
                     }
                 } header: {
                     Text("Session Details")
+                }
+
+                Section {
+                    TextField("Add description", text: $sessionDescription, axis: .vertical)
+                        .lineLimit(3...8)
+                } header: {
+                    Text("Description")
+                } footer: {
+                    Text("Included in this session's exported calendar event.")
                 }
 
                 Section {
@@ -659,6 +675,7 @@ struct SessionEditorView: View {
             session.status = status.rawValue
             session.courtNumber = isCourtBooked ? trimmedCourtNumber : ""
             session.sessionFee = sessionFeeValue
+            session.sessionDescription = normalizedSessionDescription
             session.students = selectedStudents
         } else {
             let session = CoachingSession(
@@ -670,6 +687,7 @@ struct SessionEditorView: View {
                 status: status,
                 courtNumber: isCourtBooked ? trimmedCourtNumber : "",
                 sessionFee: sessionFeeValue,
+                sessionDescription: normalizedSessionDescription,
                 students: selectedStudents
             )
             modelContext.insert(session)
