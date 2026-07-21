@@ -504,6 +504,7 @@ struct SocialSessionEditorView: View {
     @State private var studentSearch = ""
     @State private var outsiderSearch = ""
     @State private var outsiderEditor: OutsiderEditor?
+    @State private var outsiderPendingDeletion: Outsider?
     @State private var contactNotice: SocialContactNotice?
 
     private var isEditing: Bool { editor.session != nil }
@@ -859,13 +860,6 @@ struct SocialSessionEditorView: View {
                                     .buttonStyle(.borderless)
                                     .accessibilityLabel("Hide \(outsider.name) from this social")
                                 }
-
-                                Button(role: .destructive) {
-                                    deleteOutsider(outsider)
-                                } label: {
-                                    Image(systemName: "trash")
-                                }
-                                .buttonStyle(.borderless)
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 9)
@@ -873,6 +867,13 @@ struct SocialSessionEditorView: View {
                                 RoundedRectangle(cornerRadius: 8)
                                     .fill(AppStyle.surface)
                             )
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    outsiderPendingDeletion = outsider
+                                } label: {
+                                    Label("Delete Outsider", systemImage: "trash")
+                                }
+                            }
                         }
                     }
                     .padding(.vertical, 2)
@@ -1136,7 +1137,11 @@ struct SocialSessionEditorView: View {
                 } header: {
                     Text("Add People")
                 } footer: {
-                    Text("Swipe sideways to switch between students and outsiders.")
+                    Text(
+                        addPeoplePage == .outsiders
+                            ? "Swipe sideways to switch lists. Press and hold an outsider to delete their record."
+                            : "Swipe sideways to switch between students and outsiders."
+                    )
                 }
 
                 if isEditing {
@@ -1169,6 +1174,31 @@ struct SocialSessionEditorView: View {
                     message: Text(notice.message),
                     dismissButton: .default(Text("OK"))
                 )
+            }
+            .confirmationDialog(
+                "Delete Outsider?",
+                isPresented: Binding(
+                    get: { outsiderPendingDeletion != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            outsiderPendingDeletion = nil
+                        }
+                    }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let outsider = outsiderPendingDeletion {
+                    Button("Delete \(outsider.name)", role: .destructive) {
+                        deleteOutsider(outsider)
+                        outsiderPendingDeletion = nil
+                    }
+                }
+
+                Button("Cancel", role: .cancel) {
+                    outsiderPendingDeletion = nil
+                }
+            } message: {
+                Text("This removes the outsider record from every social.")
             }
             .sheet(item: $outsiderEditor) { editor in
                 OutsiderEditorView(editor: editor) { outsider in
