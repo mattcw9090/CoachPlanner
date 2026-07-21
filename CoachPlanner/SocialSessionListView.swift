@@ -504,7 +504,7 @@ struct SocialSessionEditorView: View {
     @State private var studentSearch = ""
     @State private var outsiderSearch = ""
     @State private var outsiderEditor: OutsiderEditor?
-    @State private var outsiderPendingDeletion: Outsider?
+    @State private var isOutsiderManagerPresented = false
     @State private var contactNotice: SocialContactNotice?
 
     private var isEditing: Bool { editor.session != nil }
@@ -779,13 +779,23 @@ struct SocialSessionEditorView: View {
                     .autocorrectionDisabled()
                     .textFieldStyle(.roundedBorder)
 
-                Button {
-                    outsiderEditor = OutsiderEditor()
+                Menu {
+                    Button {
+                        outsiderEditor = OutsiderEditor()
+                    } label: {
+                        Label("New Outsider", systemImage: "person.badge.plus")
+                    }
+
+                    Button {
+                        isOutsiderManagerPresented = true
+                    } label: {
+                        Label("Manage Outsiders", systemImage: "person.2")
+                    }
                 } label: {
-                    Label("New", systemImage: "plus.circle.fill")
-                        .labelStyle(.iconOnly)
+                    Image(systemName: "ellipsis.circle")
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel("Outsider options")
 
                 Button {
                     withAnimation(.easeInOut(duration: 0.18)) {
@@ -811,75 +821,65 @@ struct SocialSessionEditorView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 220, alignment: .center)
             } else {
-                List {
-                    ForEach(isShowingHiddenOutsiders ? hiddenOutsiders : availableOutsiders) { outsider in
-                        HStack(spacing: 10) {
-                            Button {
-                                if isShowingHiddenOutsiders {
-                                    unhideOutsider(outsider)
-                                } else {
-                                    addOutsiderToSocial(outsider)
-                                }
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "person.crop.circle.badge.questionmark")
-                                        .font(.caption.weight(.bold))
-                                        .foregroundStyle(.purple)
-                                        .frame(width: 24, height: 24)
-                                        .background(Circle().fill(Color.purple.opacity(0.14)))
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(outsider.name)
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(1)
-                                        Text(outsider.displayContactDetail)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-
-                                    Spacer()
-
-                                    Image(systemName: isShowingHiddenOutsiders ? "eye" : "plus.circle.fill")
-                                        .foregroundStyle(isShowingHiddenOutsiders ? Color.gray : Color.accentColor)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(
-                                isShowingHiddenOutsiders ? "Unhide \(outsider.name)" : "Add \(outsider.name) to this social"
-                            )
-
-                            if !isShowingHiddenOutsiders {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(isShowingHiddenOutsiders ? hiddenOutsiders : availableOutsiders) { outsider in
+                            HStack(spacing: 10) {
                                 Button {
-                                    hideOutsiderFromSocial(outsider)
+                                    if isShowingHiddenOutsiders {
+                                        unhideOutsider(outsider)
+                                    } else {
+                                        addOutsiderToSocial(outsider)
+                                    }
                                 } label: {
-                                    Image(systemName: "eye.slash")
-                                        .foregroundStyle(.orange)
+                                    HStack(spacing: 10) {
+                                        Image(systemName: "person.crop.circle.badge.questionmark")
+                                            .font(.caption.weight(.bold))
+                                            .foregroundStyle(.purple)
+                                            .frame(width: 24, height: 24)
+                                            .background(Circle().fill(Color.purple.opacity(0.14)))
+
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(outsider.name)
+                                                .foregroundStyle(.primary)
+                                                .lineLimit(1)
+                                            Text(outsider.displayContactDetail)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+
+                                        Spacer()
+
+                                        Image(systemName: isShowingHiddenOutsiders ? "eye" : "plus.circle.fill")
+                                            .foregroundStyle(isShowingHiddenOutsiders ? Color.gray : Color.accentColor)
+                                    }
                                 }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel("Hide \(outsider.name) from this social")
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(
+                                    isShowingHiddenOutsiders ? "Unhide \(outsider.name)" : "Add \(outsider.name) to this social"
+                                )
+
+                                if !isShowingHiddenOutsiders {
+                                    Button {
+                                        hideOutsiderFromSocial(outsider)
+                                    } label: {
+                                        Image(systemName: "eye.slash")
+                                            .foregroundStyle(.orange)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel("Hide \(outsider.name) from this social")
+                                }
                             }
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 9)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(AppStyle.surface)
-                        )
-                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                outsiderPendingDeletion = outsider
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 9)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(AppStyle.surface)
+                            )
                         }
                     }
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
                 .frame(height: 230)
             }
         }
@@ -1141,7 +1141,7 @@ struct SocialSessionEditorView: View {
                 } footer: {
                     Text(
                         addPeoplePage == .outsiders
-                            ? "Swipe right to return to students, or swipe an outsider left to delete their record."
+                            ? "Swipe right to return to students. Use the options menu to manage outsiders."
                             : "Swipe sideways to switch between students and outsiders."
                     )
                 }
@@ -1177,35 +1177,13 @@ struct SocialSessionEditorView: View {
                     dismissButton: .default(Text("OK"))
                 )
             }
-            .confirmationDialog(
-                "Delete Outsider?",
-                isPresented: Binding(
-                    get: { outsiderPendingDeletion != nil },
-                    set: { isPresented in
-                        if !isPresented {
-                            outsiderPendingDeletion = nil
-                        }
-                    }
-                ),
-                titleVisibility: .visible
-            ) {
-                if let outsider = outsiderPendingDeletion {
-                    Button("Delete \(outsider.name)", role: .destructive) {
-                        deleteOutsider(outsider)
-                        outsiderPendingDeletion = nil
-                    }
-                }
-
-                Button("Cancel", role: .cancel) {
-                    outsiderPendingDeletion = nil
-                }
-            } message: {
-                Text("This removes the outsider record from every social.")
-            }
             .sheet(item: $outsiderEditor) { editor in
                 OutsiderEditorView(editor: editor) { outsider in
                     addCreatedOutsiderToSession(outsider)
                 }
+            }
+            .sheet(isPresented: $isOutsiderManagerPresented) {
+                OutsiderManagerView(onDelete: deleteOutsider)
             }
         }
         .presentationContentInteraction(.scrolls)
@@ -1663,6 +1641,95 @@ private struct OutsiderEditor: Identifiable {
 
     init(outsider: Outsider? = nil) {
         self.outsider = outsider
+    }
+}
+
+private struct OutsiderManagerView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Query(sort: \Outsider.name) private var outsiders: [Outsider]
+
+    let onDelete: (Outsider) -> Void
+
+    @State private var outsiderPendingDeletion: Outsider?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if outsiders.isEmpty {
+                    ContentUnavailableView(
+                        "No Outsiders",
+                        systemImage: "person.crop.circle.badge.questionmark",
+                        description: Text("Create outsiders from a socials session.")
+                    )
+                } else {
+                    List(outsiders) { outsider in
+                        HStack(spacing: 12) {
+                            Image(systemName: "person.crop.circle.badge.questionmark")
+                                .foregroundStyle(.purple)
+                                .frame(width: 32, height: 32)
+                                .background(Circle().fill(Color.purple.opacity(0.14)))
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(outsider.name)
+
+                                if !outsider.displayContactDetail.isEmpty {
+                                    Text(outsider.displayContactDetail)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+
+                            Spacer()
+
+                            Button(role: .destructive) {
+                                outsiderPendingDeletion = outsider
+                            } label: {
+                                Image(systemName: "trash")
+                                    .frame(width: 36, height: 36)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Delete \(outsider.name)")
+                        }
+                    }
+                    .listStyle(.insetGrouped)
+                }
+            }
+            .navigationTitle("Manage Outsiders")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+            .confirmationDialog(
+                "Delete Outsider?",
+                isPresented: Binding(
+                    get: { outsiderPendingDeletion != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            outsiderPendingDeletion = nil
+                        }
+                    }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let outsider = outsiderPendingDeletion {
+                    Button("Delete \(outsider.name)", role: .destructive) {
+                        onDelete(outsider)
+                        outsiderPendingDeletion = nil
+                    }
+                }
+
+                Button("Cancel", role: .cancel) {
+                    outsiderPendingDeletion = nil
+                }
+            } message: {
+                Text("This removes the outsider record from every social.")
+            }
+        }
     }
 }
 

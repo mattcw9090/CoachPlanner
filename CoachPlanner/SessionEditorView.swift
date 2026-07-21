@@ -561,20 +561,36 @@ struct SessionEditorView: View {
 
     private func availabilityMessage(for student: Student) -> String {
         let sessionSummaries = consolidatedSessions(for: student)
+        let greeting = availabilityGreeting(for: student)
 
         guard !sessionSummaries.isEmpty else {
-            return "Hey \(firstName(for: student)), can you train?"
+            return "\(greeting), can you train?"
         }
 
         if sessionSummaries.count == 1, let session = sessionSummaries.first {
-            return "Hey \(firstName(for: student)), can you train on \(session.messageLine)?"
+            return "\(greeting), can you train on \(session.messageLine)?"
         }
 
         let sessionLines = sessionSummaries
             .map { "- \($0.messageLine)?" }
             .joined(separator: "\n")
 
-        return "Hey \(firstName(for: student)), can you train on:\n\(sessionLines)"
+        return "\(greeting), can you train on:\n\(sessionLines)"
+    }
+
+    private func availabilityGreeting(for student: Student) -> String {
+        let currentWeekStart = SessionListView.monday(of: .now)
+        let nextWeekStart = Calendar.current.date(
+            byAdding: .day,
+            value: 7,
+            to: currentWeekStart
+        ) ?? currentWeekStart
+        let isNextWeek = Calendar.current.isDate(
+            SessionListView.monday(of: messageWeekStart),
+            inSameDayAs: nextWeekStart
+        )
+        let weekQualifier = isNextWeek ? " for next week" : ""
+        return "Hey \(firstName(for: student))\(weekQualifier)"
     }
 
     private func firstName(for student: Student) -> String {
@@ -590,6 +606,7 @@ struct SessionEditorView: View {
 
         var summaries = existingSessions.compactMap { session -> ContactSessionSummary? in
             guard session.persistentModelID != editingID,
+                  belongsToEditorWeek(session.weekStart),
                   session.students.contains(where: { $0.persistentModelID == student.persistentModelID }) else {
                 return nil
             }
