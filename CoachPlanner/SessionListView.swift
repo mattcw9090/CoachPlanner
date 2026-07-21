@@ -647,6 +647,10 @@ struct SessionListView: View {
                             at: location,
                             gridWidth: proxy.size.width,
                             summary: summary
+                        ) != nil || socialSessionAtGridLocation(
+                            at: location,
+                            gridWidth: proxy.size.width,
+                            summary: summary
                         ) != nil
                     },
                     canMoveSession: { location in
@@ -660,12 +664,23 @@ struct SessionListView: View {
                         return canDragSession(session)
                     },
                     onTap: { location in
-                        guard let session = sessionAtGridLocation(
+                        if let session = sessionAtGridLocation(
                             at: location,
                             gridWidth: proxy.size.width,
                             summary: summary
-                        ) else { return }
-                        handleSessionTap(session)
+                        ) {
+                            handleSessionTap(session)
+                        } else if !isBulkSelectionModeEnabled,
+                                  let social = socialSessionAtGridLocation(
+                                    at: location,
+                                    gridWidth: proxy.size.width,
+                                    summary: summary
+                                  ) {
+                            socialSessionEditor = SocialSessionEditor(
+                                session: social,
+                                weekStart: social.weekStart
+                            )
+                        }
                     },
                     onMoveBegan: { location in
                         guard let session = sessionAtGridLocation(
@@ -820,6 +835,34 @@ struct SessionListView: View {
         }
     }
 
+    private func socialSessionAtGridLocation(
+        at location: CGPoint,
+        gridWidth: CGFloat,
+        summary: ScheduleSummary
+    ) -> SocialSession? {
+        guard location.y >= 0,
+              location.y <= totalGridHeight,
+              location.x >= timeAxisWidth else {
+            return nil
+        }
+
+        let dayColumnWidth = max(
+            (gridWidth - timeAxisWidth) / CGFloat(Weekday.allCases.count),
+            1
+        )
+        let dayIndex = Int((location.x - timeAxisWidth) / dayColumnWidth)
+        guard Weekday.allCases.indices.contains(dayIndex) else { return nil }
+
+        let day = Weekday.allCases[dayIndex]
+        let minuteAtLocation = Double(dayStartHour * 60) +
+            Double(location.y / hourHeight) * 60
+
+        return summary.socialSessions(for: day).last { social in
+            minuteAtLocation >= Double(minutesOfDay(social.startTime)) &&
+                minuteAtLocation < Double(minutesOfDay(social.endTime))
+        }
+    }
+
     private var timeAxis: some View {
         ZStack(alignment: .topTrailing) {
             Color.clear.frame(width: timeAxisWidth, height: totalGridHeight)
@@ -903,16 +946,6 @@ struct SessionListView: View {
                     .frame(height: blockHeight(for: social))
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: social))
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        guard !isBulkSelectionModeEnabled else { return }
-                        pendingDraftSelection = nil
-                        selectedCourtBooking = nil
-                        socialSessionEditor = SocialSessionEditor(
-                            session: social,
-                            weekStart: social.weekStart
-                        )
-                    }
             }
         }
         .frame(maxWidth: .infinity)
