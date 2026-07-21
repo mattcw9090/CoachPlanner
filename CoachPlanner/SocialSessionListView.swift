@@ -1018,11 +1018,21 @@ struct SocialSessionEditorView: View {
                 )
             }
             .sheet(item: $outsiderEditor) { editor in
-                OutsiderEditorView(editor: editor)
+                OutsiderEditorView(editor: editor) { outsider in
+                    addCreatedOutsiderToSession(outsider)
+                }
             }
         }
         .presentationContentInteraction(.scrolls)
         .interactiveDismissDisabled()
+    }
+
+    private func addCreatedOutsiderToSession(_ outsider: Outsider) {
+        selectedStatusByOutsiderID[outsider.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
+        paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
+        outsiderSearch = ""
+        addPeoplePage = .outsiders
+        UISelectionFeedbackGenerator().selectionChanged()
     }
 
     private func save() {
@@ -1386,6 +1396,7 @@ private struct OutsiderEditorView: View {
     @Environment(\.modelContext) private var modelContext
 
     let editor: OutsiderEditor
+    let onCreate: (Outsider) -> Void
 
     @State private var name: String
     @State private var gender: String
@@ -1394,8 +1405,9 @@ private struct OutsiderEditorView: View {
 
     private let genderOptions = ["Male", "Female"]
 
-    init(editor: OutsiderEditor) {
+    init(editor: OutsiderEditor, onCreate: @escaping (Outsider) -> Void) {
         self.editor = editor
+        self.onCreate = onCreate
         _name = State(initialValue: editor.outsider?.name ?? "")
         _gender = State(initialValue: editor.outsider?.gender ?? "")
         _contactPreference = State(initialValue: editor.outsider?.contactPreferenceValue ?? .instagram)
@@ -1542,6 +1554,8 @@ private struct OutsiderEditorView: View {
                 contactDetail: savedContactDetail
             )
             modelContext.insert(outsider)
+            try? modelContext.save()
+            onCreate(outsider)
         }
 
         dismiss()
