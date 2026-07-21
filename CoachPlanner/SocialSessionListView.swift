@@ -443,14 +443,26 @@ struct SocialSessionEditor: Identifiable {
     let id = UUID()
     let session: SocialSession?
     let weekStart: Date
+    let preselectedDay: Weekday?
+    let preselectedStartTime: Date?
+    let preselectedEndTime: Date?
 
-    init(session: SocialSession? = nil, weekStart: Date) {
+    init(
+        session: SocialSession? = nil,
+        weekStart: Date,
+        preselectedDay: Weekday? = nil,
+        preselectedStartTime: Date? = nil,
+        preselectedEndTime: Date? = nil
+    ) {
         self.session = session
         self.weekStart = SocialSessionListView.monday(of: weekStart)
+        self.preselectedDay = preselectedDay
+        self.preselectedStartTime = preselectedStartTime
+        self.preselectedEndTime = preselectedEndTime
     }
 }
 
-private struct SocialSessionEditorView: View {
+struct SocialSessionEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @Environment(\.openURL) private var openURL
@@ -496,9 +508,9 @@ private struct SocialSessionEditorView: View {
         let defaultEnd = calendar.date(bySettingHour: 21, minute: 0, second: 0, of: .now) ?? .now
 
         _title = State(initialValue: editor.session?.title ?? "Badminton Socials")
-        _dayOfWeek = State(initialValue: editor.session?.weekday ?? .friday)
-        _startTime = State(initialValue: editor.session?.startTime ?? defaultStart)
-        _endTime = State(initialValue: editor.session?.endTime ?? defaultEnd)
+        _dayOfWeek = State(initialValue: editor.session?.weekday ?? editor.preselectedDay ?? .friday)
+        _startTime = State(initialValue: editor.session?.startTime ?? editor.preselectedStartTime ?? defaultStart)
+        _endTime = State(initialValue: editor.session?.endTime ?? editor.preselectedEndTime ?? defaultEnd)
         _venue = State(initialValue: editor.session?.venueValue ?? .pbaMalaga)
         _sessionStatus = State(initialValue: editor.session?.statusValue ?? .planned)
         _courtNumbers = State(initialValue: editor.session?.courtNumbers ?? "")

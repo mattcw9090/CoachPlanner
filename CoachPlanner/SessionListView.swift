@@ -28,6 +28,7 @@ struct SessionListView: View {
 
     @State private var editor: SessionEditor?
     @State private var courtBookingEditor: CourtBookingEditor?
+    @State private var socialSessionEditor: SocialSessionEditor?
     @State private var draftSelection: DraftSessionSelection?
     @State private var pendingDraftSelection: DraftSessionSelection?
     @State private var fileExport: FileExportItem?
@@ -464,6 +465,9 @@ struct SessionListView: View {
             .sheet(item: $courtBookingEditor) { editor in
                 CourtBookingEditorView(editor: editor)
             }
+            .sheet(item: $socialSessionEditor) { editor in
+                SocialSessionEditorView(editor: editor)
+            }
             .sheet(isPresented: $isMassCourtBookingSheetPresented) {
                 MassCourtBookingSheet(selectedCount: selectedBulkSessions.count) { courtNumber in
                     applyMassCourtBooking(courtNumber: courtNumber)
@@ -716,6 +720,10 @@ struct SessionListView: View {
                             openCourtBookingEditor(with: pendingDraftSelection)
                             self.pendingDraftSelection = nil
                         },
+                        onSocials: {
+                            openSocialSessionEditor(with: pendingDraftSelection)
+                            self.pendingDraftSelection = nil
+                        },
                         onCancel: {
                             self.pendingDraftSelection = nil
                         }
@@ -934,6 +942,15 @@ struct SessionListView: View {
             preselectedStartTime: time(for: selection.startMinutes),
             preselectedEndTime: time(for: selection.endMinutes),
             weekStart: weekStart
+        )
+    }
+
+    private func openSocialSessionEditor(with selection: DraftSessionSelection) {
+        socialSessionEditor = SocialSessionEditor(
+            weekStart: weekStart,
+            preselectedDay: selection.day,
+            preselectedStartTime: time(for: selection.startMinutes),
+            preselectedEndTime: time(for: selection.endMinutes)
         )
     }
 
@@ -2190,11 +2207,12 @@ private struct DraftSessionBlock: View {
 }
 
 private struct DraftTypePopover: View {
-    static let width: CGFloat = 226
+    static let width: CGFloat = 270
 
     let timeRange: String
     let onSession: () -> Void
     let onCourtBooking: () -> Void
+    let onSocials: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
@@ -2224,7 +2242,7 @@ private struct DraftTypePopover: View {
 
             HStack(spacing: 8) {
                 DraftTypeButton(
-                    title: "Session",
+                    title: "Coaching",
                     systemImage: "person.2.fill",
                     tint: .accentColor,
                     action: onSession
@@ -2235,6 +2253,13 @@ private struct DraftTypePopover: View {
                     systemImage: "sportscourt.fill",
                     tint: .gray,
                     action: onCourtBooking
+                )
+
+                DraftTypeButton(
+                    title: "Socials",
+                    systemImage: "figure.badminton",
+                    tint: .purple,
+                    action: onSocials
                 )
             }
         }
@@ -2290,7 +2315,7 @@ private struct VacantCourtPopover: View {
 
             HStack(spacing: 8) {
                 DraftTypeButton(
-                    title: "Session",
+                    title: "Coaching",
                     systemImage: "person.2.fill",
                     tint: .accentColor,
                     isEnabled: canAddSession,
