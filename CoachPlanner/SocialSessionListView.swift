@@ -14,6 +14,7 @@ struct SocialSessionListView: View {
     @AppStorage("socialsWeekStartTimestamp") private var socialsWeekStartTimestamp: Double = 0
     @AppStorage("weekStartTimestamp") private var sessionsWeekStartTimestamp: Double = 0
     @State private var editor: SocialSessionEditor?
+    @State private var copyNotice: SocialCopyNotice?
 
     private var weekStart: Date {
         if socialsWeekStartTimestamp == 0 {
@@ -116,6 +117,21 @@ struct SocialSessionListView: View {
                                         SocialSessionRow(session: session)
                                     }
                                     .buttonStyle(.plain)
+                                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                        Button {
+                                            copyNameList(for: session)
+                                        } label: {
+                                            Label("Copy Names", systemImage: "doc.on.doc")
+                                        }
+                                        .tint(.blue)
+                                    }
+                                    .contextMenu {
+                                        Button {
+                                            copyNameList(for: session)
+                                        } label: {
+                                            Label("Copy Name List", systemImage: "doc.on.doc")
+                                        }
+                                    }
                                 }
                                 .onDelete { offsets in
                                     deleteSessions(at: offsets, from: daySessions)
@@ -139,6 +155,13 @@ struct SocialSessionListView: View {
             }
             .sheet(item: $editor) { editor in
                 SocialSessionEditorView(editor: editor)
+            }
+            .alert(item: $copyNotice) { notice in
+                Alert(
+                    title: Text("Name List Copied"),
+                    message: Text(notice.message),
+                    dismissButton: .default(Text("OK"))
+                )
             }
             .onAppear {
                 if socialsWeekStartTimestamp == 0 {
@@ -167,12 +190,69 @@ struct SocialSessionListView: View {
         session.attendances.isEmpty ? session.students.count : session.attendances.count
     }
 
+    private func copyNameList(for session: SocialSession) {
+        UIPasteboard.general.string = nameListText(for: session)
+        copyNotice = SocialCopyNotice(
+            message: "The attendance list for \(session.title) is ready to paste."
+        )
+    }
+
+    private func nameListText(for session: SocialSession) -> String {
+        let confirmedNames: [String]
+        let pendingNames: [String]
+
+        if session.attendances.isEmpty {
+            confirmedNames = sortedNames(session.students.map(\.name))
+            pendingNames = []
+        } else {
+            confirmedNames = participantNames(
+                from: session.attendances.filter { $0.statusValue == .confirmed }
+            )
+            pendingNames = participantNames(
+                from: session.attendances.filter { $0.statusValue == .pending }
+            )
+        }
+
+        return """
+        Number of courts: \(session.courtNumbersList.count)
+
+        People coming:
+        \(formattedNameList(confirmedNames))
+
+        People I've asked and not replied yet:
+        \(formattedNameList(pendingNames))
+        """
+    }
+
+    private func participantNames(from attendances: [SocialAttendance]) -> [String] {
+        sortedNames(
+            attendances.compactMap { attendance in
+                attendance.student?.name ?? attendance.outsider?.name
+            }
+        )
+    }
+
+    private func sortedNames(_ names: [String]) -> [String] {
+        names.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
+    private func formattedNameList(_ names: [String]) -> String {
+        names.isEmpty ? "None" : names.joined(separator: "\n")
+    }
+
     static func monday(of date: Date) -> Date {
         var calendar = Calendar(identifier: .iso8601)
         calendar.firstWeekday = 2
         let comps = calendar.dateComponents([.yearForWeekOfYear, .weekOfYear], from: date)
         return calendar.date(from: comps) ?? date
     }
+}
+
+private struct SocialCopyNotice: Identifiable {
+    let id = UUID()
+    let message: String
 }
 
 private struct SocialSessionRow: View {

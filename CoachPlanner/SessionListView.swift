@@ -37,6 +37,9 @@ struct SessionListView: View {
     @State private var isSwapModeEnabled = false
     @State private var selectedSwapSession: CoachingSession?
     @State private var swapNotice: SessionSwapNotice?
+    @State private var isMassCourtBookingModeEnabled = false
+    @State private var massCourtBookingSelection: Set<PersistentIdentifier> = []
+    @State private var isMassCourtBookingSheetPresented = false
     @State private var weekDragTranslation: CGFloat = 0
     @State private var weekDragAxis: WeekDragAxis?
     @State private var isWeekCommitInProgress = false
@@ -68,6 +71,21 @@ struct SessionListView: View {
         socialSessions.filter {
             Calendar.current.isDate(Self.monday(of: $0.weekStart), inSameDayAs: Self.monday(of: weekStart))
         }
+    }
+
+    private var unbookedSessionsForWeek: [CoachingSession] {
+        sessionsForWeek.filter(isCourtUnbooked)
+    }
+
+    private var selectedMassCourtSessions: [CoachingSession] {
+        unbookedSessionsForWeek.filter {
+            massCourtBookingSelection.contains($0.persistentModelID)
+        }
+    }
+
+    private var areAllUnbookedSessionsSelected: Bool {
+        !unbookedSessionsForWeek.isEmpty &&
+            selectedMassCourtSessions.count == unbookedSessionsForWeek.count
     }
 
     private var scheduleSummary: ScheduleSummary {
@@ -126,6 +144,7 @@ struct SessionListView: View {
         draftSelection = nil
         selectedCourtBooking = nil
         selectedSwapSession = nil
+        cancelMassCourtBooking()
         weekStartTimestamp = Self.monday(of: date).timeIntervalSince1970
     }
 
@@ -153,6 +172,7 @@ struct SessionListView: View {
         draftSelection == nil &&
         selectedCourtBooking == nil &&
         sessionDrag == nil &&
+        !isMassCourtBookingModeEnabled &&
         !isWeekCommitInProgress
     }
 
@@ -335,6 +355,13 @@ struct SessionListView: View {
                 weekPager(summary)
             }
             .background(AppStyle.background)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if isMassCourtBookingModeEnabled {
+                    massCourtBookingSelectionBar
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy(duration: 0.24), value: isMassCourtBookingModeEnabled)
             .navigationTitle("Sessions")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -350,7 +377,12 @@ struct SessionListView: View {
                     } label: {
                         Label("Export Calendar", systemImage: "calendar")
                     }
-                    .disabled(sessionsForWeek.isEmpty && courtBookingsForWeek.isEmpty && summary.socialSessionsByDay.values.allSatisfy(\.isEmpty))
+                    .disabled(
+                        isMassCourtBookingModeEnabled ||
+                            (sessionsForWeek.isEmpty &&
+                                courtBookingsForWeek.isEmpty &&
+                                summary.socialSessionsByDay.values.allSatisfy(\.isEmpty))
+                    )
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -359,7 +391,7 @@ struct SessionListView: View {
                     } label: {
                         Label("Send to Finance Tracker", systemImage: "dollarsign.circle")
                     }
-                    .disabled(sessionsForWeek.isEmpty)
+                    .disabled(sessionsForWeek.isEmpty || isMassCourtBookingModeEnabled)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -368,8 +400,24 @@ struct SessionListView: View {
                     } label: {
                         Label(isSwapModeEnabled ? "Cancel Swap" : "Swap Sessions", systemImage: "arrow.left.arrow.right")
                     }
-                    .disabled(sessionsForWeek.count < 2)
+                    .disabled(sessionsForWeek.count < 2 || isMassCourtBookingModeEnabled)
                     .tint(isSwapModeEnabled ? .orange : nil)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        toggleMassCourtBookingMode()
+                    } label: {
+                        Label(
+                            isMassCourtBookingModeEnabled ? "Cancel Court Selection" : "Book Courts",
+                            systemImage: isMassCourtBookingModeEnabled ? "xmark.circle" : "sportscourt"
+                        )
+                    }
+                    .disabled(
+                        isSwapModeEnabled ||
+                            (!isMassCourtBookingModeEnabled && unbookedSessionsForWeek.isEmpty)
+                    )
+                    .tint(isMassCourtBookingModeEnabled ? .blue : nil)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -378,7 +426,7 @@ struct SessionListView: View {
                     } label: {
                         Label("Move to Next Week", systemImage: "arrow.forward")
                     }
-                    .disabled(sessionsForWeek.isEmpty)
+                    .disabled(sessionsForWeek.isEmpty || isMassCourtBookingModeEnabled)
                 }
 
             }
@@ -400,6 +448,13 @@ struct SessionListView: View {
             }
             .sheet(item: $courtBookingEditor) { editor in
                 CourtBookingEditorView(editor: editor)
+            }
+            .sheet(isPresented: $isMassCourtBookingSheetPresented) {
+                MassCourtBookingSheet(selectedCount: selectedMassCourtSessions.count) { courtNumber in
+                    applyMassCourtBooking(courtNumber: courtNumber)
+                }
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
             }
             .sheet(item: $fileExport) { item in
                 ICSShareSheet(url: item.url)
@@ -797,7 +852,10 @@ struct SessionListView: View {
                     session: session,
                     isSwapModeEnabled: isSwapModeEnabled,
                     isSwapEligible: canSwap(session),
-                    isSwapSelected: selectedSwapSession?.persistentModelID == session.persistentModelID
+                    isSwapSelected: selectedSwapSession?.persistentModelID == session.persistentModelID,
+                    isMassCourtBookingModeEnabled: isMassCourtBookingModeEnabled,
+                    isMassCourtBookingEligible: isCourtUnbooked(session),
+                    isMassCourtBookingSelected: massCourtBookingSelection.contains(session.persistentModelID)
                 )
                     .frame(height: blockHeight(for: session))
                     .padding(.horizontal, 2)
@@ -811,7 +869,8 @@ struct SessionListView: View {
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: booking))
                     .onTapGesture {
-                        guard !isSwapModeEnabled else { return }
+                        guard !isSwapModeEnabled,
+                              !isMassCourtBookingModeEnabled else { return }
                         pendingDraftSelection = nil
                         selectedCourtBooking = booking
                     }
@@ -867,7 +926,41 @@ struct SessionListView: View {
         )
     }
 
+    private var massCourtBookingSelectionBar: some View {
+        HStack(spacing: 10) {
+            Text("\(selectedMassCourtSessions.count) selected")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 8)
+
+            Button(areAllUnbookedSessionsSelected ? "Clear" : "Select All") {
+                toggleAllMassCourtBookingSelections()
+            }
+            .buttonStyle(.bordered)
+
+            Button {
+                isMassCourtBookingSheetPresented = true
+            } label: {
+                Label("Book", systemImage: "checkmark.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(selectedMassCourtSessions.isEmpty)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .top) {
+            Divider()
+        }
+    }
+
     private func handleSessionTap(_ session: CoachingSession) {
+        if isMassCourtBookingModeEnabled {
+            toggleMassCourtBookingSelection(for: session)
+            return
+        }
+
         guard isSwapModeEnabled else {
             editor = SessionEditor(session: session, weekStart: weekStart)
             return
@@ -895,8 +988,71 @@ struct SessionListView: View {
     }
 
     private func toggleSwapMode() {
+        cancelMassCourtBooking()
         isSwapModeEnabled.toggle()
         selectedSwapSession = nil
+    }
+
+    private func toggleMassCourtBookingMode() {
+        if isMassCourtBookingModeEnabled {
+            cancelMassCourtBooking()
+            return
+        }
+
+        isSwapModeEnabled = false
+        selectedSwapSession = nil
+        pendingDraftSelection = nil
+        draftSelection = nil
+        selectedCourtBooking = nil
+        sessionDrag = nil
+        massCourtBookingSelection.removeAll()
+        isMassCourtBookingModeEnabled = true
+    }
+
+    private func cancelMassCourtBooking() {
+        isMassCourtBookingModeEnabled = false
+        massCourtBookingSelection.removeAll()
+        isMassCourtBookingSheetPresented = false
+    }
+
+    private func toggleMassCourtBookingSelection(for session: CoachingSession) {
+        guard isCourtUnbooked(session),
+              belongsToVisibleWeek(session.weekStart) else { return }
+
+        let id = session.persistentModelID
+        if massCourtBookingSelection.contains(id) {
+            massCourtBookingSelection.remove(id)
+        } else {
+            massCourtBookingSelection.insert(id)
+        }
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func toggleAllMassCourtBookingSelections() {
+        if areAllUnbookedSessionsSelected {
+            massCourtBookingSelection.removeAll()
+        } else {
+            massCourtBookingSelection = Set(
+                unbookedSessionsForWeek.map(\.persistentModelID)
+            )
+        }
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func applyMassCourtBooking(courtNumber: String) {
+        let trimmedCourtNumber = courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCourtNumber.isEmpty else { return }
+
+        for session in selectedMassCourtSessions {
+            session.courtNumber = trimmedCourtNumber
+        }
+
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        cancelMassCourtBooking()
+    }
+
+    private func isCourtUnbooked(_ session: CoachingSession) -> Bool {
+        session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func swapSessions(_ firstSession: CoachingSession, _ secondSession: CoachingSession) {
@@ -940,6 +1096,7 @@ struct SessionListView: View {
 
     private var canBeginGridSelection: Bool {
         !isSwapModeEnabled &&
+            !isMassCourtBookingModeEnabled &&
             pendingDraftSelection == nil &&
             selectedCourtBooking == nil &&
             sessionDrag == nil &&
@@ -947,8 +1104,9 @@ struct SessionListView: View {
     }
 
     private func canDragSession(_ session: CoachingSession) -> Bool {
-        session.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        isCourtUnbooked(session) &&
             !isSwapModeEnabled &&
+            !isMassCourtBookingModeEnabled &&
             pendingDraftSelection == nil &&
             draftSelection == nil &&
             selectedCourtBooking == nil &&
@@ -1654,6 +1812,59 @@ private struct SessionSwapNotice: Identifiable {
     let message: String
 }
 
+private struct MassCourtBookingSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let selectedCount: Int
+    let onBook: (String) -> Void
+
+    @State private var courtNumber = ""
+    @FocusState private var isCourtNumberFocused: Bool
+
+    private var trimmedCourtNumber: String {
+        courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Court number", text: $courtNumber)
+                        .textInputAutocapitalization(.characters)
+                        .autocorrectionDisabled()
+                        .focused($isCourtNumberFocused)
+                } header: {
+                    Text("Court Number")
+                } footer: {
+                    Text("This court number will be assigned to all \(selectedCount) selected \(selectedCount == 1 ? "session" : "sessions").")
+                }
+            }
+            .navigationTitle("Book Courts")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Book") {
+                        onBook(trimmedCourtNumber)
+                        dismiss()
+                    }
+                    .disabled(trimmedCourtNumber.isEmpty)
+                }
+            }
+            .onAppear {
+                DispatchQueue.main.async {
+                    isCourtNumberFocused = true
+                }
+            }
+        }
+    }
+}
+
 private enum WeekDragAxis {
     case horizontal
     case vertical
@@ -2162,6 +2373,9 @@ private struct SessionBlock: View {
     var isSwapModeEnabled = false
     var isSwapEligible = true
     var isSwapSelected = false
+    var isMassCourtBookingModeEnabled = false
+    var isMassCourtBookingEligible = false
+    var isMassCourtBookingSelected = false
 
     private var color: Color {
         session.statusValue.color
@@ -2197,17 +2411,43 @@ private struct SessionBlock: View {
     }
 
     private var strokeOpacity: Double {
-        if isSwapSelected { return 0.95 }
+        if isSwapSelected || isMassCourtBookingSelected { return 0.95 }
         return isCourtBooked ? 0.36 : 0.68
     }
 
     private var strokeWidth: CGFloat {
-        isSwapSelected ? 2.4 : (isCourtBooked ? 0.75 : 1.1)
+        isSwapSelected || isMassCourtBookingSelected ? 2.4 : (isCourtBooked ? 0.75 : 1.1)
+    }
+
+    private var strokeColor: Color {
+        if isMassCourtBookingSelected { return .blue }
+        if isSwapSelected { return .orange }
+        return color
+    }
+
+    private var shadowColor: Color {
+        if isMassCourtBookingSelected { return Color.blue.opacity(0.28) }
+        if isSwapSelected { return Color.orange.opacity(0.28) }
+        return isCourtBooked ? .clear : color.opacity(0.14)
+    }
+
+    private var isModeLocked: Bool {
+        (isSwapModeEnabled && !isSwapEligible) ||
+            (isMassCourtBookingModeEnabled && !isMassCourtBookingEligible)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            if isSwapSelected {
+            if isMassCourtBookingModeEnabled {
+                Label(
+                    isMassCourtBookingSelected ? "Selected" : (isMassCourtBookingEligible ? "Tap to select" : "Already booked"),
+                    systemImage: isMassCourtBookingSelected ? "checkmark.circle.fill" : (isMassCourtBookingEligible ? "circle" : "lock.fill")
+                )
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(isMassCourtBookingEligible ? Color.blue : Color.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            } else if isSwapSelected {
                 Text("Swap from")
                     .font(.system(size: 8, weight: .bold))
                     .foregroundStyle(.orange)
@@ -2259,11 +2499,11 @@ private struct SessionBlock: View {
         }
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .stroke((isSwapSelected ? Color.orange : color).opacity(strokeOpacity), lineWidth: strokeWidth)
+                .stroke(strokeColor.opacity(strokeOpacity), lineWidth: strokeWidth)
         )
-        .shadow(color: isSwapSelected ? Color.orange.opacity(0.28) : (isCourtBooked ? .clear : color.opacity(0.14)), radius: 5, x: 0, y: 2)
+        .shadow(color: shadowColor, radius: 5, x: 0, y: 2)
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .opacity(isSwapModeEnabled && !isSwapEligible ? 0.48 : 1)
+        .opacity(isModeLocked ? 0.48 : 1)
     }
 }
 
