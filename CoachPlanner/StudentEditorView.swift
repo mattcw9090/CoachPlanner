@@ -391,7 +391,7 @@ struct StudentEditorView: View {
     }
 }
 
-private struct PhoneContactPickerPresenter: UIViewControllerRepresentable {
+struct PhoneContactPickerPresenter: UIViewControllerRepresentable {
     @Binding var isPresented: Bool
     var onPick: (String) -> Void
 

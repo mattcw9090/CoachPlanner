@@ -1850,6 +1850,7 @@ private struct MassCourtBookingSheet: View {
             Form {
                 Section {
                     TextField("Court number", text: $courtNumber)
+                        .keyboardType(.numberPad)
                         .textInputAutocapitalization(.characters)
                         .autocorrectionDisabled()
                         .focused($isCourtNumberFocused)

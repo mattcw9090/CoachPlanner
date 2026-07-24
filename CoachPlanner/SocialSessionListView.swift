@@ -1744,6 +1744,7 @@ private struct OutsiderEditorView: View {
     @State private var gender: String
     @State private var contactPreference: ContactPreference
     @State private var contactDetail: String
+    @State private var isContactPickerPresented = false
 
     private let genderOptions = ["Male", "Female"]
 
@@ -1769,6 +1770,10 @@ private struct OutsiderEditorView: View {
         case .fbMessenger:
             return !Self.facebookProfilePath(from: contactDetail).isEmpty
         }
+    }
+
+    private var usesPhoneContactPicker: Bool {
+        contactPreference == .whatsApp || contactPreference == .sms
     }
 
     private var outsiderContactDetailBinding: Binding<String> {
@@ -1839,6 +1844,7 @@ private struct OutsiderEditorView: View {
 
                             TextField("412 345 678", text: outsiderContactDetailBinding)
                                 .keyboardType(.phonePad)
+                                .textContentType(.telephoneNumber)
                         case .fbMessenger:
                             Text("https://facebook.com/")
                                 .font(.caption)
@@ -1850,6 +1856,18 @@ private struct OutsiderEditorView: View {
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .keyboardType(.URL)
+                        }
+
+                        if usesPhoneContactPicker {
+                            Button {
+                                isContactPickerPresented = true
+                            } label: {
+                                Image(systemName: "person.crop.circle.badge.plus")
+                                    .font(.title3)
+                                    .foregroundStyle(.tint)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Pick from Contacts")
                         }
                     }
                 } header: {
@@ -1878,6 +1896,13 @@ private struct OutsiderEditorView: View {
                 }
             }
         }
+        .background(
+            PhoneContactPickerPresenter(
+                isPresented: $isContactPickerPresented
+            ) { phone in
+                contactDetail = Self.formattedAustralianPhoneNumber(phone)
+            }
+        )
     }
 
     private func save() {
