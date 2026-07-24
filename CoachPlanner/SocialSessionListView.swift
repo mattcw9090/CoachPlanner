@@ -538,12 +538,8 @@ struct SocialSessionEditorView: View {
         _selectedStatusByOutsiderID = State(initialValue: Self.initialOutsiderStatuses(for: editor.session))
         _paymentStatusByStudentID = State(initialValue: Self.initialStudentPaymentStatuses(for: editor.session))
         _paymentStatusByOutsiderID = State(initialValue: Self.initialOutsiderPaymentStatuses(for: editor.session))
-        _hiddenStudentIDs = State(
-            initialValue: Set(editor.session?.hiddenStudents.map(\.persistentModelID) ?? [])
-        )
-        _hiddenOutsiderIDs = State(
-            initialValue: Set(editor.session?.hiddenOutsiders.map(\.persistentModelID) ?? [])
-        )
+        _hiddenStudentIDs = State(initialValue: Self.initialHiddenStudentIDs(for: editor.session))
+        _hiddenOutsiderIDs = State(initialValue: Self.initialHiddenOutsiderIDs(for: editor.session))
     }
 
     private var selectedStudents: [Student] {
@@ -1255,10 +1251,14 @@ struct SocialSessionEditorView: View {
                 hiddenOutsiderIDs.contains($0.persistentModelID)
         }
         let attendances = attendanceModels(for: selected, outsiders: selectedOutsiders)
+        let hiddenPeople = hiddenPersonModels(for: excludedStudents, outsiders: excludedOutsiders)
 
         if let session = editor.session {
             for attendance in session.attendances {
                 modelContext.delete(attendance)
+            }
+            for hiddenPerson in session.hiddenPeople {
+                modelContext.delete(hiddenPerson)
             }
 
             session.title = trimmedTitle
@@ -1273,8 +1273,9 @@ struct SocialSessionEditorView: View {
             session.shuttlecockCost = sessionStatus == .finished ? shuttlecockCost : 0
             session.courtCost = sessionStatus == .finished ? courtCost : 0
             session.students = selected
-            session.hiddenStudents = excludedStudents
-            session.hiddenOutsiders = excludedOutsiders
+            session.hiddenStudents = []
+            session.hiddenOutsiders = []
+            session.hiddenPeople = hiddenPeople
             session.attendances = attendances
         } else {
             let session = SocialSession(
@@ -1290,15 +1291,25 @@ struct SocialSessionEditorView: View {
                 shuttlecockCost: sessionStatus == .finished ? shuttlecockCost : 0,
                 courtCost: sessionStatus == .finished ? courtCost : 0,
                 students: selected,
-                hiddenStudents: excludedStudents,
-                hiddenOutsiders: excludedOutsiders,
+                hiddenPeople: hiddenPeople,
                 attendances: attendances
             )
             modelContext.insert(session)
             consumeCourtBookingIfNeeded()
         }
 
-        dismiss()
+        do {
+            if modelContext.hasChanges {
+                try modelContext.save()
+            }
+            dismiss()
+        } catch {
+            modelContext.rollback()
+            contactNotice = SocialContactNotice(
+                title: "Couldn't Save Socials",
+                message: "Your changes weren't saved. Please try again."
+            )
+        }
     }
 
     private func deleteSession() {
@@ -1565,6 +1576,32 @@ struct SocialSessionEditorView: View {
         }
 
         return studentAttendances + outsiderAttendances
+    }
+
+    private func hiddenPersonModels(for hiddenStudents: [Student], outsiders hiddenOutsiders: [Outsider]) -> [SocialHiddenPerson] {
+        let studentRecords = hiddenStudents.map { student in
+            let record = SocialHiddenPerson(student: student)
+            modelContext.insert(record)
+            return record
+        }
+        let outsiderRecords = hiddenOutsiders.map { outsider in
+            let record = SocialHiddenPerson(outsider: outsider)
+            modelContext.insert(record)
+            return record
+        }
+        return studentRecords + outsiderRecords
+    }
+
+    private static func initialHiddenStudentIDs(for session: SocialSession?) -> Set<PersistentIdentifier> {
+        guard let session else { return [] }
+        let records = session.hiddenPeople.compactMap(\.student) + session.hiddenStudents
+        return Set(records.map(\.persistentModelID))
+    }
+
+    private static func initialHiddenOutsiderIDs(for session: SocialSession?) -> Set<PersistentIdentifier> {
+        guard let session else { return [] }
+        let records = session.hiddenPeople.compactMap(\.outsider) + session.hiddenOutsiders
+        return Set(records.map(\.persistentModelID))
     }
 
     private static func initialStudentStatuses(for session: SocialSession?) -> [PersistentIdentifier: SessionStatus] {
@@ -2016,5 +2053,5 @@ private struct OutsiderEditorView: View {
 
 #Preview {
     SocialSessionListView()
-        .modelContainer(for: [Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialAttendance.self], inMemory: true)
+        .modelContainer(for: [Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self], inMemory: true)
 }

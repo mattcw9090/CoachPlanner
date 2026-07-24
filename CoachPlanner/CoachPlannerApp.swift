@@ -28,6 +28,7 @@ struct CoachPlannerApp: App {
         CoachingSession.self,
         CourtBooking.self,
         SocialSession.self,
+        SocialHiddenPerson.self,
         SocialAttendance.self
     ])
 

@@ -58,6 +58,9 @@ final class Student {
     @Relationship(inverse: \CoachingSession.students)
     var sessions: [CoachingSession] = []
 
+    @Relationship(deleteRule: .cascade, inverse: \SocialHiddenPerson.student)
+    var socialHiddenRecords: [SocialHiddenPerson] = []
+
     init(
         name: String,
         gender: String,
@@ -142,6 +145,9 @@ final class Outsider {
     var contactPreference: String
     var contactDetail: String
     var createdAt: Date
+
+    @Relationship(deleteRule: .cascade, inverse: \SocialHiddenPerson.outsider)
+    var socialHiddenRecords: [SocialHiddenPerson] = []
 
     init(
         name: String,

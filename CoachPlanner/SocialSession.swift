@@ -33,11 +33,15 @@ final class SocialSession {
     @Relationship(deleteRule: .nullify)
     var students: [Student]
 
+    // Retained to migrate hidden selections saved by earlier app versions.
     @Relationship(deleteRule: .nullify)
     var hiddenStudents: [Student] = []
 
     @Relationship(deleteRule: .nullify)
     var hiddenOutsiders: [Outsider] = []
+
+    @Relationship(deleteRule: .cascade, inverse: \SocialHiddenPerson.session)
+    var hiddenPeople: [SocialHiddenPerson] = []
 
     @Relationship(deleteRule: .cascade)
     var attendances: [SocialAttendance] = []
@@ -57,6 +61,7 @@ final class SocialSession {
         students: [Student] = [],
         hiddenStudents: [Student] = [],
         hiddenOutsiders: [Outsider] = [],
+        hiddenPeople: [SocialHiddenPerson] = [],
         attendances: [SocialAttendance] = [],
         createdAt: Date = .now
     ) {
@@ -74,6 +79,7 @@ final class SocialSession {
         self.students = students
         self.hiddenStudents = hiddenStudents
         self.hiddenOutsiders = hiddenOutsiders
+        self.hiddenPeople = hiddenPeople
         self.attendances = attendances
         self.createdAt = createdAt
     }
@@ -95,6 +101,26 @@ final class SocialSession {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+}
+
+@Model
+final class SocialHiddenPerson {
+    var createdAt: Date
+    var session: SocialSession?
+    var student: Student?
+    var outsider: Outsider?
+
+    init(student: Student, createdAt: Date = .now) {
+        self.student = student
+        self.outsider = nil
+        self.createdAt = createdAt
+    }
+
+    init(outsider: Outsider, createdAt: Date = .now) {
+        self.student = nil
+        self.outsider = outsider
+        self.createdAt = createdAt
     }
 }
 
