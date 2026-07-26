@@ -618,6 +618,18 @@ struct SocialSessionEditorView: View {
         sessionStatus == .finished && areAllParticipantsConfirmed
     }
 
+    private var messageActionTitle: String {
+        isFinishedSettlementReady ? "Request" : "Ask"
+    }
+
+    private var messageActionIcon: String {
+        isFinishedSettlementReady ? "dollarsign.circle.fill" : "paperplane.fill"
+    }
+
+    private var copiedMessagePurpose: String {
+        isFinishedSettlementReady ? "payment request" : "socials invite"
+    }
+
     private var isTimeValid: Bool {
         minutesOfDay(endTime) > minutesOfDay(startTime)
     }
@@ -1021,9 +1033,9 @@ struct SocialSessionEditorView: View {
                                 Button {
                                     ask(student)
                                 } label: {
-                                    Label("Ask", systemImage: "paperplane.fill")
+                                    Label(messageActionTitle, systemImage: messageActionIcon)
                                 }
-                                .tint(.blue)
+                                .tint(isFinishedSettlementReady ? .green : .blue)
                             }
                             .swipeActions(edge: .trailing) {
                                 Button {
@@ -1086,9 +1098,9 @@ struct SocialSessionEditorView: View {
                                 Button {
                                     ask(outsider)
                                 } label: {
-                                    Label("Ask", systemImage: "paperplane.fill")
+                                    Label(messageActionTitle, systemImage: messageActionIcon)
                                 }
-                                .tint(.blue)
+                                .tint(isFinishedSettlementReady ? .green : .blue)
                             }
                             .swipeActions(edge: .trailing) {
                                 Button {
@@ -1111,7 +1123,11 @@ struct SocialSessionEditorView: View {
                     Text("Name List")
                 } footer: {
                     if !selectedStudents.isEmpty || !selectedOutsiders.isEmpty {
-                        Text("Swipe right to ask, or swipe left to remove or hide.")
+                        Text(
+                            isFinishedSettlementReady
+                                ? "Swipe right to request payment, or swipe left to remove or hide."
+                                : "Swipe right to ask, or swipe left to remove or hide."
+                        )
                     }
                 }
 
@@ -1382,7 +1398,7 @@ struct SocialSessionEditorView: View {
             UIPasteboard.general.string = message
             contactNotice = SocialContactNotice(
                 title: "Message Copied",
-                message: "Paste the copied socials invite into \(preference.rawValue)."
+                message: "Paste the copied \(copiedMessagePurpose) into \(preference.rawValue)."
             )
         }
 
@@ -1405,7 +1421,7 @@ struct SocialSessionEditorView: View {
             UIPasteboard.general.string = message
             contactNotice = SocialContactNotice(
                 title: "Message Copied",
-                message: "Paste the copied socials invite into \(preference.rawValue)."
+                message: "Paste the copied \(copiedMessagePurpose) into \(preference.rawValue)."
             )
         }
 
@@ -1421,11 +1437,23 @@ struct SocialSessionEditorView: View {
     }
 
     private func socialAskMessage(for student: Student) -> String {
-        "Hey \(firstName(for: student)), wanna come play \(dayOfWeek.name) \(compactTimeRangeText(start: startTime, end: endTime)) at \(venue.rawValue)?"
+        socialMessage(firstName: firstName(for: student))
     }
 
     private func socialAskMessage(for outsider: Outsider) -> String {
-        "Hey \(firstName(for: outsider)), wanna come play \(dayOfWeek.name) \(compactTimeRangeText(start: startTime, end: endTime)) at \(venue.rawValue)?"
+        socialMessage(firstName: firstName(for: outsider))
+    }
+
+    private func socialMessage(firstName: String) -> String {
+        guard isFinishedSettlementReady else {
+            return "Hey \(firstName), wanna come play \(dayOfWeek.name) \(compactTimeRangeText(start: startTime, end: endTime)) at \(venue.rawValue)?"
+        }
+
+        guard costPerPerson > 0 else {
+            return "Hey \(firstName), there's no payment owing for the \(dayOfWeek.name) socials at \(venue.rawValue). Thanks!"
+        }
+
+        return "Hey \(firstName), your share for the \(dayOfWeek.name) socials at \(venue.rawValue) is \(currencyText(costPerPerson)). Could you please send it through when you get a chance?"
     }
 
     private func firstName(for student: Student) -> String {
