@@ -4,6 +4,7 @@ import UIKit
 
 struct SessionListView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.openURL) private var openURL
     @Query(
         sort: [
             SortDescriptor(\CoachingSession.dayOfWeek),
@@ -25,6 +26,7 @@ struct SessionListView: View {
     ) private var socialSessions: [SocialSession]
 
     @AppStorage("weekStartTimestamp") private var weekStartTimestamp: Double = 0
+    @AppStorage(AppStorageKey.trsBookingContactPhone) private var trsBookingContactPhone = ""
 
     @State private var editor: SessionEditor?
     @State private var courtBookingEditor: CourtBookingEditor?
@@ -32,7 +34,7 @@ struct SessionListView: View {
     @State private var draftSelection: DraftSessionSelection?
     @State private var pendingDraftSelection: DraftSessionSelection?
     @State private var fileExport: FileExportItem?
-    @State private var financeSendNotice: FinanceSendNotice?
+    @State private var sessionNotice: SessionNotice?
     @State private var selectedCourtBooking: CourtBooking?
     @State private var isResetConfirmationPresented = false
     @State private var bulkSelectionAction: BulkSessionAction?
@@ -378,33 +380,41 @@ struct SessionListView: View {
             .navigationTitle("Sessions")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        if let url = prepareICSFile() {
-                            fileExport = FileExportItem(url: url)
-                        } else {
-                            financeSendNotice = FinanceSendNotice(
-                                title: "Nothing to Export",
-                                message: "This week has no events to include in the calendar file."
-                            )
+                    Menu {
+                        Button {
+                            messageTRSCourtBookingContact()
+                        } label: {
+                            Label("Request TRS Courts", systemImage: "message.fill")
                         }
-                    } label: {
-                        Label("Export Calendar", systemImage: "calendar")
-                    }
-                    .disabled(
-                        isBulkSelectionModeEnabled ||
+
+                        Button {
+                            if let url = prepareICSFile() {
+                                fileExport = FileExportItem(url: url)
+                            } else {
+                                sessionNotice = SessionNotice(
+                                    title: "Nothing to Export",
+                                    message: "This week has no events to include in the calendar file."
+                                )
+                            }
+                        } label: {
+                            Label("Export Calendar", systemImage: "calendar")
+                        }
+                        .disabled(
                             (sessionsForWeek.isEmpty &&
                                 courtBookingsForWeek.isEmpty &&
                                 summary.socialSessionsByDay.values.allSatisfy(\.isEmpty))
-                    )
-                }
+                        )
 
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        sendToFinanceTracker()
+                        Button {
+                            sendToFinanceTracker()
+                        } label: {
+                            Label("Send to Finance Tracker", systemImage: "dollarsign.circle")
+                        }
+                        .disabled(sessionsForWeek.isEmpty)
                     } label: {
-                        Label("Send to Finance Tracker", systemImage: "dollarsign.circle")
+                        Label("Share", systemImage: "square.and.arrow.up")
                     }
-                    .disabled(sessionsForWeek.isEmpty || isBulkSelectionModeEnabled)
+                    .disabled(isBulkSelectionModeEnabled)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -485,7 +495,7 @@ struct SessionListView: View {
             .sheet(item: $fileExport) { item in
                 ICSShareSheet(url: item.url)
             }
-            .alert(item: $financeSendNotice) { notice in
+            .alert(item: $sessionNotice) { notice in
                 Alert(
                     title: Text(notice.title),
                     message: Text(notice.message),
@@ -1493,16 +1503,175 @@ struct SessionListView: View {
 
         switch FinanceBridge.send(sessions: payloads, exportedAt: .now) {
         case let .success(count, _):
-            financeSendNotice = FinanceSendNotice(
+            sessionNotice = SessionNotice(
                 title: "Sent to Finance Tracker",
                 message: "\(count) \(count == 1 ? "session" : "sessions") shared with MyFinanceTracker. Open MyFinanceTracker to import them."
             )
         case let .failure(reason):
-            financeSendNotice = FinanceSendNotice(
+            sessionNotice = SessionNotice(
                 title: "Couldn't Send",
                 message: reason
             )
         }
+    }
+
+    private func messageTRSCourtBookingContact() {
+        guard let phone = AustralianPhoneNumber.whatsappDigits(from: trsBookingContactPhone) else {
+            sessionNotice = SessionNotice(
+                title: "TRS Contact Needed",
+                message: "Add the TRS booking contact's WhatsApp number in Settings first."
+            )
+            return
+        }
+
+        let slots = trsCourtRequestSlots
+        guard !slots.isEmpty else {
+            sessionNotice = SessionNotice(
+                title: "No TRS Courts Needed",
+                message: "There are no unbooked TRS coaching or socials courts in the displayed week."
+            )
+            return
+        }
+
+        let message = trsCourtRequestMessage(for: slots)
+        guard let encodedMessage = percentEncodedMessage(message),
+              let url = URL(string: "https://wa.me/\(phone)?text=\(encodedMessage)") else {
+            sessionNotice = SessionNotice(
+                title: "Couldn't Open WhatsApp",
+                message: "The booking request could not be prepared. Check the contact number in Settings and try again."
+            )
+            return
+        }
+
+        openURL(url)
+    }
+
+    private var trsCourtRequestSlots: [TRSCourtRequestSlot] {
+        var intervalsByDay: [Weekday: [(start: Int, end: Int)]] = [:]
+
+        for session in sessionsForWeek where session.venueValue == .trs && isCourtUnbooked(session) {
+            intervalsByDay[session.weekday, default: []].append(
+                (minutesOfDay(session.startTime), minutesOfDay(session.endTime))
+            )
+        }
+
+        for social in socialSessionsForWeek
+        where social.venueValue == .trs &&
+            social.statusValue == .planned &&
+            !social.areCourtsBooked {
+            intervalsByDay[social.weekday, default: []].append(
+                (minutesOfDay(social.startTime), minutesOfDay(social.endTime))
+            )
+        }
+
+        return Weekday.allCases.flatMap { day in
+            consolidatedTRSCourtSlots(
+                for: day,
+                intervals: intervalsByDay[day] ?? []
+            )
+        }
+    }
+
+    private func consolidatedTRSCourtSlots(
+        for day: Weekday,
+        intervals: [(start: Int, end: Int)]
+    ) -> [TRSCourtRequestSlot] {
+        let validIntervals = intervals.filter { $0.end > $0.start }
+        let boundaries = Set(validIntervals.flatMap { [$0.start, $0.end] }).sorted()
+        guard boundaries.count > 1 else { return [] }
+
+        var slots: [TRSCourtRequestSlot] = []
+        for index in 0..<(boundaries.count - 1) {
+            let start = boundaries[index]
+            let end = boundaries[index + 1]
+            let courtCount = validIntervals.count {
+                $0.start < end && $0.end > start
+            }
+            guard courtCount > 0 else { continue }
+
+            if let last = slots.last,
+               last.day == day,
+               last.endMinutes == start,
+               last.courtCount == courtCount {
+                slots[slots.count - 1] = TRSCourtRequestSlot(
+                    day: day,
+                    startMinutes: last.startMinutes,
+                    endMinutes: end,
+                    courtCount: courtCount
+                )
+            } else {
+                slots.append(
+                    TRSCourtRequestSlot(
+                        day: day,
+                        startMinutes: start,
+                        endMinutes: end,
+                        courtCount: courtCount
+                    )
+                )
+            }
+        }
+        return slots
+    }
+
+    private func trsCourtRequestMessage(for slots: [TRSCourtRequestSlot]) -> String {
+        let currentWeekStart = Self.monday(of: .now)
+        let nextWeekStart = Self.monday(
+            of: Calendar.current.date(byAdding: .day, value: 7, to: currentWeekStart) ?? currentWeekStart
+        )
+        let isNextWeek = Calendar.current.isDate(
+            Self.monday(of: weekStart),
+            inSameDayAs: nextWeekStart
+        )
+        let introduction = isNextWeek
+            ? "Hey TRS, next week, can I book a badminton court on:"
+            : "Hey TRS, can I book a badminton court on:"
+        var lines = [
+            introduction,
+            ""
+        ]
+
+        for day in Weekday.allCases {
+            let daySlots = slots.filter { $0.day == day }
+            guard !daySlots.isEmpty else { continue }
+
+            let bookingDate = date(for: day, in: weekStart)
+            let dateText = bookingDate.formatted(
+                .dateTime.weekday(.wide).day().month(.abbreviated)
+            )
+            lines += daySlots.map { slot in
+                let courtCount = slot.courtCount > 1
+                    ? " (\(slot.courtCount) courts)"
+                    : ""
+                return "- \(dateText), \(compactTimeRange(startMinutes: slot.startMinutes, endMinutes: slot.endMinutes))\(courtCount)"
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func compactTimeRange(startMinutes: Int, endMinutes: Int) -> String {
+        let startPeriod = startMinutes < 12 * 60 ? "am" : "pm"
+        let endPeriod = endMinutes < 12 * 60 ? "am" : "pm"
+        let start = compactTime(
+            totalMinutes: startMinutes,
+            includesPeriod: startPeriod != endPeriod
+        )
+        return "\(start)-\(compactTime(totalMinutes: endMinutes, includesPeriod: true))"
+    }
+
+    private func compactTime(totalMinutes: Int, includesPeriod: Bool) -> String {
+        let hour = totalMinutes / 60
+        let minute = totalMinutes % 60
+        let displayHour = hour % 12 == 0 ? 12 : hour % 12
+        let minuteText = minute == 0 ? "" : ".\(String(format: "%02d", minute))"
+        let period = hour < 12 ? "am" : "pm"
+        return "\(displayHour)\(minuteText)\(includesPeriod ? period : "")"
+    }
+
+    private func percentEncodedMessage(_ message: String) -> String? {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return message.addingPercentEncoding(withAllowedCharacters: allowed)
     }
 
     private func moveSessionsToNextWeek() {
@@ -1800,10 +1969,17 @@ private struct FileExportItem: Identifiable {
     let url: URL
 }
 
-private struct FinanceSendNotice: Identifiable {
+private struct SessionNotice: Identifiable {
     let id = UUID()
     let title: String
     let message: String
+}
+
+private struct TRSCourtRequestSlot {
+    let day: Weekday
+    let startMinutes: Int
+    let endMinutes: Int
+    let courtCount: Int
 }
 
 private enum BulkSessionAction: Equatable {

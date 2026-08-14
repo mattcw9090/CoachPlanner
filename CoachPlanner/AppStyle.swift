@@ -1,5 +1,48 @@
 import SwiftUI
 
+enum AppStorageKey {
+    static let trsBookingContactPhone = "trsBookingContactPhone"
+}
+
+enum AustralianPhoneNumber {
+    static func international(from value: String) -> String {
+        let digits = localDigits(from: value)
+        guard !digits.isEmpty else { return "" }
+        return "+61" + digits
+    }
+
+    static func groupedLocal(from value: String) -> String {
+        let digits = localDigits(from: value)
+        guard !digits.isEmpty else { return "" }
+
+        var groups = [String(digits.prefix(3))]
+        if digits.count > 3 {
+            groups.append(String(digits.dropFirst(3).prefix(3)))
+        }
+        if digits.count > 6 {
+            groups.append(String(digits.dropFirst(6)))
+        }
+        return groups.joined(separator: " ")
+    }
+
+    static func localDigits(from value: String) -> String {
+        let digits = value.filter(\.isNumber)
+        let withoutCountryCode = digits.hasPrefix("61")
+            ? String(digits.dropFirst(2))
+            : digits
+        let withoutLeadingZero = withoutCountryCode.hasPrefix("0")
+            ? String(withoutCountryCode.dropFirst())
+            : withoutCountryCode
+        return String(withoutLeadingZero.prefix(9))
+    }
+
+    static func whatsappDigits(from value: String) -> String? {
+        let digits = localDigits(from: value)
+        guard digits.count == 9 else { return nil }
+        return "61" + digits
+    }
+}
+
 enum AppStyle {
     static let background = Color(.systemGroupedBackground)
     static let surface = Color(.secondarySystemGroupedBackground)
