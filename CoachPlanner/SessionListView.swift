@@ -1646,7 +1646,39 @@ struct SessionListView: View {
             }
         }
 
+        lines.append("")
+        lines.append("Total to transfer: \(trsTransferAmountText(for: slots))")
         return lines.joined(separator: "\n")
+    }
+
+    private func trsTransferAmountText(for slots: [TRSCourtRequestSlot]) -> String {
+        let amount = slots.reduce(0.0) { total, slot in
+            total + trsCourtBookingCost(for: slot)
+        }
+        return String(format: "$%.2f", amount)
+    }
+
+    private func trsCourtBookingCost(for slot: TRSCourtRequestSlot) -> Double {
+        let totalMinutes = max(slot.endMinutes - slot.startMinutes, 0)
+        guard totalMinutes > 0, slot.courtCount > 0 else { return 0 }
+
+        let isWeekday = slot.day.rawValue <= Weekday.friday.rawValue
+        let nonPeakMinutes: Int
+        if isWeekday {
+            let nonPeakStart = 6 * 60
+            let nonPeakEnd = 17 * 60
+            nonPeakMinutes = max(
+                min(slot.endMinutes, nonPeakEnd) - max(slot.startMinutes, nonPeakStart),
+                0
+            )
+        } else {
+            nonPeakMinutes = 0
+        }
+
+        let peakMinutes = totalMinutes - nonPeakMinutes
+        let perCourtCost = Double(nonPeakMinutes) / 60.0 * 20.0 +
+            Double(peakMinutes) / 60.0 * 32.0
+        return perCourtCost * Double(slot.courtCount)
     }
 
     private func compactTimeRange(startMinutes: Int, endMinutes: Int) -> String {
