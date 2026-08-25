@@ -47,19 +47,31 @@ enum ContactPreference: String, CaseIterable, Identifiable {
 
 @Model
 final class Student {
-    var name: String
-    var gender: String
-    var contactPreference: String
-    var contactDetail: String
-    var sessionsDemand: Int
+    var name: String = ""
+    var gender: String = ""
+    var contactPreference: String = ContactPreference.instagram.rawValue
+    var contactDetail: String = ""
+    var sessionsDemand: Int = 1
     var isHidden: Bool = false
-    var createdAt: Date
+    var createdAt: Date = Date.now
 
     @Relationship(inverse: \CoachingSession.students)
-    var sessions: [CoachingSession] = []
+    var sessions: [CoachingSession]? = nil
+
+    @Relationship(inverse: \SocialSession.students)
+    var socialSessions: [SocialSession]? = nil
+
+    @Relationship(inverse: \SocialSession.hiddenStudents)
+    var legacyHiddenSocialSessions: [SocialSession]? = nil
 
     @Relationship(deleteRule: .cascade, inverse: \SocialHiddenPerson.student)
-    var socialHiddenRecords: [SocialHiddenPerson] = []
+    var socialHiddenRecords: [SocialHiddenPerson]? = nil
+
+    @Relationship(deleteRule: .cascade, inverse: \StudentHiddenWeek.student)
+    var hiddenWeeks: [StudentHiddenWeek]? = nil
+
+    @Relationship(inverse: \SocialAttendance.student)
+    var socialAttendances: [SocialAttendance]? = nil
 
     init(
         name: String,
@@ -121,11 +133,11 @@ final class Student {
 
 @Model
 final class StudentHiddenWeek {
-    var weekStart: Date
-    var createdAt: Date
+    var weekStart: Date = Date.now
+    var createdAt: Date = Date.now
 
     @Relationship
-    var student: Student?
+    var student: Student? = nil
 
     init(
         student: Student,
@@ -140,14 +152,20 @@ final class StudentHiddenWeek {
 
 @Model
 final class Outsider {
-    var name: String
-    var gender: String
-    var contactPreference: String
-    var contactDetail: String
-    var createdAt: Date
+    var name: String = ""
+    var gender: String = ""
+    var contactPreference: String = ContactPreference.instagram.rawValue
+    var contactDetail: String = ""
+    var createdAt: Date = Date.now
+
+    @Relationship(inverse: \SocialSession.hiddenOutsiders)
+    var legacyHiddenSocialSessions: [SocialSession]? = nil
 
     @Relationship(deleteRule: .cascade, inverse: \SocialHiddenPerson.outsider)
-    var socialHiddenRecords: [SocialHiddenPerson] = []
+    var socialHiddenRecords: [SocialHiddenPerson]? = nil
+
+    @Relationship(inverse: \SocialAttendance.outsider)
+    var socialAttendances: [SocialAttendance]? = nil
 
     init(
         name: String,

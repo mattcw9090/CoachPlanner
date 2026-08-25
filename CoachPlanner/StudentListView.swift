@@ -37,7 +37,7 @@ struct StudentListView: View {
     private var studentSummary: StudentSummary {
         var counts: [PersistentIdentifier: Int] = [:]
         for session in sessionsForSelectedWeek {
-            for student in session.students {
+            for student in session.studentList {
                 counts[student.persistentModelID, default: 0] += 1
             }
         }

@@ -1719,7 +1719,7 @@ struct SessionListView: View {
     }
 
     private func sessionName(for session: CoachingSession) -> String {
-        let studentList = session.students
+        let studentList = session.studentList
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             .map(\.name)
             .joined(separator: ", ")
@@ -1797,7 +1797,7 @@ struct SessionListView: View {
             ].joined(separator: "-"))
             let status = session.statusValue
 
-            let studentList = session.students
+            let studentList = session.studentList
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 .map(\.name)
                 .joined(separator: ", ")
@@ -2677,7 +2677,7 @@ private struct SessionBlock: View {
     }
 
     private var studentNames: String {
-        session.students
+        session.studentList
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
             .map(\.name)
             .joined(separator: ", ")

@@ -200,7 +200,7 @@ struct SocialSessionListView: View {
     }
 
     private func attendanceCount(for session: SocialSession) -> Int {
-        session.attendances.isEmpty ? session.students.count : session.attendances.count
+        session.attendanceList.isEmpty ? session.studentList.count : session.attendanceList.count
     }
 
     private func copyNameList(for session: SocialSession) {
@@ -214,15 +214,15 @@ struct SocialSessionListView: View {
         let confirmedNames: [String]
         let pendingNames: [String]
 
-        if session.attendances.isEmpty {
-            confirmedNames = sortedNames(session.students.map(\.name))
+        if session.attendanceList.isEmpty {
+            confirmedNames = sortedNames(session.studentList.map(\.name))
             pendingNames = []
         } else {
             confirmedNames = participantNames(
-                from: session.attendances.filter { $0.statusValue == .confirmed }
+                from: session.attendanceList.filter { $0.statusValue == .confirmed }
             )
             pendingNames = participantNames(
-                from: session.attendances.filter { $0.statusValue == .pending }
+                from: session.attendanceList.filter { $0.statusValue == .pending }
             )
         }
 
@@ -272,7 +272,7 @@ private struct SocialSessionRow: View {
     let session: SocialSession
 
     private var attendanceCount: Int {
-        session.attendances.isEmpty ? session.students.count : session.attendances.count
+        session.attendanceList.isEmpty ? session.studentList.count : session.attendanceList.count
     }
 
     private var courtSummary: String {
@@ -351,7 +351,7 @@ private struct SocialSessionRow: View {
     }
 
     private func splitAmount(for session: SocialSession) -> Double {
-        let confirmedCount = session.attendances.filter { $0.statusValue == .confirmed }.count
+        let confirmedCount = session.attendanceList.filter { $0.statusValue == .confirmed }.count
         let participantCount = confirmedCount > 0 ? confirmedCount : attendanceCount
         guard participantCount > 0 else { return 0 }
         return (session.shuttlecockCost + session.courtCost) / Double(participantCount)
@@ -1363,10 +1363,10 @@ struct SocialSessionEditorView: View {
         let hiddenPeople = hiddenPersonModels(for: excludedStudents, outsiders: excludedOutsiders)
 
         if let session = editor.session {
-            for attendance in session.attendances {
+            for attendance in session.attendanceList {
                 modelContext.delete(attendance)
             }
-            for hiddenPerson in session.hiddenPeople {
+            for hiddenPerson in session.hiddenPersonList {
                 modelContext.delete(hiddenPerson)
             }
 
@@ -1381,11 +1381,11 @@ struct SocialSessionEditorView: View {
             session.courtNumbers = areCourtsBooked ? trimmedCourtNumbers : ""
             session.shuttlecockCost = sessionStatus == .finished ? shuttlecockCost : 0
             session.courtCost = sessionStatus == .finished ? courtCost : 0
-            session.students = selected
-            session.hiddenStudents = []
-            session.hiddenOutsiders = []
-            session.hiddenPeople = hiddenPeople
-            session.attendances = attendances
+            session.studentList = selected
+            session.legacyHiddenStudentList = []
+            session.legacyHiddenOutsiderList = []
+            session.hiddenPersonList = hiddenPeople
+            session.attendanceList = attendances
         } else {
             let session = SocialSession(
                 title: trimmedTitle,
@@ -1715,13 +1715,13 @@ struct SocialSessionEditorView: View {
 
     private static func initialHiddenStudentIDs(for session: SocialSession?) -> Set<PersistentIdentifier> {
         guard let session else { return [] }
-        let records = session.hiddenPeople.compactMap(\.student) + session.hiddenStudents
+        let records = session.hiddenPersonList.compactMap(\.student) + session.legacyHiddenStudentList
         return Set(records.map(\.persistentModelID))
     }
 
     private static func initialHiddenOutsiderIDs(for session: SocialSession?) -> Set<PersistentIdentifier> {
         guard let session else { return [] }
-        let records = session.hiddenPeople.compactMap(\.outsider) + session.hiddenOutsiders
+        let records = session.hiddenPersonList.compactMap(\.outsider) + session.legacyHiddenOutsiderList
         return Set(records.map(\.persistentModelID))
     }
 
@@ -1729,7 +1729,7 @@ struct SocialSessionEditorView: View {
         guard let session else { return [:] }
 
         var attendanceStatuses: [PersistentIdentifier: SessionStatus] = [:]
-        for attendance in session.attendances {
+        for attendance in session.attendanceList {
             guard let student = attendance.student else { continue }
             attendanceStatuses[student.persistentModelID] = attendance.statusValue
         }
@@ -1739,7 +1739,7 @@ struct SocialSessionEditorView: View {
         }
 
         var legacyStatuses: [PersistentIdentifier: SessionStatus] = [:]
-        for student in session.students {
+        for student in session.studentList {
             legacyStatuses[student.persistentModelID] = .unscheduled
         }
         return legacyStatuses
@@ -1749,7 +1749,7 @@ struct SocialSessionEditorView: View {
         guard let session else { return [:] }
 
         var attendanceStatuses: [PersistentIdentifier: SessionStatus] = [:]
-        for attendance in session.attendances {
+        for attendance in session.attendanceList {
             guard let outsider = attendance.outsider else { continue }
             attendanceStatuses[outsider.persistentModelID] = attendance.statusValue
         }
@@ -1760,7 +1760,7 @@ struct SocialSessionEditorView: View {
         guard let session else { return [:] }
 
         var paymentStatuses: [PersistentIdentifier: SocialPaymentStatus] = [:]
-        for attendance in session.attendances {
+        for attendance in session.attendanceList {
             guard let student = attendance.student else { continue }
             paymentStatuses[student.persistentModelID] = attendance.paymentStatusValue
         }
@@ -1771,7 +1771,7 @@ struct SocialSessionEditorView: View {
         guard let session else { return [:] }
 
         var paymentStatuses: [PersistentIdentifier: SocialPaymentStatus] = [:]
-        for attendance in session.attendances {
+        for attendance in session.attendanceList {
             guard let outsider = attendance.outsider else { continue }
             paymentStatuses[outsider.persistentModelID] = attendance.paymentStatusValue
         }

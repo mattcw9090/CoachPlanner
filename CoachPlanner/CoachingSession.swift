@@ -55,19 +55,19 @@ enum Venue: String, CaseIterable, Identifiable {
 
 @Model
 final class CoachingSession {
-    var weekStart: Date?
-    var dayOfWeek: Int
-    var startTime: Date
-    var endTime: Date
-    var venue: String
-    var status: String
+    var weekStart: Date? = nil
+    var dayOfWeek: Int = Weekday.monday.rawValue
+    var startTime: Date = Date.now
+    var endTime: Date = Date.now
+    var venue: String = Venue.pbaMalaga.rawValue
+    var status: String = SessionStatus.unscheduled.rawValue
     var courtNumber: String = ""
     var sessionFee: Double = 0
-    var sessionDescription: String?
-    var createdAt: Date
+    var sessionDescription: String? = nil
+    var createdAt: Date = Date.now
 
     @Relationship(deleteRule: .nullify)
-    var students: [Student]
+    var students: [Student]? = nil
 
     init(
         weekStart: Date? = nil,
@@ -106,17 +106,22 @@ final class CoachingSession {
     var statusValue: SessionStatus {
         SessionStatus(rawValue: status) ?? .unscheduled
     }
+
+    var studentList: [Student] {
+        get { students ?? [] }
+        set { students = newValue }
+    }
 }
 
 @Model
 final class CourtBooking {
-    var weekStart: Date?
-    var dayOfWeek: Int
-    var startTime: Date
-    var endTime: Date
-    var venue: String
-    var courtNumber: String
-    var createdAt: Date
+    var weekStart: Date? = nil
+    var dayOfWeek: Int = Weekday.monday.rawValue
+    var startTime: Date = Date.now
+    var endTime: Date = Date.now
+    var venue: String = Venue.pbaMalaga.rawValue
+    var courtNumber: String = ""
+    var createdAt: Date = Date.now
 
     init(
         weekStart: Date? = nil,

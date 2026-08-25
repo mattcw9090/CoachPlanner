@@ -17,34 +17,34 @@ enum SocialPaymentStatus: String, CaseIterable, Identifiable {
 
 @Model
 final class SocialSession {
-    var title: String
-    var weekStart: Date
-    var dayOfWeek: Int
-    var startTime: Date
-    var endTime: Date
-    var venue: String
+    var title: String = "Badminton Socials"
+    var weekStart: Date = Date.now
+    var dayOfWeek: Int = Weekday.monday.rawValue
+    var startTime: Date = Date.now
+    var endTime: Date = Date.now
+    var venue: String = Venue.pbaMalaga.rawValue
     var status: String = SocialSessionStatus.planned.rawValue
     var areCourtsBooked: Bool = false
     var courtNumbers: String = ""
     var shuttlecockCost: Double = 0
     var courtCost: Double = 0
-    var createdAt: Date
+    var createdAt: Date = Date.now
 
     @Relationship(deleteRule: .nullify)
-    var students: [Student]
+    var students: [Student]? = nil
 
     // Retained to migrate hidden selections saved by earlier app versions.
     @Relationship(deleteRule: .nullify)
-    var hiddenStudents: [Student] = []
+    var hiddenStudents: [Student]? = nil
 
     @Relationship(deleteRule: .nullify)
-    var hiddenOutsiders: [Outsider] = []
+    var hiddenOutsiders: [Outsider]? = nil
 
     @Relationship(deleteRule: .cascade, inverse: \SocialHiddenPerson.session)
-    var hiddenPeople: [SocialHiddenPerson] = []
+    var hiddenPeople: [SocialHiddenPerson]? = nil
 
-    @Relationship(deleteRule: .cascade)
-    var attendances: [SocialAttendance] = []
+    @Relationship(deleteRule: .cascade, inverse: \SocialAttendance.session)
+    var attendances: [SocialAttendance]? = nil
 
     init(
         title: String = "Badminton Socials",
@@ -96,6 +96,31 @@ final class SocialSession {
         SocialSessionStatus(rawValue: status) ?? .planned
     }
 
+    var studentList: [Student] {
+        get { students ?? [] }
+        set { students = newValue }
+    }
+
+    var legacyHiddenStudentList: [Student] {
+        get { hiddenStudents ?? [] }
+        set { hiddenStudents = newValue }
+    }
+
+    var legacyHiddenOutsiderList: [Outsider] {
+        get { hiddenOutsiders ?? [] }
+        set { hiddenOutsiders = newValue }
+    }
+
+    var hiddenPersonList: [SocialHiddenPerson] {
+        get { hiddenPeople ?? [] }
+        set { hiddenPeople = newValue }
+    }
+
+    var attendanceList: [SocialAttendance] {
+        get { attendances ?? [] }
+        set { attendances = newValue }
+    }
+
     var courtNumbersList: [String] {
         courtNumbers
             .split(separator: ",")
@@ -106,10 +131,10 @@ final class SocialSession {
 
 @Model
 final class SocialHiddenPerson {
-    var createdAt: Date
-    var session: SocialSession?
-    var student: Student?
-    var outsider: Outsider?
+    var createdAt: Date = Date.now
+    var session: SocialSession? = nil
+    var student: Student? = nil
+    var outsider: Outsider? = nil
 
     init(student: Student, createdAt: Date = .now) {
         self.student = student
@@ -126,15 +151,18 @@ final class SocialHiddenPerson {
 
 @Model
 final class SocialAttendance {
-    var status: String
+    var status: String = SessionStatus.unscheduled.rawValue
     var paymentStatus: String = SocialPaymentStatus.unpaid.rawValue
-    var createdAt: Date
+    var createdAt: Date = Date.now
 
     @Relationship(deleteRule: .nullify)
-    var student: Student?
+    var session: SocialSession? = nil
 
     @Relationship(deleteRule: .nullify)
-    var outsider: Outsider?
+    var student: Student? = nil
+
+    @Relationship(deleteRule: .nullify)
+    var outsider: Outsider? = nil
 
     init(
         student: Student?,

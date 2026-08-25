@@ -84,7 +84,7 @@ struct SessionEditorView: View {
         _sessionFeeText = State(initialValue: Self.feeText(for: editor.session?.sessionFee ?? 0))
         _sessionDescription = State(initialValue: editor.session?.sessionDescription ?? "")
         _selectedStudentIDs = State(
-            initialValue: Set(editor.session?.students.map(\.persistentModelID) ?? [])
+            initialValue: Set(editor.session?.studentList.map(\.persistentModelID) ?? [])
         )
         _hasUserAdjustedStart = State(initialValue: editor.preselectedStartTime != nil)
         _hasUserAdjustedEnd = State(initialValue: editor.preselectedEndTime != nil)
@@ -610,7 +610,7 @@ struct SessionEditorView: View {
         var summaries = existingSessions.compactMap { session -> ContactSessionSummary? in
             guard session.persistentModelID != editingID,
                   belongsToEditorWeek(session.weekStart),
-                  session.students.contains(where: { $0.persistentModelID == student.persistentModelID }) else {
+                  session.studentList.contains(where: { $0.persistentModelID == student.persistentModelID }) else {
                 return nil
             }
             return ContactSessionSummary(session: session, weekStart: messageWeekStart)
@@ -696,7 +696,7 @@ struct SessionEditorView: View {
             session.courtNumber = isCourtBooked ? trimmedCourtNumber : ""
             session.sessionFee = sessionFeeValue
             session.sessionDescription = normalizedSessionDescription
-            session.students = selectedStudents
+            session.studentList = selectedStudents
         } else {
             let session = CoachingSession(
                 weekStart: messageWeekStart,
