@@ -459,12 +459,14 @@ struct SessionEditorView: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .keyboardShortcut(.cancelAction)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         save()
                     }
+                    .keyboardShortcut("s", modifiers: .command)
                     .disabled(!canSave)
                 }
             }
@@ -476,6 +478,7 @@ struct SessionEditorView: View {
                 )
             }
         }
+        .desktopSheetSize(width: 720, height: 760)
     }
 
     private func minutes(of date: Date) -> Int {

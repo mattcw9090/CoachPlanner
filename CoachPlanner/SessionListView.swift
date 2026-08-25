@@ -484,6 +484,7 @@ struct SessionListView: View {
                 }
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+                .desktopSheetSize(width: 480, height: 340)
             }
             .sheet(isPresented: $isMassStatusSheetPresented) {
                 MassSessionStatusSheet(selectedCount: selectedBulkSessions.count) { status in
@@ -491,6 +492,7 @@ struct SessionListView: View {
                 }
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+                .desktopSheetSize(width: 480, height: 340)
             }
             .sheet(item: $fileExport) { item in
                 ICSShareSheet(url: item.url)
@@ -3046,16 +3048,19 @@ private struct CourtBookingEditorView: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .keyboardShortcut(.cancelAction)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         save()
                     }
+                    .keyboardShortcut("s", modifiers: .command)
                     .disabled(!canSave)
                 }
             }
         }
+        .desktopSheetSize(width: 560, height: 620)
     }
 
     private func minutes(of date: Date) -> Int {

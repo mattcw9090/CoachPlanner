@@ -162,12 +162,14 @@ struct StudentEditorView: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .keyboardShortcut(.cancelAction)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         save()
                     }
+                    .keyboardShortcut("s", modifiers: .command)
                     .disabled(trimmedName.isEmpty || gender.isEmpty || !isContactValid)
                 }
             }
@@ -183,6 +185,7 @@ struct StudentEditorView: View {
                 contactDetail = Self.formattedAustralianPhoneNumber(phone)
             }
         )
+        .desktopSheetSize(width: 560, height: 600)
     }
 
     private var hasUnsavedChanges: Bool {

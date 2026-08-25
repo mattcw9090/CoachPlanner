@@ -273,6 +273,27 @@ struct StudentListView: View {
                                     }
                                     .tint(summary.isHidden(student) ? .blue : .gray)
                                 }
+                                .contextMenu {
+                                    Button {
+                                        toggleHidden(student, isCurrentlyHidden: summary.isHidden(student))
+                                        if !summary.isHidden(student) {
+                                            allocationFilter = nil
+                                        }
+                                    } label: {
+                                        Label(
+                                            summary.isHidden(student) ? "Unhide for This Week" : "Hide for This Week",
+                                            systemImage: summary.isHidden(student) ? "eye.fill" : "eye.slash.fill"
+                                        )
+                                    }
+
+                                    Divider()
+
+                                    Button(role: .destructive) {
+                                        deleteStudent(student)
+                                    } label: {
+                                        Label("Delete Student", systemImage: "trash")
+                                    }
+                                }
                             }
                             .onDelete { offsets in
                                 deleteStudents(at: offsets, from: summary.filteredStudents)
@@ -281,6 +302,7 @@ struct StudentListView: View {
                     }
                 }
             }
+            .desktopContentWidth(960)
             .navigationTitle("My Students")
             .scrollContentBackground(.hidden)
             .background(AppStyle.background)
@@ -326,11 +348,15 @@ struct StudentListView: View {
     private func deleteStudents(at offsets: IndexSet, from filteredStudents: [Student]) {
         let toDelete = offsets.map { filteredStudents[$0] }
         for student in toDelete {
-            for hiddenWeek in hiddenWeeks where hiddenWeek.student?.persistentModelID == student.persistentModelID {
-                modelContext.delete(hiddenWeek)
-            }
-            modelContext.delete(student)
+            deleteStudent(student)
         }
+    }
+
+    private func deleteStudent(_ student: Student) {
+        for hiddenWeek in hiddenWeeks where hiddenWeek.student?.persistentModelID == student.persistentModelID {
+            modelContext.delete(hiddenWeek)
+        }
+        modelContext.delete(student)
     }
 }
 

@@ -131,6 +131,14 @@ struct SocialSessionListView: View {
                                         } label: {
                                             Label("Copy Name List", systemImage: "doc.on.doc")
                                         }
+
+                                        Divider()
+
+                                        Button(role: .destructive) {
+                                            deleteSession(session)
+                                        } label: {
+                                            Label("Delete Socials Session", systemImage: "trash")
+                                        }
                                     }
                                 }
                                 .onDelete { offsets in
@@ -141,6 +149,7 @@ struct SocialSessionListView: View {
                     }
                 }
             }
+            .desktopContentWidth(960)
             .navigationTitle("Socials")
             .scrollContentBackground(.hidden)
             .background(AppStyle.background)
@@ -182,8 +191,12 @@ struct SocialSessionListView: View {
     private func deleteSessions(at offsets: IndexSet, from sessions: [SocialSession]) {
         let toDelete = offsets.map { sessions[$0] }
         for session in toDelete {
-            modelContext.delete(session)
+            deleteSession(session)
         }
+    }
+
+    private func deleteSession(_ session: SocialSession) {
+        modelContext.delete(session)
     }
 
     private func attendanceCount(for session: SocialSession) -> Int {
@@ -1046,10 +1059,30 @@ struct SocialSessionEditorView: View {
                                 .tint(.orange)
 
                                 Button(role: .destructive) {
-                                    selectedStatusByStudentID.removeValue(forKey: student.persistentModelID)
-                                    paymentStatusByStudentID.removeValue(forKey: student.persistentModelID)
+                                    removeStudentFromSocial(student)
                                 } label: {
                                     Label("Delete", systemImage: "trash")
+                                }
+                            }
+                            .contextMenu {
+                                Button {
+                                    ask(student)
+                                } label: {
+                                    Label(messageActionTitle, systemImage: messageActionIcon)
+                                }
+
+                                Button {
+                                    hideStudentFromSocial(student)
+                                } label: {
+                                    Label("Hide from This Social", systemImage: "eye.slash")
+                                }
+
+                                Divider()
+
+                                Button(role: .destructive) {
+                                    removeStudentFromSocial(student)
+                                } label: {
+                                    Label("Remove from This Social", systemImage: "minus.circle")
                                 }
                             }
                         }
@@ -1111,10 +1144,30 @@ struct SocialSessionEditorView: View {
                                 .tint(.orange)
 
                                 Button(role: .destructive) {
-                                    selectedStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
-                                    paymentStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
+                                    removeOutsiderFromSocial(outsider)
                                 } label: {
                                     Label("Delete", systemImage: "trash")
+                                }
+                            }
+                            .contextMenu {
+                                Button {
+                                    ask(outsider)
+                                } label: {
+                                    Label(messageActionTitle, systemImage: messageActionIcon)
+                                }
+
+                                Button {
+                                    hideOutsiderFromSocial(outsider)
+                                } label: {
+                                    Label("Hide from This Social", systemImage: "eye.slash")
+                                }
+
+                                Divider()
+
+                                Button(role: .destructive) {
+                                    removeOutsiderFromSocial(outsider)
+                                } label: {
+                                    Label("Remove from This Social", systemImage: "minus.circle")
                                 }
                             }
                         }
@@ -1132,6 +1185,28 @@ struct SocialSessionEditorView: View {
                 }
 
                 Section {
+#if targetEnvironment(macCatalyst)
+                    HStack(alignment: .top, spacing: 18) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Students", systemImage: "person.3.fill")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            addStudentsPage
+                        }
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Outsiders", systemImage: "person.crop.circle.badge.questionmark")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            addOutsidersPage
+                        }
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                    .frame(minHeight: 320, alignment: .top)
+#else
                     Picker("People", selection: $addPeoplePage) {
                         ForEach(SocialPeoplePage.allCases) { page in
                             Text(page.title).tag(page)
@@ -1148,14 +1223,19 @@ struct SocialSessionEditorView: View {
                     }
                     .tabViewStyle(.page(indexDisplayMode: .automatic))
                     .frame(minHeight: 320)
+#endif
                 } header: {
                     Text("Add People")
                 } footer: {
+#if targetEnvironment(macCatalyst)
+                    Text("Students and outsiders are shown side by side. Use the options menu to manage outsiders.")
+#else
                     Text(
                         addPeoplePage == .outsiders
                             ? "Swipe right to return to students. Use the options menu to manage outsiders."
                             : "Swipe sideways to switch between students and outsiders."
                     )
+#endif
                 }
 
                 if isEditing {
@@ -1173,12 +1253,14 @@ struct SocialSessionEditorView: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .keyboardShortcut(.cancelAction)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         save()
                     }
+                    .keyboardShortcut("s", modifiers: .command)
                     .disabled(!canSave)
                 }
             }
@@ -1200,6 +1282,7 @@ struct SocialSessionEditorView: View {
         }
         .presentationContentInteraction(.scrolls)
         .interactiveDismissDisabled()
+        .desktopSheetSize(width: 920, height: 780)
     }
 
     private func addCreatedOutsiderToSession(_ outsider: Outsider) {
@@ -1217,6 +1300,16 @@ struct SocialSessionEditorView: View {
         paymentStatusByStudentID[student.persistentModelID] = .unpaid
         studentSearch = ""
         UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func removeStudentFromSocial(_ student: Student) {
+        selectedStatusByStudentID.removeValue(forKey: student.persistentModelID)
+        paymentStatusByStudentID.removeValue(forKey: student.persistentModelID)
+    }
+
+    private func removeOutsiderFromSocial(_ outsider: Outsider) {
+        selectedStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
+        paymentStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
     }
 
     private func hideStudentFromSocial(_ student: Student) {
@@ -1795,6 +1888,7 @@ private struct OutsiderManagerView: View {
                 Text("This removes the outsider record from every social.")
             }
         }
+        .desktopSheetSize(width: 620, height: 620)
     }
 }
 
@@ -1951,12 +2045,14 @@ private struct OutsiderEditorView: View {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .keyboardShortcut(.cancelAction)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         save()
                     }
+                    .keyboardShortcut("s", modifiers: .command)
                     .disabled(trimmedName.isEmpty || gender.isEmpty || !isContactValid)
                 }
             }
@@ -1968,6 +2064,7 @@ private struct OutsiderEditorView: View {
                 contactDetail = Self.formattedAustralianPhoneNumber(phone)
             }
         )
+        .desktopSheetSize(width: 560, height: 580)
     }
 
     private func save() {

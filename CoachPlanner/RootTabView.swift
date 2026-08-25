@@ -1,7 +1,40 @@
 import SwiftUI
 
 struct RootTabView: View {
+    @State private var selectedSection: AppSection = .sessions
+
     var body: some View {
+#if targetEnvironment(macCatalyst)
+        NavigationSplitView {
+            List {
+                ForEach(AppSection.allCases) { section in
+                    Button {
+                        selectedSection = section
+                    } label: {
+                        Label(section.title, systemImage: section.systemImage)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(section.shortcut, modifiers: .command)
+                    .foregroundStyle(selectedSection == section ? Color.accentColor : Color.primary)
+                    .listRowBackground(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(selectedSection == section ? Color.accentColor.opacity(0.14) : Color.clear)
+                    )
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationTitle("CoachPlanner")
+            .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+        } detail: {
+            selectedSectionView
+                .id(selectedSection)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .frame(minWidth: 1_000, minHeight: 700)
+        .tint(.blue)
+#else
         TabView {
             StudentListView()
                 .tabItem {
@@ -24,6 +57,59 @@ struct RootTabView: View {
                 }
         }
         .tint(.blue)
+#endif
+    }
+
+#if targetEnvironment(macCatalyst)
+    @ViewBuilder
+    private var selectedSectionView: some View {
+        switch selectedSection {
+        case .students:
+            StudentListView()
+        case .sessions:
+            SessionListView()
+        case .socials:
+            SocialSessionListView()
+        case .settings:
+            AppSettingsView()
+        }
+    }
+#endif
+}
+
+private enum AppSection: String, CaseIterable, Identifiable {
+    case students
+    case sessions
+    case socials
+    case settings
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .students: return "Students"
+        case .sessions: return "Sessions"
+        case .socials: return "Socials"
+        case .settings: return "Settings"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .students: return "person.3.fill"
+        case .sessions: return "calendar"
+        case .socials: return "figure.badminton"
+        case .settings: return "gearshape.fill"
+        }
+    }
+
+    var shortcut: KeyEquivalent {
+        switch self {
+        case .students: return "1"
+        case .sessions: return "2"
+        case .socials: return "3"
+        case .settings: return ","
+        }
     }
 }
 
@@ -82,6 +168,7 @@ private struct AppSettingsView: View {
             .navigationTitle("Settings")
             .scrollContentBackground(.hidden)
             .background(AppStyle.background)
+            .desktopContentWidth(720)
         }
         .background(
             PhoneContactPickerPresenter(

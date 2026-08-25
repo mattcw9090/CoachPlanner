@@ -104,3 +104,24 @@ struct MetricTile: View {
         )
     }
 }
+
+extension View {
+    @ViewBuilder
+    func desktopContentWidth(_ maxWidth: CGFloat) -> some View {
+#if targetEnvironment(macCatalyst)
+        frame(maxWidth: maxWidth)
+            .frame(maxWidth: .infinity)
+#else
+        self
+#endif
+    }
+
+    @ViewBuilder
+    func desktopSheetSize(width: CGFloat, height: CGFloat) -> some View {
+#if targetEnvironment(macCatalyst)
+        frame(minWidth: width, minHeight: height)
+#else
+        self
+#endif
+    }
+}
