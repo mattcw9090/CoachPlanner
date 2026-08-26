@@ -50,10 +50,17 @@ struct SessionListView: View {
 
     private let dayStartHour = 6
     private let dayEndHour = 23
+#if targetEnvironment(macCatalyst)
+    private let hourHeight: CGFloat = 76
+    private let timeAxisWidth: CGFloat = 52
+    private let dayHeaderHeight: CGFloat = 56
+    private let calendarHorizontalPadding: CGFloat = 16
+#else
     private let hourHeight: CGFloat = 64
     private let timeAxisWidth: CGFloat = 42
     private let dayHeaderHeight: CGFloat = 46
     private let calendarHorizontalPadding: CGFloat = 12
+#endif
     private let gridLineOpacity: Double = 0.26
     private let activeGridLineOpacity: Double = 0.42
 
@@ -880,7 +887,7 @@ struct SessionListView: View {
             Color.clear.frame(width: timeAxisWidth, height: totalGridHeight)
             ForEach(visibleHours, id: \.self) { hour in
                 Text(hourLabel(hour))
-                    .font(.system(size: 10, weight: .medium))
+                    .font(AppStyle.timeGridFont(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
                     .padding(.trailing, 6)
                     .offset(y: CGFloat(hour - dayStartHour) * hourHeight - 7)
@@ -2735,27 +2742,27 @@ private struct SessionBlock: View {
                     isBulkSelectionSelected ? "Selected" : (isBulkSelectionEligible ? "Tap to select" : bulkSelectionAction.unavailableTitle),
                     systemImage: isBulkSelectionSelected ? "checkmark.circle.fill" : (isBulkSelectionEligible ? "circle" : "lock.fill")
                 )
-                .font(.system(size: 8, weight: .bold))
+                .font(AppStyle.timeGridFont(size: 8, weight: .bold))
                 .foregroundStyle(isBulkSelectionEligible ? Color.blue : Color.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             }
 
             Text(studentNames.isEmpty ? "No students" : studentNames)
-                .font(.system(size: 10, weight: .bold))
+                .font(AppStyle.timeGridFont(size: 10, weight: .bold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .minimumScaleFactor(0.75)
 
             Text(session.venue)
-                .font(.system(size: 9, weight: .medium))
+                .font(AppStyle.timeGridFont(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
 
             if !sessionMetadata.isEmpty {
                 Text(sessionMetadata)
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(AppStyle.timeGridFont(size: 8, weight: .semibold))
                     .foregroundStyle(color)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
@@ -2794,13 +2801,13 @@ private struct CourtBookingBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(booking.venue)
-                .font(.system(size: 10, weight: .bold))
+                .font(AppStyle.timeGridFont(size: 10, weight: .bold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .minimumScaleFactor(0.75)
 
             Text("Court \(courtNumber)")
-                .font(.system(size: 9, weight: .semibold))
+                .font(AppStyle.timeGridFont(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
@@ -2840,20 +2847,20 @@ private struct SocialSessionBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(session.title)
-                .font(.system(size: 10, weight: .bold))
+                .font(AppStyle.timeGridFont(size: 10, weight: .bold))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .minimumScaleFactor(0.75)
 
             Text(session.venue)
-                .font(.system(size: 9, weight: .medium))
+                .font(AppStyle.timeGridFont(size: 9, weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
 
             if !courtSummary.isEmpty {
                 Text(courtSummary)
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(AppStyle.timeGridFont(size: 8, weight: .semibold))
                     .foregroundStyle(.purple)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)

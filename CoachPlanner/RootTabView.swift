@@ -2,6 +2,7 @@ import SwiftUI
 
 struct RootTabView: View {
     @State private var selectedSection: AppSection = .sessions
+    @State private var cloudRefreshID = UUID()
 
     var body: some View {
 #if targetEnvironment(macCatalyst)
@@ -26,37 +27,48 @@ struct RootTabView: View {
             }
             .listStyle(.sidebar)
             .navigationTitle("CoachPlanner")
-            .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+            .navigationSplitViewColumnWidth(min: 220, ideal: 250, max: 320)
         } detail: {
             selectedSectionView
-                .id(selectedSection)
+                .id("\(selectedSection.rawValue)-\(cloudRefreshID.uuidString)")
         }
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 1_000, minHeight: 700)
         .tint(.blue)
+        .desktopReadableTypography()
+        .onReceive(NotificationCenter.default.publisher(for: .coachPlannerCloudKitImportCompleted)) { _ in
+            cloudRefreshID = UUID()
+        }
 #else
         TabView {
             StudentListView()
+                .id("students-\(cloudRefreshID.uuidString)")
                 .tabItem {
                     Label("Students", systemImage: "person.3.fill")
                 }
 
             SessionListView()
+                .id("sessions-\(cloudRefreshID.uuidString)")
                 .tabItem {
                     Label("Sessions", systemImage: "calendar")
                 }
 
             SocialSessionListView()
+                .id("socials-\(cloudRefreshID.uuidString)")
                 .tabItem {
                     Label("Socials", systemImage: "figure.badminton")
                 }
 
             AppSettingsView()
+                .id("settings-\(cloudRefreshID.uuidString)")
                 .tabItem {
                     Label("Settings", systemImage: "gearshape.fill")
                 }
         }
         .tint(.blue)
+        .onReceive(NotificationCenter.default.publisher(for: .coachPlannerCloudKitImportCompleted)) { _ in
+            cloudRefreshID = UUID()
+        }
 #endif
     }
 

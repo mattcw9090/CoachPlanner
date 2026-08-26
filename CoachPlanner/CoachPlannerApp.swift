@@ -10,6 +10,7 @@ struct CoachPlannerApp: App {
 
     init() {
         PersistenceDiagnostics.startCloudKitLogging()
+        PersistenceDiagnostics.logCloudKitAccountStatus()
 
         let container = Self.makeContainer()
         CoachPlannerApp.modelContainer = container
@@ -44,26 +45,14 @@ struct CoachPlannerApp: App {
     /// Builds the SwiftData container.
     ///
     private static func makeContainer() -> ModelContainer {
-        // Derive the URL from the previous local-only configuration, then add
-        // CloudKit to that exact file. Existing iPhone records are opened in
-        // place and become eligible for export instead of starting a new store.
-        let legacyLocalConfiguration = ModelConfiguration(
-            schema: schema,
-            groupContainer: .none,
-            cloudKitDatabase: .none
-        )
-        let config = ModelConfiguration(
-            schema: schema,
-            url: legacyLocalConfiguration.url,
-            cloudKitDatabase: .private(PersistenceSettings.cloudKitContainerIdentifier)
-        )
-        let storeExists = FileManager.default.fileExists(atPath: config.url.path)
-
-        PersistenceDiagnostics.logger.info(
-            "Opening SwiftData store at \(config.url.path, privacy: .public); existing=\(storeExists, privacy: .public); CloudKit=\(PersistenceSettings.cloudKitContainerIdentifier, privacy: .public)"
-        )
-
         do {
+            let config = try makeConfiguration()
+            let storeExists = FileManager.default.fileExists(atPath: config.url.path)
+
+            PersistenceDiagnostics.logger.info(
+                "Opening SwiftData store at \(config.url.path, privacy: .public); existing=\(storeExists, privacy: .public); CloudKit=\(PersistenceSettings.cloudKitContainerIdentifier, privacy: .public)"
+            )
+
 #if DEBUG
             if ProcessInfo.processInfo.arguments.contains(PersistenceSettings.schemaInitializationArgument) {
                 try initializeCloudKitSchema(using: config)
@@ -77,6 +66,44 @@ struct CoachPlannerApp: App {
             )
             fatalError("Could not open the CoachPlanner store: \(error)")
         }
+    }
+
+    private static func makeConfiguration() throws -> ModelConfiguration {
+#if targetEnvironment(macCatalyst)
+        let applicationSupportURL = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let storeDirectory = applicationSupportURL.appendingPathComponent(
+            PersistenceSettings.catalystStoreDirectoryName,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: storeDirectory,
+            withIntermediateDirectories: true
+        )
+        let storeURL = storeDirectory.appendingPathComponent(
+            PersistenceSettings.storeFileName,
+            isDirectory: false
+        )
+#else
+        // Preserve the exact store URL used by every local-only iPhone build.
+        // Pointing CloudKit at this file uploads existing records in place.
+        let legacyLocalConfiguration = ModelConfiguration(
+            schema: schema,
+            groupContainer: .none,
+            cloudKitDatabase: .none
+        )
+        let storeURL = legacyLocalConfiguration.url
+#endif
+
+        return ModelConfiguration(
+            schema: schema,
+            url: storeURL,
+            cloudKitDatabase: .private(PersistenceSettings.cloudKitContainerIdentifier)
+        )
     }
 
 #if DEBUG
@@ -132,6 +159,8 @@ struct CoachPlannerApp: App {
 enum PersistenceSettings {
     static let cloudKitContainerIdentifier = "iCloud.com.matthewchew.CoachPlanner"
     static let schemaInitializationArgument = "-initializeCloudKitSchema"
+    static let catalystStoreDirectoryName = "CoachPlanner"
+    static let storeFileName = "CoachPlanner.store"
 }
 
 private enum PersistenceSetupError: LocalizedError {
@@ -167,6 +196,17 @@ private enum PersistenceDiagnostics {
                     logger.debug("CloudKit \(eventType, privacy: .public) started")
                 } else if event.succeeded {
                     logger.info("CloudKit \(eventType, privacy: .public) completed")
+                    if event.type == .import {
+                        DispatchQueue.main.async {
+                            if let container = CoachPlannerApp.modelContainer {
+                                logLocalRecordCounts(in: container)
+                            }
+                            NotificationCenter.default.post(
+                                name: .coachPlannerCloudKitImportCompleted,
+                                object: nil
+                            )
+                        }
+                    }
                 } else {
                     logger.error(
                         "CloudKit \(eventType, privacy: .public) failed: \(event.error?.localizedDescription ?? "Unknown error", privacy: .public)"
@@ -175,6 +215,19 @@ private enum PersistenceDiagnostics {
             }
         }
 
+    }
+
+    static func logCloudKitAccountStatus() {
+        CKContainer(identifier: PersistenceSettings.cloudKitContainerIdentifier).accountStatus { status, error in
+            if let error {
+                logger.error(
+                    "Could not read the iCloud account status: \(error.localizedDescription, privacy: .public)"
+                )
+                return
+            }
+
+            logger.info("iCloud account status: \(String(describing: status), privacy: .public)")
+        }
     }
 
     static func logLocalRecordCounts(in container: ModelContainer) {
@@ -199,4 +252,10 @@ private enum PersistenceDiagnostics {
         }
     }
 
+}
+
+extension Notification.Name {
+    static let coachPlannerCloudKitImportCompleted = Notification.Name(
+        "CoachPlannerCloudKitImportCompleted"
+    )
 }
