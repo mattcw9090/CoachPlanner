@@ -265,9 +265,6 @@ struct StudentListView: View {
                                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                                     Button {
                                         toggleHidden(student, isCurrentlyHidden: summary.isHidden(student))
-                                        if !summary.isHidden(student) {
-                                            allocationFilter = nil
-                                        }
                                     } label: {
                                         Label(summary.isHidden(student) ? "Unhide" : "Hide", systemImage: summary.isHidden(student) ? "eye.fill" : "eye.slash.fill")
                                     }
@@ -276,9 +273,6 @@ struct StudentListView: View {
                                 .contextMenu {
                                     Button {
                                         toggleHidden(student, isCurrentlyHidden: summary.isHidden(student))
-                                        if !summary.isHidden(student) {
-                                            allocationFilter = nil
-                                        }
                                     } label: {
                                         Label(
                                             summary.isHidden(student) ? "Unhide for This Week" : "Hide for This Week",
