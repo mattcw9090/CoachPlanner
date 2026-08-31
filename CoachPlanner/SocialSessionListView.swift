@@ -11,17 +11,9 @@ struct SocialSessionListView: View {
             SortDescriptor(\SocialSession.startTime)
         ]
     ) private var socialSessions: [SocialSession]
-    @AppStorage("socialsWeekStartTimestamp") private var socialsWeekStartTimestamp: Double = 0
-    @AppStorage("weekStartTimestamp") private var sessionsWeekStartTimestamp: Double = 0
+    @Binding var weekStart: Date
     @State private var editor: SocialSessionEditor?
     @State private var copyNotice: SocialCopyNotice?
-
-    private var weekStart: Date {
-        if socialsWeekStartTimestamp == 0 {
-            return Self.monday(of: .now)
-        }
-        return Date(timeIntervalSince1970: socialsWeekStartTimestamp)
-    }
 
     private var weekEnd: Date {
         Calendar.current.date(byAdding: .day, value: 6, to: weekStart) ?? weekStart
@@ -36,56 +28,35 @@ struct SocialSessionListView: View {
         socialSessions.filter { Calendar.current.isDate($0.weekStart, inSameDayAs: weekStart) }
     }
 
-    private var totalStudents: Int {
-        sessionsForWeek.reduce(0) { $0 + attendanceCount(for: $1) }
-    }
-
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Socials Week")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                Text(weekRangeText)
-                                    .font(.title3.weight(.semibold))
-                            }
-
-                            Spacer()
-
-                            HStack(spacing: 8) {
-                                Button {
-                                    moveWeek(by: -1)
-                                } label: {
-                                    Image(systemName: "chevron.left")
-                                }
-                                .buttonStyle(.bordered)
-
-                                Button {
-                                    moveWeek(by: 1)
-                                } label: {
-                                    Image(systemName: "chevron.right")
-                                }
-                                .buttonStyle(.bordered)
-                            }
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Socials Week")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text(weekRangeText)
+                                .font(.title3.weight(.semibold))
                         }
 
-                        HStack(spacing: 10) {
-                            MetricTile(
-                                title: "Socials",
-                                value: "\(sessionsForWeek.count)",
-                                systemImage: "figure.badminton",
-                                tint: .purple
-                            )
-                            MetricTile(
-                                title: "People",
-                                value: "\(totalStudents)",
-                                systemImage: "person.2.fill",
-                                tint: .blue
-                            )
+                        Spacer()
+
+                        HStack(spacing: 8) {
+                            Button {
+                                moveWeek(by: -1)
+                            } label: {
+                                Image(systemName: "chevron.left")
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button {
+                                moveWeek(by: 1)
+                            } label: {
+                                Image(systemName: "chevron.right")
+                            }
+                            .buttonStyle(.bordered)
                         }
                     }
                     .padding(.vertical, 6)
@@ -172,20 +143,12 @@ struct SocialSessionListView: View {
                     dismissButton: .default(Text("OK"))
                 )
             }
-            .onAppear {
-                if socialsWeekStartTimestamp == 0 {
-                    let initialWeekStart = sessionsWeekStartTimestamp == 0
-                        ? Self.monday(of: .now)
-                        : Self.monday(of: Date(timeIntervalSince1970: sessionsWeekStartTimestamp))
-                    socialsWeekStartTimestamp = initialWeekStart.timeIntervalSince1970
-                }
-            }
         }
     }
 
     private func moveWeek(by offset: Int) {
         let nextWeek = Calendar.current.date(byAdding: .day, value: offset * 7, to: weekStart) ?? weekStart
-        socialsWeekStartTimestamp = Self.monday(of: nextWeek).timeIntervalSince1970
+        weekStart = Self.monday(of: nextWeek)
     }
 
     private func deleteSessions(at offsets: IndexSet, from sessions: [SocialSession]) {
@@ -197,10 +160,6 @@ struct SocialSessionListView: View {
 
     private func deleteSession(_ session: SocialSession) {
         modelContext.delete(session)
-    }
-
-    private func attendanceCount(for session: SocialSession) -> Int {
-        session.attendanceList.isEmpty ? session.studentList.count : session.attendanceList.count
     }
 
     private func copyNameList(for session: SocialSession) {
@@ -389,6 +348,146 @@ private struct SocialStatusMenu: View {
             .background(Capsule().fill(status.color.opacity(0.14)))
         }
         .buttonStyle(.plain)
+    }
+}
+
+private extension SessionStatus {
+    static let attendanceDisplayOrder: [SessionStatus] = [.confirmed, .pending, .unscheduled]
+
+    var attendanceSortPriority: Int {
+        switch self {
+        case .confirmed: return 0
+        case .pending: return 1
+        case .unscheduled: return 2
+        }
+    }
+}
+
+private enum SocialParticipant: Identifiable {
+    case student(Student)
+    case outsider(Outsider)
+
+    var id: PersistentIdentifier {
+        switch self {
+        case .student(let student): return student.persistentModelID
+        case .outsider(let outsider): return outsider.persistentModelID
+        }
+    }
+
+    var name: String {
+        switch self {
+        case .student(let student): return student.name
+        case .outsider(let outsider): return outsider.name
+        }
+    }
+}
+
+private struct SocialAttendanceSummary: View {
+    let statuses: [SessionStatus]
+
+#if targetEnvironment(macCatalyst)
+    private let columnAlignment: HorizontalAlignment = .leading
+    private let columnSpacing: CGFloat = 16
+#else
+    private let columnAlignment: HorizontalAlignment = .center
+    private let columnSpacing: CGFloat = 12
+#endif
+
+    private func count(for status: SessionStatus) -> Int {
+        statuses.filter { $0 == status }.count
+    }
+
+    @ViewBuilder
+    private func countText(for status: SessionStatus) -> some View {
+#if targetEnvironment(macCatalyst)
+        Text("\(count(for: status))")
+#else
+        Text("\(count(for: status))")
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+#endif
+    }
+
+    @ViewBuilder
+    private func countLabel(for status: SessionStatus) -> some View {
+#if targetEnvironment(macCatalyst)
+        Label("\(count(for: status))", systemImage: status.iconName)
+#else
+        // Form's automatic Label style reserves row-icon space on iOS.
+        HStack(spacing: 6) {
+            Image(systemName: status.iconName)
+            countText(for: status)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+#endif
+    }
+
+    @ViewBuilder
+    private func stackedStatusRow(for status: SessionStatus) -> some View {
+#if targetEnvironment(macCatalyst)
+        HStack(spacing: 12) {
+            Label {
+                Text(status.rawValue)
+            } icon: {
+                Image(systemName: status.iconName)
+                    .foregroundStyle(status.color)
+            }
+            Spacer(minLength: 8)
+            countText(for: status)
+                .fontWeight(.semibold)
+                .monospacedDigit()
+        }
+#else
+        VStack(alignment: .leading, spacing: 4) {
+            countLabel(for: status)
+                .font(.headline)
+                .monospacedDigit()
+                .foregroundStyle(status.color)
+
+            Text(status.rawValue)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+#endif
+    }
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: columnSpacing) {
+                ForEach(SessionStatus.attendanceDisplayOrder) { status in
+                    VStack(alignment: columnAlignment, spacing: 4) {
+                        countLabel(for: status)
+                            .font(.headline)
+                            .monospacedDigit()
+                            .foregroundStyle(status.color)
+
+                        Text(status.rawValue)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(
+                        maxWidth: .infinity,
+                        alignment: Alignment(horizontal: columnAlignment, vertical: .center)
+                    )
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(status.rawValue): \(count(for: status))")
+                }
+            }
+
+            VStack(spacing: 12) {
+                ForEach(SessionStatus.attendanceDisplayOrder) { status in
+                    stackedStatusRow(for: status)
+                        .accessibilityElement(children: .combine)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+#if !targetEnvironment(macCatalyst)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+#endif
     }
 }
 
@@ -584,6 +683,20 @@ struct SocialSessionEditorView: View {
         outsiders
             .filter { selectedStatusByOutsiderID[$0.persistentModelID] != nil }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var selectedParticipants: [SocialParticipant] {
+        let people = selectedStudents.map(SocialParticipant.student) +
+            selectedOutsiders.map(SocialParticipant.outsider)
+
+        return people.sorted { lhs, rhs in
+            let lhsPriority = status(for: lhs).attendanceSortPriority
+            let rhsPriority = status(for: rhs).attendanceSortPriority
+            if lhsPriority != rhsPriority {
+                return lhsPriority < rhsPriority
+            }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
     }
 
     private var availableOutsiders: [Outsider] {
@@ -1001,6 +1114,8 @@ struct SocialSessionEditorView: View {
                 }
 
                 Section {
+                    SocialAttendanceSummary(statuses: selectedParticipants.map { status(for: $0) })
+
                     TextField("Search students", text: $studentSearch)
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
@@ -1009,165 +1124,164 @@ struct SocialSessionEditorView: View {
                         Text("No people selected")
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(selectedStudents) { student in
-                            HStack(spacing: 12) {
-                                Image(systemName: isFinishedSettlementReady ? paymentStatus(for: student).iconName : status(for: student).iconName)
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(isFinishedSettlementReady ? paymentStatus(for: student).color : status(for: student).color)
-                                    .frame(width: 24, height: 24)
-                                    .background(Circle().fill((isFinishedSettlementReady ? paymentStatus(for: student).color : status(for: student).color).opacity(0.14)))
+                        ForEach(selectedParticipants) { participant in
+                            switch participant {
+                            case .student(let student):
+                                HStack(spacing: 12) {
+                                    Image(systemName: isFinishedSettlementReady ? paymentStatus(for: student).iconName : status(for: student).iconName)
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(isFinishedSettlementReady ? paymentStatus(for: student).color : status(for: student).color)
+                                        .frame(width: 24, height: 24)
+                                        .background(Circle().fill((isFinishedSettlementReady ? paymentStatus(for: student).color : status(for: student).color).opacity(0.14)))
 
-                                Text(student.name)
-                                    .font(.body)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(2)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                                if !isFinishedSettlementReady {
-                                    SocialStatusMenu(
-                                        status: status(for: student),
-                                        onChange: { newStatus in
-                                            selectedStatusByStudentID[student.persistentModelID] = newStatus
-                                        }
-                                    )
-                                }
-
-                                if isFinishedSettlementReady {
-                                    SocialPaymentMenu(
-                                        status: paymentStatus(for: student),
-                                        onChange: { newStatus in
-                                            paymentStatusByStudentID[student.persistentModelID] = newStatus
-                                        }
-                                    )
-                                }
-                            }
-                            .padding(.vertical, 4)
-                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                Button {
-                                    ask(student)
-                                } label: {
-                                    Label(messageActionTitle, systemImage: messageActionIcon)
-                                }
-                                .tint(isFinishedSettlementReady ? .green : .blue)
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button {
-                                    hideStudentFromSocial(student)
-                                } label: {
-                                    Label("Hide", systemImage: "eye.slash")
-                                }
-                                .tint(.orange)
-
-                                Button(role: .destructive) {
-                                    removeStudentFromSocial(student)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                            .contextMenu {
-                                Button {
-                                    ask(student)
-                                } label: {
-                                    Label(messageActionTitle, systemImage: messageActionIcon)
-                                }
-
-                                Button {
-                                    hideStudentFromSocial(student)
-                                } label: {
-                                    Label("Hide from This Social", systemImage: "eye.slash")
-                                }
-
-                                Divider()
-
-                                Button(role: .destructive) {
-                                    removeStudentFromSocial(student)
-                                } label: {
-                                    Label("Remove from This Social", systemImage: "minus.circle")
-                                }
-                            }
-                        }
-                    }
-
-                    if !selectedOutsiders.isEmpty {
-                        ForEach(selectedOutsiders) { outsider in
-                            HStack(spacing: 12) {
-                                Image(systemName: isFinishedSettlementReady ? paymentStatus(for: outsider).iconName : status(for: outsider).iconName)
-                                    .font(.caption.weight(.bold))
-                                    .foregroundStyle(isFinishedSettlementReady ? paymentStatus(for: outsider).color : status(for: outsider).color)
-                                    .frame(width: 24, height: 24)
-                                    .background(Circle().fill((isFinishedSettlementReady ? paymentStatus(for: outsider).color : status(for: outsider).color).opacity(0.14)))
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(outsider.name)
+                                    Text(student.name)
                                         .font(.body)
                                         .foregroundStyle(.primary)
                                         .lineLimit(2)
-                                    Text("Outsider")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(.secondary)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                                if !isFinishedSettlementReady {
-                                    SocialStatusMenu(
-                                        status: status(for: outsider),
-                                        onChange: { newStatus in
-                                            selectedStatusByOutsiderID[outsider.persistentModelID] = newStatus
-                                        }
-                                    )
-                                }
+                                    if !isFinishedSettlementReady {
+                                        SocialStatusMenu(
+                                            status: status(for: student),
+                                            onChange: { newStatus in
+                                                selectedStatusByStudentID[student.persistentModelID] = newStatus
+                                            }
+                                        )
+                                    }
 
-                                if isFinishedSettlementReady {
-                                    SocialPaymentMenu(
-                                        status: paymentStatus(for: outsider),
-                                        onChange: { newStatus in
-                                            paymentStatusByOutsiderID[outsider.persistentModelID] = newStatus
-                                        }
-                                    )
+                                    if isFinishedSettlementReady {
+                                        SocialPaymentMenu(
+                                            status: paymentStatus(for: student),
+                                            onChange: { newStatus in
+                                                paymentStatusByStudentID[student.persistentModelID] = newStatus
+                                            }
+                                        )
+                                    }
                                 }
-                            }
-                            .padding(.vertical, 4)
-                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                Button {
-                                    ask(outsider)
-                                } label: {
-                                    Label(messageActionTitle, systemImage: messageActionIcon)
+                                .padding(.vertical, 4)
+                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                    Button {
+                                        ask(student)
+                                    } label: {
+                                        Label(messageActionTitle, systemImage: messageActionIcon)
+                                    }
+                                    .tint(isFinishedSettlementReady ? .green : .blue)
                                 }
-                                .tint(isFinishedSettlementReady ? .green : .blue)
-                            }
-                            .swipeActions(edge: .trailing) {
-                                Button {
-                                    hideOutsiderFromSocial(outsider)
-                                } label: {
-                                    Label("Hide", systemImage: "eye.slash")
-                                }
-                                .tint(.orange)
+                                .swipeActions(edge: .trailing) {
+                                    Button {
+                                        hideStudentFromSocial(student)
+                                    } label: {
+                                        Label("Hide", systemImage: "eye.slash")
+                                    }
+                                    .tint(.orange)
 
-                                Button(role: .destructive) {
-                                    removeOutsiderFromSocial(outsider)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
+                                    Button(role: .destructive) {
+                                        removeStudentFromSocial(student)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
                                 }
-                            }
-                            .contextMenu {
-                                Button {
-                                    ask(outsider)
-                                } label: {
-                                    Label(messageActionTitle, systemImage: messageActionIcon)
+                                .contextMenu {
+                                    Button {
+                                        ask(student)
+                                    } label: {
+                                        Label(messageActionTitle, systemImage: messageActionIcon)
+                                    }
+
+                                    Button {
+                                        hideStudentFromSocial(student)
+                                    } label: {
+                                        Label("Hide from This Social", systemImage: "eye.slash")
+                                    }
+
+                                    Divider()
+
+                                    Button(role: .destructive) {
+                                        removeStudentFromSocial(student)
+                                    } label: {
+                                        Label("Remove from This Social", systemImage: "minus.circle")
+                                    }
                                 }
+                            case .outsider(let outsider):
+                                HStack(spacing: 12) {
+                                    Image(systemName: isFinishedSettlementReady ? paymentStatus(for: outsider).iconName : status(for: outsider).iconName)
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(isFinishedSettlementReady ? paymentStatus(for: outsider).color : status(for: outsider).color)
+                                        .frame(width: 24, height: 24)
+                                        .background(Circle().fill((isFinishedSettlementReady ? paymentStatus(for: outsider).color : status(for: outsider).color).opacity(0.14)))
 
-                                Button {
-                                    hideOutsiderFromSocial(outsider)
-                                } label: {
-                                    Label("Hide from This Social", systemImage: "eye.slash")
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(outsider.name)
+                                            .font(.body)
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(2)
+                                        Text("Outsider")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                    if !isFinishedSettlementReady {
+                                        SocialStatusMenu(
+                                            status: status(for: outsider),
+                                            onChange: { newStatus in
+                                                selectedStatusByOutsiderID[outsider.persistentModelID] = newStatus
+                                            }
+                                        )
+                                    }
+
+                                    if isFinishedSettlementReady {
+                                        SocialPaymentMenu(
+                                            status: paymentStatus(for: outsider),
+                                            onChange: { newStatus in
+                                                paymentStatusByOutsiderID[outsider.persistentModelID] = newStatus
+                                            }
+                                        )
+                                    }
                                 }
+                                .padding(.vertical, 4)
+                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                    Button {
+                                        ask(outsider)
+                                    } label: {
+                                        Label(messageActionTitle, systemImage: messageActionIcon)
+                                    }
+                                    .tint(isFinishedSettlementReady ? .green : .blue)
+                                }
+                                .swipeActions(edge: .trailing) {
+                                    Button {
+                                        hideOutsiderFromSocial(outsider)
+                                    } label: {
+                                        Label("Hide", systemImage: "eye.slash")
+                                    }
+                                    .tint(.orange)
 
-                                Divider()
+                                    Button(role: .destructive) {
+                                        removeOutsiderFromSocial(outsider)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                                .contextMenu {
+                                    Button {
+                                        ask(outsider)
+                                    } label: {
+                                        Label(messageActionTitle, systemImage: messageActionIcon)
+                                    }
 
-                                Button(role: .destructive) {
-                                    removeOutsiderFromSocial(outsider)
-                                } label: {
-                                    Label("Remove from This Social", systemImage: "minus.circle")
+                                    Button {
+                                        hideOutsiderFromSocial(outsider)
+                                    } label: {
+                                        Label("Hide from This Social", systemImage: "eye.slash")
+                                    }
+
+                                    Divider()
+
+                                    Button(role: .destructive) {
+                                        removeOutsiderFromSocial(outsider)
+                                    } label: {
+                                        Label("Remove from This Social", systemImage: "minus.circle")
+                                    }
                                 }
                             }
                         }
@@ -1656,6 +1770,13 @@ struct SocialSessionEditorView: View {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefix = trimmed.hasPrefix("+") ? "+" : ""
         return prefix + trimmed.filter(\.isNumber)
+    }
+
+    private func status(for participant: SocialParticipant) -> SessionStatus {
+        switch participant {
+        case .student(let student): return status(for: student)
+        case .outsider(let outsider): return status(for: outsider)
+        }
     }
 
     private func status(for student: Student) -> SessionStatus {
@@ -2177,6 +2298,8 @@ private struct OutsiderEditorView: View {
 }
 
 #Preview {
-    SocialSessionListView()
+    @Previewable @State var weekStart = SocialSessionListView.monday(of: .now)
+
+    SocialSessionListView(weekStart: $weekStart)
         .modelContainer(for: [Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self], inMemory: true)
 }

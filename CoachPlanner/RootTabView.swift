@@ -3,6 +3,7 @@ import SwiftUI
 struct RootTabView: View {
     @State private var selectedSection: AppSection = .sessions
     @State private var cloudRefreshID = UUID()
+    @State private var socialsWeekStart = SocialSessionListView.monday(of: .now)
 
     var body: some View {
 #if targetEnvironment(macCatalyst)
@@ -53,7 +54,7 @@ struct RootTabView: View {
                     Label("Sessions", systemImage: "calendar")
                 }
 
-            SocialSessionListView()
+            SocialSessionListView(weekStart: $socialsWeekStart)
                 .id("socials-\(cloudRefreshID.uuidString)")
                 .tabItem {
                     Label("Socials", systemImage: "figure.badminton")
@@ -81,7 +82,7 @@ struct RootTabView: View {
         case .sessions:
             SessionListView()
         case .socials:
-            SocialSessionListView()
+            SocialSessionListView(weekStart: $socialsWeekStart)
         case .settings:
             AppSettingsView()
         }
