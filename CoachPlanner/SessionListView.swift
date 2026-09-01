@@ -37,10 +37,9 @@ struct SessionListView: View {
     @State private var sessionNotice: SessionNotice?
     @State private var selectedCourtBooking: CourtBooking?
     @State private var isResetConfirmationPresented = false
-    @State private var bulkSelectionAction: BulkSessionAction?
+    @State private var isBulkCourtSelectionEnabled = false
     @State private var bulkSessionSelection: Set<PersistentIdentifier> = []
     @State private var isMassCourtBookingSheetPresented = false
-    @State private var isMassStatusSheetPresented = false
     @State private var weekDragTranslation: CGFloat = 0
     @State private var weekDragAxis: WeekDragAxis?
     @State private var isWeekCommitInProgress = false
@@ -86,18 +85,11 @@ struct SessionListView: View {
     }
 
     private var isBulkSelectionModeEnabled: Bool {
-        bulkSelectionAction != nil
+        isBulkCourtSelectionEnabled
     }
 
     private var eligibleBulkSessions: [CoachingSession] {
-        switch bulkSelectionAction {
-        case .bookCourts:
-            return unbookedSessionsForWeek
-        case .setStatus:
-            return sessionsForWeek
-        case nil:
-            return []
-        }
+        isBulkCourtSelectionEnabled ? unbookedSessionsForWeek : []
     }
 
     private var selectedBulkSessions: [CoachingSession] {
@@ -433,23 +425,12 @@ struct SessionListView: View {
                         }
                         .tint(.blue)
                     } else {
-                        Menu {
-                            Button {
-                                beginBulkSelection(.bookCourts)
-                            } label: {
-                                Label("Book Courts", systemImage: "sportscourt")
-                            }
-                            .disabled(unbookedSessionsForWeek.isEmpty)
-
-                            Button {
-                                beginBulkSelection(.setStatus)
-                            } label: {
-                                Label("Set Status", systemImage: "checklist")
-                            }
+                        Button {
+                            beginBulkCourtSelection()
                         } label: {
-                            Label("Bulk Actions", systemImage: "checklist")
+                            Label("Book Courts", systemImage: "sportscourt")
                         }
-                        .disabled(sessionsForWeek.isEmpty)
+                        .disabled(unbookedSessionsForWeek.isEmpty)
                     }
                 }
 
@@ -488,14 +469,6 @@ struct SessionListView: View {
             .sheet(isPresented: $isMassCourtBookingSheetPresented) {
                 MassCourtBookingSheet(selectedCount: selectedBulkSessions.count) { courtNumber in
                     applyMassCourtBooking(courtNumber: courtNumber)
-                }
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
-                .desktopSheetSize(width: 480, height: 340)
-            }
-            .sheet(isPresented: $isMassStatusSheetPresented) {
-                MassSessionStatusSheet(selectedCount: selectedBulkSessions.count) { status in
-                    applyMassStatus(status)
                 }
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
@@ -700,6 +673,15 @@ struct SessionListView: View {
                                 weekStart: social.weekStart
                             )
                         }
+                    },
+                    onDoubleTap: { location in
+                        guard !isBulkSelectionModeEnabled,
+                              let session = sessionAtGridLocation(
+                                at: location,
+                                gridWidth: proxy.size.width,
+                                summary: summary
+                              ) else { return }
+                        advanceStatus(of: session)
                     },
                     onMoveBegan: { location in
                         guard let session = sessionAtGridLocation(
@@ -938,7 +920,7 @@ struct SessionListView: View {
                 let isDragging = sessionDrag?.session.persistentModelID == session.persistentModelID
                 SessionBlock(
                     session: session,
-                    bulkSelectionAction: bulkSelectionAction,
+                    isBulkSelectionModeEnabled: isBulkSelectionModeEnabled,
                     isBulkSelectionEligible: isEligibleForBulkSelection(session),
                     isBulkSelectionSelected: bulkSessionSelection.contains(session.persistentModelID)
                 )
@@ -1033,12 +1015,9 @@ struct SessionListView: View {
             .buttonStyle(.bordered)
 
             Button {
-                presentBulkActionEditor()
+                isMassCourtBookingSheetPresented = true
             } label: {
-                Label(
-                    bulkSelectionAction?.commitTitle ?? "Apply",
-                    systemImage: bulkSelectionAction?.iconName ?? "checkmark.circle.fill"
-                )
+                Label("Book", systemImage: "checkmark.circle.fill")
             }
             .buttonStyle(.borderedProminent)
             .disabled(selectedBulkSessions.isEmpty)
@@ -1060,20 +1039,19 @@ struct SessionListView: View {
         editor = SessionEditor(session: session, weekStart: weekStart)
     }
 
-    private func beginBulkSelection(_ action: BulkSessionAction) {
+    private func beginBulkCourtSelection() {
         pendingDraftSelection = nil
         draftSelection = nil
         selectedCourtBooking = nil
         sessionDrag = nil
         bulkSessionSelection.removeAll()
-        bulkSelectionAction = action
+        isBulkCourtSelectionEnabled = true
     }
 
     private func cancelBulkSelection() {
-        bulkSelectionAction = nil
+        isBulkCourtSelectionEnabled = false
         bulkSessionSelection.removeAll()
         isMassCourtBookingSheetPresented = false
-        isMassStatusSheetPresented = false
     }
 
     private func toggleBulkSelection(for session: CoachingSession) {
@@ -1100,22 +1078,9 @@ struct SessionListView: View {
         UISelectionFeedbackGenerator().selectionChanged()
     }
 
-    private func presentBulkActionEditor() {
-        guard !selectedBulkSessions.isEmpty else { return }
-
-        switch bulkSelectionAction {
-        case .bookCourts:
-            isMassCourtBookingSheetPresented = true
-        case .setStatus:
-            isMassStatusSheetPresented = true
-        case nil:
-            break
-        }
-    }
-
     private func applyMassCourtBooking(courtNumber: String) {
         let trimmedCourtNumber = courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard bulkSelectionAction == .bookCourts,
+        guard isBulkCourtSelectionEnabled,
               !trimmedCourtNumber.isEmpty else { return }
 
         for session in selectedBulkSessions {
@@ -1126,26 +1091,18 @@ struct SessionListView: View {
         cancelBulkSelection()
     }
 
-    private func applyMassStatus(_ status: SessionStatus) {
-        guard bulkSelectionAction == .setStatus else { return }
-
-        for session in selectedBulkSessions {
-            session.status = status.rawValue
-        }
-
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-        cancelBulkSelection()
+    private func isEligibleForBulkSelection(_ session: CoachingSession) -> Bool {
+        isBulkCourtSelectionEnabled && isCourtUnbooked(session)
     }
 
-    private func isEligibleForBulkSelection(_ session: CoachingSession) -> Bool {
-        switch bulkSelectionAction {
-        case .bookCourts:
-            return isCourtUnbooked(session)
-        case .setStatus:
-            return true
-        case nil:
-            return false
+    private func advanceStatus(of session: CoachingSession) {
+        guard belongsToVisibleWeek(session.weekStart),
+              let nextStatus = session.statusValue.nextStatus else { return }
+
+        withAnimation(.snappy(duration: 0.2)) {
+            session.status = nextStatus.rawValue
         }
+        UISelectionFeedbackGenerator().selectionChanged()
     }
 
     private func isCourtUnbooked(_ session: CoachingSession) -> Bool {
@@ -2023,32 +1980,6 @@ private struct TRSCourtRequestSlot {
     let courtCount: Int
 }
 
-private enum BulkSessionAction: Equatable {
-    case bookCourts
-    case setStatus
-
-    var commitTitle: String {
-        switch self {
-        case .bookCourts: return "Book"
-        case .setStatus: return "Set Status"
-        }
-    }
-
-    var iconName: String {
-        switch self {
-        case .bookCourts: return "checkmark.circle.fill"
-        case .setStatus: return "checklist"
-        }
-    }
-
-    var unavailableTitle: String {
-        switch self {
-        case .bookCourts: return "Already booked"
-        case .setStatus: return "Unavailable"
-        }
-    }
-}
-
 private struct MassCourtBookingSheet: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -2097,56 +2028,6 @@ private struct MassCourtBookingSheet: View {
             .onAppear {
                 DispatchQueue.main.async {
                     isCourtNumberFocused = true
-                }
-            }
-        }
-    }
-}
-
-private struct MassSessionStatusSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let selectedCount: Int
-    let onSelect: (SessionStatus) -> Void
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    ForEach(SessionStatus.allCases) { status in
-                        Button {
-                            onSelect(status)
-                            dismiss()
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: status.iconName)
-                                    .foregroundStyle(status.color)
-                                    .frame(width: 22)
-
-                                Text(status.rawValue)
-                                    .foregroundStyle(.primary)
-
-                                Spacer()
-
-                                Image(systemName: "chevron.right")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } footer: {
-                    Text("The selected status will be applied to all \(selectedCount) \(selectedCount == 1 ? "session" : "sessions").")
-                }
-            }
-            .navigationTitle("Set Status")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
                 }
             }
         }
@@ -2297,6 +2178,7 @@ private struct SessionGridInteractionOverlay: UIViewRepresentable {
     let containsSession: (CGPoint) -> Bool
     let canMoveSession: (CGPoint) -> Bool
     let onTap: (CGPoint) -> Void
+    let onDoubleTap: (CGPoint) -> Void
     let onMoveBegan: (CGPoint) -> Void
     let onMoveChanged: (CGSize) -> Void
     let onMoveEnded: () -> Void
@@ -2308,6 +2190,7 @@ private struct SessionGridInteractionOverlay: UIViewRepresentable {
             containsSession: containsSession,
             canMoveSession: canMoveSession,
             onTap: onTap,
+            onDoubleTap: onDoubleTap,
             onMoveBegan: onMoveBegan,
             onMoveChanged: onMoveChanged,
             onMoveEnded: onMoveEnded,
@@ -2332,6 +2215,14 @@ private struct SessionGridInteractionOverlay: UIViewRepresentable {
         )
         tapRecognizer.cancelsTouchesInView = false
 
+        let doubleTapRecognizer = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleDoubleTap(_:))
+        )
+        doubleTapRecognizer.numberOfTapsRequired = 2
+        doubleTapRecognizer.cancelsTouchesInView = false
+        tapRecognizer.require(toFail: doubleTapRecognizer)
+
         let moveRecognizer = UILongPressGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleMove(_:))
@@ -2345,6 +2236,7 @@ private struct SessionGridInteractionOverlay: UIViewRepresentable {
 
         context.coordinator.moveRecognizer = moveRecognizer
         view.addGestureRecognizer(tapRecognizer)
+        view.addGestureRecognizer(doubleTapRecognizer)
         view.addGestureRecognizer(moveRecognizer)
         return view
     }
@@ -2354,6 +2246,7 @@ private struct SessionGridInteractionOverlay: UIViewRepresentable {
         context.coordinator.containsSession = containsSession
         context.coordinator.canMoveSession = canMoveSession
         context.coordinator.onTap = onTap
+        context.coordinator.onDoubleTap = onDoubleTap
         context.coordinator.onMoveBegan = onMoveBegan
         context.coordinator.onMoveChanged = onMoveChanged
         context.coordinator.onMoveEnded = onMoveEnded
@@ -2365,6 +2258,7 @@ private struct SessionGridInteractionOverlay: UIViewRepresentable {
         var containsSession: (CGPoint) -> Bool
         var canMoveSession: (CGPoint) -> Bool
         var onTap: (CGPoint) -> Void
+        var onDoubleTap: (CGPoint) -> Void
         var onMoveBegan: (CGPoint) -> Void
         var onMoveChanged: (CGSize) -> Void
         var onMoveEnded: () -> Void
@@ -2378,6 +2272,7 @@ private struct SessionGridInteractionOverlay: UIViewRepresentable {
             containsSession: @escaping (CGPoint) -> Bool,
             canMoveSession: @escaping (CGPoint) -> Bool,
             onTap: @escaping (CGPoint) -> Void,
+            onDoubleTap: @escaping (CGPoint) -> Void,
             onMoveBegan: @escaping (CGPoint) -> Void,
             onMoveChanged: @escaping (CGSize) -> Void,
             onMoveEnded: @escaping () -> Void,
@@ -2387,6 +2282,7 @@ private struct SessionGridInteractionOverlay: UIViewRepresentable {
             self.containsSession = containsSession
             self.canMoveSession = canMoveSession
             self.onTap = onTap
+            self.onDoubleTap = onDoubleTap
             self.onMoveBegan = onMoveBegan
             self.onMoveChanged = onMoveChanged
             self.onMoveEnded = onMoveEnded
@@ -2396,6 +2292,11 @@ private struct SessionGridInteractionOverlay: UIViewRepresentable {
         @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
             guard recognizer.state == .ended else { return }
             onTap(recognizer.location(in: recognizer.view))
+        }
+
+        @objc func handleDoubleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
+            onDoubleTap(recognizer.location(in: recognizer.view))
         }
 
         @objc func handleMove(_ recognizer: UILongPressGestureRecognizer) {
@@ -2675,7 +2576,7 @@ private struct DraftTypeButton: View {
 
 private struct SessionBlock: View {
     let session: CoachingSession
-    var bulkSelectionAction: BulkSessionAction?
+    var isBulkSelectionModeEnabled = false
     var isBulkSelectionEligible = false
     var isBulkSelectionSelected = false
 
@@ -2732,14 +2633,14 @@ private struct SessionBlock: View {
     }
 
     private var isModeLocked: Bool {
-        bulkSelectionAction != nil && !isBulkSelectionEligible
+        isBulkSelectionModeEnabled && !isBulkSelectionEligible
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            if let bulkSelectionAction {
+            if isBulkSelectionModeEnabled {
                 Label(
-                    isBulkSelectionSelected ? "Selected" : (isBulkSelectionEligible ? "Tap to select" : bulkSelectionAction.unavailableTitle),
+                    isBulkSelectionSelected ? "Selected" : (isBulkSelectionEligible ? "Tap to select" : "Already booked"),
                     systemImage: isBulkSelectionSelected ? "checkmark.circle.fill" : (isBulkSelectionEligible ? "circle" : "lock.fill")
                 )
                 .font(AppStyle.timeGridFont(size: 8, weight: .bold))

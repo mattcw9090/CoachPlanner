@@ -24,6 +24,14 @@ enum SessionStatus: String, CaseIterable, Identifiable {
         case .confirmed: return "checkmark.circle.fill"
         }
     }
+
+    var nextStatus: SessionStatus? {
+        switch self {
+        case .unscheduled: return .pending
+        case .pending: return .confirmed
+        case .confirmed: return nil
+        }
+    }
 }
 
 enum Weekday: Int, CaseIterable, Identifiable {
