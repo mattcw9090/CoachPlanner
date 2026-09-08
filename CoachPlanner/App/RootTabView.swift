@@ -24,6 +24,12 @@ struct RootTabView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: ModelContext.willSave, object: modelContext)) { _ in
                 if modelContext.hasChanges {
+                    for model in modelContext.changedModelsArray {
+                        if !SyncTimestamping.isApplyingRemoteChange,
+                           let timestamped = model as? SyncTimestamped {
+                            timestamped.updatedAt = .now
+                        }
+                    }
                     awaitingInitialCloudImport = false
                 }
             }
@@ -296,7 +302,7 @@ private struct AppSettingsView: View {
                         Label("Cloud snapshot: \(snapshot.summary)", systemImage: "checkmark.icloud")
                             .foregroundStyle(.green)
                         if let refreshedAt = cloud.lastSuccessfulRefreshAt {
-                            Text("Last refreshed \\(refreshedAt.formatted(date: .abbreviated, time: .shortened))")
+                            Text("Last refreshed \(refreshedAt.formatted(date: .abbreviated, time: .shortened))")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
@@ -304,10 +310,19 @@ private struct AppSettingsView: View {
                             isIdentityLinkConfirmationPresented = true
                         }
                         .buttonStyle(.borderless)
+                        Button("Sync coaching sessions") {
+                            Task { await cloud.syncCoachingSessions(in: modelContext) }
+                        }
+                        .buttonStyle(.borderless)
                         if let result = cloud.lastIdentityLinkResult {
-                            Text("Linked (result.studentsLinked) students, (result.outsidersLinked) outsiders, (result.sessionsLinked) sessions, (result.courtsLinked) court bookings, (result.socialsLinked) socials, (result.hiddenPeopleLinked) hidden people, and (result.attendancesLinked) attendances.")
+                            Text("Linked \(result.studentsLinked) students, \(result.outsidersLinked) outsiders, \(result.sessionsLinked) sessions, \(result.courtsLinked) court bookings, \(result.socialsLinked) socials, \(result.hiddenPeopleLinked) hidden people, and \(result.attendancesLinked) attendances.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
+                        }
+                        if let result = cloud.lastSyncResult {
+                            Text("Sync: pushed \(result.pushed), pulled \(result.pulled), conflicts \(result.conflicts), skipped \(result.skipped).")
+                                .font(.footnote)
+                                .foregroundStyle(result.conflicts == 0 ? Color.secondary : Color.orange)
                         }
                     }
 

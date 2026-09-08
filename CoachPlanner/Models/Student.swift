@@ -46,7 +46,7 @@ enum ContactPreference: String, CaseIterable, Identifiable {
 }
 
 @Model
-final class Student {
+final class Student: SyncTimestamped {
     var name: String = ""
     var gender: String = ""
     var contactPreference: String = ContactPreference.instagram.rawValue
@@ -55,6 +55,8 @@ final class Student {
     var isHidden: Bool = false
     var createdAt: Date = Date.now
     var syncID: UUID = UUID()
+    var updatedAt: Date = Date.now
+    var lastSyncedAt: Date? = nil
 
     @Relationship(inverse: \CoachingSession.students)
     var sessions: [CoachingSession]? = nil
@@ -135,10 +137,12 @@ final class Student {
 }
 
 @Model
-final class StudentHiddenWeek {
+final class StudentHiddenWeek: SyncTimestamped {
     var weekStart: Date = Date.now
     var createdAt: Date = Date.now
     var syncID: UUID = UUID()
+    var updatedAt: Date = Date.now
+    var lastSyncedAt: Date? = nil
 
     @Relationship
     var student: Student? = nil
@@ -157,13 +161,15 @@ final class StudentHiddenWeek {
 }
 
 @Model
-final class Outsider {
+final class Outsider: SyncTimestamped {
     var name: String = ""
     var gender: String = ""
     var contactPreference: String = ContactPreference.instagram.rawValue
     var contactDetail: String = ""
     var createdAt: Date = Date.now
     var syncID: UUID = UUID()
+    var updatedAt: Date = Date.now
+    var lastSyncedAt: Date? = nil
 
     @Relationship(inverse: \SocialSession.hiddenOutsiders)
     var legacyHiddenSocialSessions: [SocialSession]? = nil

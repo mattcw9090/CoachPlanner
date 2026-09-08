@@ -32,6 +32,7 @@ final class SupabaseCloud: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var lastSuccessfulRefreshAt: Date?
     @Published private(set) var lastIdentityLinkResult: IdentityLinkResult?
+    @Published private(set) var lastSyncResult: SyncRunResult?
 
     private let keychain = SupabaseKeychain()
     private var accessToken: String?
@@ -108,6 +109,7 @@ final class SupabaseCloud: ObservableObject {
                 let candidates = studentsByName[student.name.normalizedSyncName] ?? []
                 guard candidates.count == 1, student.syncID != candidates[0].id else { continue }
                 student.syncID = candidates[0].id
+                student.lastSyncedAt = candidates[0].updatedAt
                 linkedStudents += 1
             }
 
@@ -124,7 +126,9 @@ final class SupabaseCloud: ObservableObject {
             var linkedSessions = 0
             for session in localSessions {
                 guard let index = remainingCloudSessions.firstIndex(where: { $0.matches(session) }) else { continue }
-                session.syncID = remainingCloudSessions.remove(at: index).id
+                let cloudSession = remainingCloudSessions.remove(at: index)
+                session.syncID = cloudSession.id
+                session.lastSyncedAt = cloudSession.updatedAt
                 linkedSessions += 1
             }
 
@@ -184,6 +188,54 @@ final class SupabaseCloud: ObservableObject {
                 attendancesLinked: linkedAttendances
             )
         } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func syncCoachingSessions(in context: ModelContext) async {
+        lastError = nil
+        do {
+            guard let accessToken else { throw SupabaseCloudError.notSignedIn }
+            let localSessions = try context.fetch(FetchDescriptor<CoachingSession>())
+            let cloudSessions = try await fetchSessionRecords(token: accessToken)
+            var cloudByID = Dictionary(uniqueKeysWithValues: cloudSessions.map { ($0.id, $0) })
+            var pushed = 0
+            var pulled = 0
+            var conflicts = 0
+            var skipped = 0
+
+            for local in localSessions {
+                guard let cloud = cloudByID[local.syncID], let baseline = local.lastSyncedAt else {
+                    skipped += 1
+                    continue
+                }
+                let localChanged = local.updatedAt > baseline
+                let cloudChanged = cloud.updatedAt > baseline
+                if localChanged && cloudChanged {
+                    conflicts += 1
+                } else if localChanged {
+                    let updated = try await updateCloudSession(local, expectedUpdatedAt: baseline, token: accessToken)
+                    local.lastSyncedAt = updated.updatedAt
+                    pushed += 1
+                } else if cloudChanged {
+                    SyncTimestamping.isApplyingRemoteChange = true
+                    local.startTime = cloud.startTime
+                    local.endTime = cloud.endTime
+                    local.venue = cloud.venue
+                    local.status = cloud.status
+                    local.courtNumber = cloud.courtNumber
+                    local.updatedAt = cloud.updatedAt
+                    local.lastSyncedAt = cloud.updatedAt
+                    SyncTimestamping.isApplyingRemoteChange = false
+                    pulled += 1
+                }
+                cloudByID.removeValue(forKey: local.syncID)
+            }
+
+            if context.hasChanges { try context.save() }
+            lastSyncResult = SyncRunResult(pushed: pushed, pulled: pulled, conflicts: conflicts, skipped: skipped)
+        } catch {
+            SyncTimestamping.isApplyingRemoteChange = false
             lastError = error.localizedDescription
         }
     }
@@ -277,7 +329,7 @@ final class SupabaseCloud: ObservableObject {
             resolvingAgainstBaseURL: false
         )!
         components.queryItems = [
-            URLQueryItem(name: "select", value: "id,name"),
+            URLQueryItem(name: "select", value: "id,name,updated_at"),
             URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)"),
             URLQueryItem(name: "deleted_at", value: "is.null")
         ]
@@ -291,7 +343,7 @@ final class SupabaseCloud: ObservableObject {
             resolvingAgainstBaseURL: false
         )!
         components.queryItems = [
-            URLQueryItem(name: "select", value: "id,start_time,end_time,venue,status,court_number"),
+            URLQueryItem(name: "select", value: "id,start_time,end_time,venue,status,court_number,updated_at"),
             URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)"),
             URLQueryItem(name: "deleted_at", value: "is.null"),
             URLQueryItem(name: "order", value: "start_time.asc")
@@ -301,6 +353,46 @@ final class SupabaseCloud: ObservableObject {
         decoder.dateDecodingStrategy = .supabaseTimestamp
         return try decoder.decode([CloudSessionRecord].self, from: data)
     }
+
+    private func updateCloudSession(
+        _ session: CoachingSession,
+        expectedUpdatedAt: Date,
+        token: String
+    ) async throws -> CloudSessionRecord {
+        var components = URLComponents(
+            url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/coaching_sessions"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "id", value: "eq.\(session.syncID.uuidString)"),
+            URLQueryItem(name: "updated_at", value: "eq.\(Self.isoFormatter.string(from: expectedUpdatedAt))")
+        ]
+        let body: [String: Any] = [
+            "start_time": Self.isoFormatter.string(from: session.startTime),
+            "end_time": Self.isoFormatter.string(from: session.endTime),
+            "venue": session.venue,
+            "status": session.status,
+            "court_number": session.courtNumber
+        ]
+        let data = try await send(
+            url: components.url!, method: "PATCH",
+            body: try JSONSerialization.data(withJSONObject: body),
+            token: token,
+            prefer: "return=representation"
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .supabaseTimestamp
+        guard let updated = try decoder.decode([CloudSessionRecord].self, from: data).first else {
+            throw SupabaseCloudError.conflict
+        }
+        return updated
+    }
+
+    private static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     private func fetchCourtRecords(token: String) async throws -> [CloudCourtRecord] {
         var components = URLComponents(
@@ -412,6 +504,13 @@ struct IdentityLinkResult: Equatable {
     let attendancesLinked: Int
 }
 
+struct SyncRunResult: Equatable {
+    let pushed: Int
+    let pulled: Int
+    let conflicts: Int
+    let skipped: Int
+}
+
 private struct CloudID: Decodable {
     let id: UUID
 }
@@ -419,6 +518,13 @@ private struct CloudID: Decodable {
 private struct CloudStudentRecord: Decodable {
     let id: UUID
     let name: String
+    let updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case updatedAt = "updated_at"
+    }
 }
 
 private struct CloudOutsiderRecord: Decodable {
@@ -465,6 +571,7 @@ private struct CloudSessionRecord: Decodable {
     let venue: String
     let status: String
     let courtNumber: String
+    let updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -473,6 +580,7 @@ private struct CloudSessionRecord: Decodable {
         case venue
         case status
         case courtNumber = "court_number"
+        case updatedAt = "updated_at"
     }
 
     func matches(_ session: CoachingSession) -> Bool {
@@ -572,6 +680,7 @@ private enum SupabaseCloudError: LocalizedError {
     case notSignedIn
     case invalidResponse
     case requestFailed(String)
+    case conflict
 
     var errorDescription: String? {
         switch self {
@@ -581,6 +690,8 @@ private enum SupabaseCloudError: LocalizedError {
             return "Supabase returned an invalid response."
         case .requestFailed(let message):
             return "Supabase request failed: \(message)"
+        case .conflict:
+            return "The cloud session changed before the local update could be applied."
         }
     }
 }

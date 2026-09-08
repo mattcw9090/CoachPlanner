@@ -16,7 +16,7 @@ enum SocialPaymentStatus: String, CaseIterable, Identifiable {
 }
 
 @Model
-final class SocialSession {
+final class SocialSession: SyncTimestamped {
     var title: String = "Badminton Socials"
     var weekStart: Date = Date.now
     var dayOfWeek: Int = Weekday.monday.rawValue
@@ -30,6 +30,8 @@ final class SocialSession {
     var courtCost: Double = 0
     var createdAt: Date = Date.now
     var syncID: UUID = UUID()
+    var updatedAt: Date = Date.now
+    var lastSyncedAt: Date? = nil
 
     @Relationship(deleteRule: .nullify)
     var students: [Student]? = nil
@@ -133,9 +135,11 @@ final class SocialSession {
 }
 
 @Model
-final class SocialHiddenPerson {
+final class SocialHiddenPerson: SyncTimestamped {
     var createdAt: Date = Date.now
     var syncID: UUID = UUID()
+    var updatedAt: Date = Date.now
+    var lastSyncedAt: Date? = nil
     var session: SocialSession? = nil
     var student: Student? = nil
     var outsider: Outsider? = nil
@@ -156,11 +160,13 @@ final class SocialHiddenPerson {
 }
 
 @Model
-final class SocialAttendance {
+final class SocialAttendance: SyncTimestamped {
     var status: String = SessionStatus.unscheduled.rawValue
     var paymentStatus: String = SocialPaymentStatus.unpaid.rawValue
     var createdAt: Date = Date.now
     var syncID: UUID = UUID()
+    var updatedAt: Date = Date.now
+    var lastSyncedAt: Date? = nil
 
     @Relationship(deleteRule: .nullify)
     var session: SocialSession? = nil

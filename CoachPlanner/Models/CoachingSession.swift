@@ -2,6 +2,15 @@ import Foundation
 import SwiftData
 import SwiftUI
 
+protocol SyncTimestamped: AnyObject {
+    var updatedAt: Date { get set }
+    var lastSyncedAt: Date? { get set }
+}
+
+enum SyncTimestamping {
+    static var isApplyingRemoteChange = false
+}
+
 enum SessionStatus: String, CaseIterable, Identifiable {
     case unscheduled = "Unscheduled"
     case pending = "Pending"
@@ -62,7 +71,7 @@ enum Venue: String, CaseIterable, Identifiable {
 }
 
 @Model
-final class CoachingSession {
+final class CoachingSession: SyncTimestamped {
     var weekStart: Date? = nil
     var dayOfWeek: Int = Weekday.monday.rawValue
     var startTime: Date = Date.now
@@ -74,6 +83,8 @@ final class CoachingSession {
     var sessionDescription: String? = nil
     var createdAt: Date = Date.now
     var syncID: UUID = UUID()
+    var updatedAt: Date = Date.now
+    var lastSyncedAt: Date? = nil
 
     @Relationship(deleteRule: .nullify)
     var students: [Student]? = nil
@@ -125,7 +136,7 @@ final class CoachingSession {
 }
 
 @Model
-final class CourtBooking {
+final class CourtBooking: SyncTimestamped {
     var weekStart: Date? = nil
     var dayOfWeek: Int = Weekday.monday.rawValue
     var startTime: Date = Date.now
@@ -134,6 +145,8 @@ final class CourtBooking {
     var courtNumber: String = ""
     var createdAt: Date = Date.now
     var syncID: UUID = UUID()
+    var updatedAt: Date = Date.now
+    var lastSyncedAt: Date? = nil
 
     init(
         weekStart: Date? = nil,
