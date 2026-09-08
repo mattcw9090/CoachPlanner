@@ -1,0 +1,127 @@
+openapi: 3.1.0
+info:
+  title: CoachPlanner API
+  version: 0.1.0
+  description: Authenticated cloud storage contract for CoachPlanner.
+servers:
+  - url: https://api.example.invalid/v1
+security:
+  - bearerAuth: []
+paths:
+  /workspace:
+    get:
+      summary: Get the authenticated coach workspace
+      responses:
+        '200': { description: Workspace returned }
+  /snapshot:
+    get:
+      summary: Get a read-only planning snapshot
+      parameters:
+        - { name: weekStart, in: query, required: true, schema: { type: string, format: date } }
+      responses:
+        '200': { description: Snapshot returned }
+  /students:
+    get:
+      summary: List active students
+      responses:
+        '200': { description: Students returned }
+    post:
+      summary: Create a student
+      responses:
+        '201': { description: Student created }
+  /students/{studentId}:
+    parameters:
+      - { name: studentId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      summary: Update a student with optimistic concurrency
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/VersionedPatch' } } } }
+      responses:
+        '200': { description: Student updated }
+        '409': { description: Record changed on another device }
+    delete:
+      summary: Soft-delete a student
+      responses:
+        '204': { description: Student deleted }
+  /coaching-sessions:
+    get:
+      summary: List coaching sessions
+      parameters:
+        - { name: weekStart, in: query, schema: { type: string, format: date } }
+      responses:
+        '200': { description: Sessions returned }
+    post:
+      summary: Create a coaching session
+      responses:
+        '201': { description: Session created }
+  /coaching-sessions/{sessionId}:
+    parameters:
+      - { name: sessionId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      summary: Update a coaching session
+      responses:
+        '200': { description: Session updated }
+        '409': { description: Record changed on another device }
+    delete:
+      summary: Soft-delete a coaching session
+      responses:
+        '204': { description: Session deleted }
+  /drafts/preview:
+    post:
+      summary: Validate a draft without saving it
+      responses:
+        '200': { description: Draft validation result }
+  /drafts/apply:
+    post:
+      summary: Apply an explicitly approved draft
+      responses:
+        '201': { description: Draft applied }
+        '409': { description: Snapshot is stale }
+  /import:
+    post:
+      summary: Import a versioned migration bundle transactionally
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 32 }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ImportBundle' }
+      responses:
+        '202': { description: Import accepted }
+        '409': { description: Import conflicts with existing records }
+  /sync/changes:
+    get:
+      summary: Fetch changes after a cursor
+      parameters:
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        '200': { description: Changes and next cursor returned }
+    post:
+      summary: Upload local changes with idempotency keys
+      responses:
+        '200': { description: Changes accepted or conflicts returned }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    VersionedPatch:
+      type: object
+      required: [expectedUpdatedAt, changes]
+      properties:
+        expectedUpdatedAt: { type: string, format: date-time }
+        changes: { type: object, additionalProperties: true }
+    ImportBundle:
+      type: object
+      required: [format, formatVersion, workspaceId]
+      properties:
+        format: { const: coachplanner-import }
+        formatVersion: { const: 1 }
+        workspaceId: { type: string, format: uuid }
+        exportedAt: { type: string, format: date-time }
+      additionalProperties: true

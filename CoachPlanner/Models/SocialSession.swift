@@ -29,6 +29,7 @@ final class SocialSession {
     var shuttlecockCost: Double = 0
     var courtCost: Double = 0
     var createdAt: Date = Date.now
+    var syncID: UUID = UUID()
 
     @Relationship(deleteRule: .nullify)
     var students: [Student]? = nil
@@ -63,7 +64,8 @@ final class SocialSession {
         hiddenOutsiders: [Outsider] = [],
         hiddenPeople: [SocialHiddenPerson] = [],
         attendances: [SocialAttendance] = [],
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        syncID: UUID = UUID()
     ) {
         self.title = title
         self.weekStart = weekStart
@@ -82,6 +84,7 @@ final class SocialSession {
         self.hiddenPeople = hiddenPeople
         self.attendances = attendances
         self.createdAt = createdAt
+        self.syncID = syncID
     }
 
     var weekday: Weekday {
@@ -132,20 +135,23 @@ final class SocialSession {
 @Model
 final class SocialHiddenPerson {
     var createdAt: Date = Date.now
+    var syncID: UUID = UUID()
     var session: SocialSession? = nil
     var student: Student? = nil
     var outsider: Outsider? = nil
 
-    init(student: Student, createdAt: Date = .now) {
+    init(student: Student, createdAt: Date = .now, syncID: UUID = UUID()) {
         self.student = student
         self.outsider = nil
         self.createdAt = createdAt
+        self.syncID = syncID
     }
 
-    init(outsider: Outsider, createdAt: Date = .now) {
+    init(outsider: Outsider, createdAt: Date = .now, syncID: UUID = UUID()) {
         self.student = nil
         self.outsider = outsider
         self.createdAt = createdAt
+        self.syncID = syncID
     }
 }
 
@@ -154,6 +160,7 @@ final class SocialAttendance {
     var status: String = SessionStatus.unscheduled.rawValue
     var paymentStatus: String = SocialPaymentStatus.unpaid.rawValue
     var createdAt: Date = Date.now
+    var syncID: UUID = UUID()
 
     @Relationship(deleteRule: .nullify)
     var session: SocialSession? = nil
@@ -169,13 +176,15 @@ final class SocialAttendance {
         outsider: Outsider? = nil,
         status: SessionStatus = .unscheduled,
         paymentStatus: SocialPaymentStatus = .unpaid,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        syncID: UUID = UUID()
     ) {
         self.student = student
         self.outsider = outsider
         self.status = status.rawValue
         self.paymentStatus = paymentStatus.rawValue
         self.createdAt = createdAt
+        self.syncID = syncID
     }
 
     var statusValue: SessionStatus {

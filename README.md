@@ -10,6 +10,7 @@ CoachPlanner is a SwiftUI and SwiftData app for managing weekly coaching session
 - `CoachPlanner/Services/` — external handoff and integration helpers.
 - `CoachPlanner/Resources/` — app icon, Info.plist, and entitlements.
 - `Docs/PlanningWorkflow.md` — the safe snapshot → preview → apply planning workflow.
+- `Backend/` — provider-neutral PostgreSQL schema and API contract for the planned cloud-backed migration.
 - `PrivatePlanning/` — local, Git-excluded scheduling rules; never commit personal contact data or message content.
 
 For repository-specific guardrails, see `AGENTS.md`.

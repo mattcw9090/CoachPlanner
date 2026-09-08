@@ -207,8 +207,13 @@ private enum AppSection: String, CaseIterable, Identifiable {
 }
 
 private struct AppSettingsView: View {
+    @Environment(\.modelContext) private var modelContext
     @AppStorage(AppStorageKey.trsBookingContactPhone) private var trsBookingContactPhone = ""
     @State private var isContactPickerPresented = false
+    @StateObject private var cloud = SupabaseCloud.shared
+    @State private var cloudEmail = ""
+    @State private var cloudPassword = ""
+    @State private var isIdentityLinkConfirmationPresented = false
 
     private var phoneNumberBinding: Binding<String> {
         Binding(
@@ -257,11 +262,78 @@ private struct AppSettingsView: View {
                         Text("Used by the Sessions tab to prepare a WhatsApp request for the unbooked TRS courts in the displayed week.")
                     }
                 }
+
+                Section {
+                    TextField("Supabase email", text: $cloudEmail)
+                        .textContentType(.username)
+                        .textInputAutocapitalization(.never)
+
+                    SecureField("Supabase password", text: $cloudPassword)
+                    .textContentType(.password)
+
+                    HStack {
+                        Button(cloud.isSignedIn ? "Refresh cloud snapshot" : "Sign in and check cloud") {
+                            Task {
+                                if cloud.isSignedIn {
+                                    await cloud.refreshSnapshot()
+                                } else {
+                                    await cloud.signIn(email: cloudEmail, password: cloudPassword)
+                                    cloudPassword = ""
+                                }
+                            }
+                        }
+                        .disabled(!cloud.isSignedIn && (cloudEmail.isEmpty || cloudPassword.isEmpty))
+
+                        if cloud.isSignedIn {
+                            Button("Sign out") {
+                                cloud.signOut()
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+
+                    if let snapshot = cloud.snapshot {
+                        Label("Cloud snapshot: \(snapshot.summary)", systemImage: "checkmark.icloud")
+                            .foregroundStyle(.green)
+                        if let refreshedAt = cloud.lastSuccessfulRefreshAt {
+                            Text("Last refreshed \\(refreshedAt.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                        Button("Link existing cloud IDs") {
+                            isIdentityLinkConfirmationPresented = true
+                        }
+                        .buttonStyle(.borderless)
+                        if let result = cloud.lastIdentityLinkResult {
+                            Text("Linked (result.studentsLinked) students, (result.outsidersLinked) outsiders, (result.sessionsLinked) sessions, (result.courtsLinked) court bookings, (result.socialsLinked) socials, (result.hiddenPeopleLinked) hidden people, and (result.attendancesLinked) attendances.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if let error = cloud.lastError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("Supabase Cloud")
+                } footer: {
+                    Text("The cloud snapshot is read-only. Your password is used only to obtain a short-lived session token and is never stored; the token is kept in the device Keychain.")
+                }
             }
             .navigationTitle("Settings")
             .scrollContentBackground(.hidden)
             .background(AppStyle.background)
             .desktopContentWidth(720)
+            .alert("Link existing cloud IDs?", isPresented: $isIdentityLinkConfirmationPresented) {
+                Button("Link IDs") {
+                    Task { await cloud.linkExistingIdentityIDs(in: modelContext) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This updates only local sync IDs. It does not create, delete, or change cloud records.")
+            }
         }
         .background(
             PhoneContactPickerPresenter(

@@ -54,6 +54,7 @@ final class Student {
     var sessionsDemand: Int = 1
     var isHidden: Bool = false
     var createdAt: Date = Date.now
+    var syncID: UUID = UUID()
 
     @Relationship(inverse: \CoachingSession.students)
     var sessions: [CoachingSession]? = nil
@@ -79,7 +80,8 @@ final class Student {
         contactPreference: ContactPreference,
         contactDetail: String,
         sessionsDemand: Int = 1,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        syncID: UUID = UUID()
     ) {
         self.name = name
         self.gender = gender
@@ -87,6 +89,7 @@ final class Student {
         self.contactDetail = contactDetail
         self.sessionsDemand = sessionsDemand
         self.createdAt = createdAt
+        self.syncID = syncID
     }
 
     var contactPreferenceValue: ContactPreference {
@@ -135,6 +138,7 @@ final class Student {
 final class StudentHiddenWeek {
     var weekStart: Date = Date.now
     var createdAt: Date = Date.now
+    var syncID: UUID = UUID()
 
     @Relationship
     var student: Student? = nil
@@ -142,11 +146,13 @@ final class StudentHiddenWeek {
     init(
         student: Student,
         weekStart: Date,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        syncID: UUID = UUID()
     ) {
         self.student = student
         self.weekStart = weekStart
         self.createdAt = createdAt
+        self.syncID = syncID
     }
 }
 
@@ -157,6 +163,7 @@ final class Outsider {
     var contactPreference: String = ContactPreference.instagram.rawValue
     var contactDetail: String = ""
     var createdAt: Date = Date.now
+    var syncID: UUID = UUID()
 
     @Relationship(inverse: \SocialSession.hiddenOutsiders)
     var legacyHiddenSocialSessions: [SocialSession]? = nil
@@ -172,13 +179,15 @@ final class Outsider {
         gender: String,
         contactPreference: ContactPreference,
         contactDetail: String,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        syncID: UUID = UUID()
     ) {
         self.name = name
         self.gender = gender
         self.contactPreference = contactPreference.rawValue
         self.contactDetail = contactDetail
         self.createdAt = createdAt
+        self.syncID = syncID
     }
 
     var contactPreferenceValue: ContactPreference {

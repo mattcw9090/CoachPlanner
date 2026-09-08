@@ -73,6 +73,7 @@ final class CoachingSession {
     var sessionFee: Double = 0
     var sessionDescription: String? = nil
     var createdAt: Date = Date.now
+    var syncID: UUID = UUID()
 
     @Relationship(deleteRule: .nullify)
     var students: [Student]? = nil
@@ -88,7 +89,8 @@ final class CoachingSession {
         sessionFee: Double = 0,
         sessionDescription: String? = nil,
         students: [Student] = [],
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        syncID: UUID = UUID()
     ) {
         self.weekStart = weekStart
         self.dayOfWeek = dayOfWeek.rawValue
@@ -101,6 +103,7 @@ final class CoachingSession {
         self.sessionDescription = sessionDescription
         self.students = students
         self.createdAt = createdAt
+        self.syncID = syncID
     }
 
     var weekday: Weekday {
@@ -130,6 +133,7 @@ final class CourtBooking {
     var venue: String = Venue.pbaMalaga.rawValue
     var courtNumber: String = ""
     var createdAt: Date = Date.now
+    var syncID: UUID = UUID()
 
     init(
         weekStart: Date? = nil,
@@ -138,7 +142,8 @@ final class CourtBooking {
         endTime: Date,
         venue: Venue,
         courtNumber: String,
-        createdAt: Date = .now
+        createdAt: Date = .now,
+        syncID: UUID = UUID()
     ) {
         self.weekStart = weekStart
         self.dayOfWeek = dayOfWeek.rawValue
@@ -147,6 +152,7 @@ final class CourtBooking {
         self.venue = venue.rawValue
         self.courtNumber = courtNumber
         self.createdAt = createdAt
+        self.syncID = syncID
     }
 
     var weekday: Weekday {
