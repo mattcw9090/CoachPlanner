@@ -47,4 +47,4 @@ python3 Backend/import_bundle.py \
 
 For the real upload, set the task-specific `COACHPLANNER_API_TOKEN` environment variable and omit `--dry-run`. The client sends an idempotency key derived from the bundle, so a retry is safe if the network times out.
 
-The app currently uses this contract through an explicit **Sync cloud data** action while SwiftData remains its offline cache. CloudKit stays enabled during the two-device migration check and should only be retired after create, relationship-edit, and delete propagation are verified.
+The app uses this contract through an explicit **Sync cloud data** action while SwiftData remains its offline cache. Supabase is the shared cross-device store; synchronization is intentionally manual.
