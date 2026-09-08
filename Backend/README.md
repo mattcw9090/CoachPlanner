@@ -14,6 +14,7 @@ This directory defines the first cloud-backed storage contract. It is provider-n
 ## Files
 
 - `schema.sql` — PostgreSQL tables, indexes, and updated-timestamp trigger.
+- `migrations/2026-09-08_relationship_versions.sql` — idempotent parent-version triggers for relationship sync on an existing project.
 - `openapi.yaml` — the minimum API contract needed by the planner and app migration.
 - `export_swiftdata_store.py` — read-only exporter for the existing Mac SwiftData store.
 - `import_bundle.py` — authenticated, idempotent uploader for an exported bundle.
@@ -46,4 +47,4 @@ python3 Backend/import_bundle.py \
 
 For the real upload, set the task-specific `COACHPLANNER_API_TOKEN` environment variable and omit `--dry-run`. The client sends an idempotency key derived from the bundle, so a retry is safe if the network times out.
 
-This is a contract only; it does not create a hosted database or expose credentials.
+The app currently uses this contract through an explicit **Sync cloud data** action while SwiftData remains its offline cache. CloudKit stays enabled during the two-device migration check and should only be retired after create, relationship-edit, and delete propagation are verified.

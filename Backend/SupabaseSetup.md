@@ -47,4 +47,8 @@ CoachPlanner connects to Supabase from Settings. It uses the project's publishab
 4. Confirm the snapshot counts match the migration verification.
 5. Tap **Sync cloud data**. A repeat sync with no further changes should report that cloud data is up to date.
 
-The manual sync updates already-linked students, outsiders, coaching sessions, court bookings, social sessions, and social attendance. Relationship-only tables without `updated_at` conflict metadata (`coaching_session_students`, `social_session_students`, `student_hidden_weeks`, and `social_hidden_people`) remain linked/imported data rather than fully reconciled mutable records. Keep CloudKit enabled until those relationships and create/delete flows have their own verified migration path.
+Before installing the create/delete and relationship-sync build over an existing Supabase project, run [`migrations/2026-09-08_relationship_versions.sql`](./migrations/2026-09-08_relationship_versions.sql) once in the SQL Editor. It is safe to run repeatedly. The triggers advance the parent record's version when only a student list, hidden week, hidden person, or attendance changes.
+
+The manual sync now creates, updates, downloads, and soft-deletes students, outsiders, coaching sessions, court bookings, and social sessions. It also reconciles coaching/social student lists, student hidden weeks, social hidden people, and social attendance. The first successful run establishes a local deletion baseline; later missing records can then be distinguished from records newly created on another device.
+
+Keep CloudKit enabled as a safety net until create, relationship-edit, and delete propagation have each passed the two-device acceptance check. Do not treat a successful build or unchanged sync result as proof that those device-to-device paths work.

@@ -287,13 +287,14 @@ private struct AppSettingsView: View {
                                 }
                             }
                         }
-                        .disabled(!cloud.isSignedIn && (cloudEmail.isEmpty || cloudPassword.isEmpty))
+                        .disabled(cloud.isSyncing || (!cloud.isSignedIn && (cloudEmail.isEmpty || cloudPassword.isEmpty)))
 
                         if cloud.isSignedIn {
                             Button("Sign out") {
                                 cloud.signOut()
                             }
                             .buttonStyle(.borderless)
+                            .disabled(cloud.isSyncing)
                         }
                     }
 
@@ -305,10 +306,11 @@ private struct AppSettingsView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
-                        Button("Sync cloud data") {
+                        Button(cloud.isSyncing ? "Syncing…" : "Sync cloud data") {
                             Task { await cloud.syncAll(in: modelContext) }
                         }
                         .buttonStyle(.borderless)
+                        .disabled(cloud.isSyncing)
                         if let result = cloud.lastSyncResult {
                             Label(result.summary, systemImage: result.needsAttention ? "exclamationmark.triangle" : "checkmark.circle")
                                 .font(.footnote)
