@@ -20,6 +20,7 @@
 		FB9F74252FEC56CC0039EE52 /* SessionEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */; };
 		FB9F74262FEC56CC0039EE52 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74212FEC56CC0039EE52 /* RootTabView.swift */; };
 		FB9F74272FEC56CC0039EE52 /* CoachingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */; };
+		C0A000000000000000000001 /* PlanningAutomationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000002 /* PlanningAutomationView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +38,7 @@
 		FB9F74212FEC56CC0039EE52 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionEditorView.swift; sourceTree = "<group>"; };
 		FB9F74232FEC56CC0039EE52 /* SessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListView.swift; sourceTree = "<group>"; };
+		C0A000000000000000000002 /* PlanningAutomationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlanningAutomationView.swift; sourceTree = "<group>"; };
 		FBD32EA42FED7386008E8EA4 /* CoachPlanner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CoachPlanner.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -72,6 +74,7 @@
 				FB9F74212FEC56CC0039EE52 /* RootTabView.swift */,
 				FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */,
 				FB9F74232FEC56CC0039EE52 /* SessionListView.swift */,
+				C0A000000000000000000002 /* PlanningAutomationView.swift */,
 				A20000000000000000000007 /* SocialSession.swift */,
 				A20000000000000000000008 /* SocialSessionListView.swift */,
 				FB3A86EF2FED3C2800F18F03 /* AppIcon.xcassets */,
@@ -175,6 +178,7 @@
 				FB9F74262FEC56CC0039EE52 /* RootTabView.swift in Sources */,
 				FB8726722FEE5792005C59E9 /* FinanceBridge.swift in Sources */,
 				FB9F74272FEC56CC0039EE52 /* CoachingSession.swift in Sources */,
+				C0A000000000000000000001 /* PlanningAutomationView.swift in Sources */,
 				A10000000000000000000006 /* AppStyle.swift in Sources */,
 				A10000000000000000000007 /* SocialSession.swift in Sources */,
 				A10000000000000000000008 /* SocialSessionListView.swift in Sources */,

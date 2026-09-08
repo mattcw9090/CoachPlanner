@@ -85,6 +85,12 @@ struct RootTabView: View {
                 .tabItem {
                     Label("Settings", systemImage: "gearshape.fill")
                 }
+
+            PlanningAutomationView()
+                .id("automation-\(cloudRefreshID.uuidString)")
+                .tabItem {
+                    Label("Automation", systemImage: "slider.horizontal.3")
+                }
         }
         .tint(.blue)
 #endif
@@ -150,6 +156,8 @@ struct RootTabView: View {
             SocialSessionListView(weekStart: $socialsWeekStart)
         case .settings:
             AppSettingsView()
+        case .automation:
+            PlanningAutomationView()
         }
     }
 #endif
@@ -160,6 +168,7 @@ private enum AppSection: String, CaseIterable, Identifiable {
     case sessions
     case socials
     case settings
+    case automation
 
     var id: Self { self }
 
@@ -169,6 +178,7 @@ private enum AppSection: String, CaseIterable, Identifiable {
         case .sessions: return "Sessions"
         case .socials: return "Socials"
         case .settings: return "Settings"
+        case .automation: return "Automation"
         }
     }
 
@@ -178,6 +188,7 @@ private enum AppSection: String, CaseIterable, Identifiable {
         case .sessions: return "calendar"
         case .socials: return "figure.badminton"
         case .settings: return "gearshape.fill"
+        case .automation: return "slider.horizontal.3"
         }
     }
 
@@ -187,6 +198,7 @@ private enum AppSection: String, CaseIterable, Identifiable {
         case .sessions: return "2"
         case .socials: return "3"
         case .settings: return ","
+        case .automation: return "5"
         }
     }
 }
