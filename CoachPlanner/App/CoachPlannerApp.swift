@@ -17,21 +17,6 @@ struct CoachPlannerApp: App {
         self.modelContainer = container
         PersistenceDiagnostics.logLocalRecordCounts(in: container)
 
-        // Repair the one-time locally inserted draft records through SwiftData
-        // so their persistent-history transactions can be exported to CloudKit.
-        let repairContext = ModelContext(container)
-        if let storedSessions = try? repairContext.fetch(FetchDescriptor<CoachingSession>()),
-           PlanningAutomation.directDraftRepairCandidateCount(sessions: storedSessions) == 7 {
-            do {
-                _ = try PlanningAutomation.republishDirectDraftSessions(
-                    sessions: storedSessions,
-                    modelContext: repairContext
-                )
-                PersistenceDiagnostics.logger.notice("Republished seven affected draft records through SwiftData")
-            } catch {
-                PersistenceDiagnostics.logger.error("Could not republish affected draft records: \(error.localizedDescription, privacy: .public)")
-            }
-        }
     }
 
     var body: some Scene {
