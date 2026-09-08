@@ -13,13 +13,6 @@ paths:
       summary: Get the authenticated coach workspace
       responses:
         '200': { description: Workspace returned }
-  /snapshot:
-    get:
-      summary: Get a read-only planning snapshot
-      parameters:
-        - { name: weekStart, in: query, required: true, schema: { type: string, format: date } }
-      responses:
-        '200': { description: Snapshot returned }
   /students:
     get:
       summary: List active students
@@ -65,17 +58,6 @@ paths:
       summary: Soft-delete a coaching session
       responses:
         '204': { description: Session deleted }
-  /drafts/preview:
-    post:
-      summary: Validate a draft without saving it
-      responses:
-        '200': { description: Draft validation result }
-  /drafts/apply:
-    post:
-      summary: Apply an explicitly approved draft
-      responses:
-        '201': { description: Draft applied }
-        '409': { description: Snapshot is stale }
   /import:
     post:
       summary: Import a versioned migration bundle transactionally

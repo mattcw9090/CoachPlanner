@@ -47,6 +47,7 @@ final class SupabaseCloud: ObservableObject {
     func signOut() {
         accessToken = nil
         isSignedIn = false
+        lastError = nil
         lastSyncResult = nil
         keychain.delete("access_token")
         keychain.delete("refresh_token")

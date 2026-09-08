@@ -9,13 +9,12 @@ This directory defines the first cloud-backed storage contract. It is provider-n
 - Every mutable row has a UUID, `updated_at`, and a soft-delete timestamp.
 - Client writes include an `expected_updated_at` value. A stale write returns `409 Conflict` instead of silently overwriting another device.
 - Contact details are private fields and must only be returned to an authenticated coach account.
-- Scheduling snapshot and draft-preview endpoints are read/validation operations; applying a draft remains an explicit write.
 
 ## Files
 
 - `schema.sql` — PostgreSQL tables, indexes, and updated-timestamp trigger.
 - `migrations/2026-09-08_relationship_versions.sql` — idempotent parent-version triggers for relationship sync on an existing project.
-- `openapi.yaml` — the minimum API contract needed by the planner and app migration.
+- `openapi.yaml` — the minimum API contract for storage migration and synchronization.
 - `export_swiftdata_store.py` — read-only exporter for the existing Mac SwiftData store.
 - `import_bundle.py` — authenticated, idempotent uploader for an exported bundle.
 - `SupabaseSetup.md` — provider-specific setup and secret-handling checklist.
