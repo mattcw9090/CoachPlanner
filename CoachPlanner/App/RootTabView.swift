@@ -314,8 +314,12 @@ private struct AppSettingsView: View {
                             Task { await cloud.syncCoachingSessions(in: modelContext) }
                         }
                         .buttonStyle(.borderless)
+                        Button("Sync students and outsiders") {
+                            Task { await cloud.syncStudentsAndOutsiders(in: modelContext) }
+                        }
+                        .buttonStyle(.borderless)
                         if let result = cloud.lastIdentityLinkResult {
-                            Text("Linked \(result.studentsLinked) students, \(result.outsidersLinked) outsiders, \(result.sessionsLinked) sessions, \(result.courtsLinked) court bookings, \(result.socialsLinked) socials, \(result.hiddenPeopleLinked) hidden people, and \(result.attendancesLinked) attendances.")
+                            Text("Updated this run: \(result.studentsLinked) students, \(result.outsidersLinked) outsiders, \(result.sessionsLinked) sessions, \(result.courtsLinked) court bookings, \(result.socialsLinked) socials, \(result.hiddenPeopleLinked) hidden people, and \(result.attendancesLinked) attendances.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
