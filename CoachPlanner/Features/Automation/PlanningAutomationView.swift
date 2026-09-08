@@ -87,6 +87,14 @@ struct PlanningIssue: Codable, Identifiable {
     var message: String
 }
 
+private struct LocalRepairTarget {
+    let dayOfWeek: Weekday
+    let startTime: String
+    let endTime: String
+    let venue: Venue
+    let studentNames: Set<String>
+}
+
 enum PlanningAutomation {
     static func snapshot(
         weekStart: Date,
@@ -319,6 +327,60 @@ enum PlanningAutomation {
         return request.sessions.count
     }
 
+    @MainActor
+    static func republishDirectDraftSessions(
+        sessions: [CoachingSession],
+        modelContext: ModelContext
+    ) throws -> Int {
+        let matchedSessions = sessions.filter { session in
+            directRepairTargets.contains { matches(session, target: $0) }
+        }
+        guard matchedSessions.count == directRepairTargets.count else {
+            throw LocalRepairError.expectedRecords(directRepairTargets.count, matchedSessions.count)
+        }
+
+        for session in matchedSessions {
+            modelContext.insert(
+                CoachingSession(
+                    weekStart: session.weekStart,
+                    dayOfWeek: session.weekday,
+                    startTime: session.startTime,
+                    endTime: session.endTime,
+                    venue: session.venueValue,
+                    status: session.statusValue,
+                    courtNumber: session.courtNumber,
+                    sessionFee: session.sessionFee,
+                    sessionDescription: session.sessionDescription,
+                    students: session.studentList
+                )
+            )
+            modelContext.delete(session)
+        }
+
+        try modelContext.save()
+        return matchedSessions.count
+    }
+
+    static func directDraftRepairCandidateCount(sessions: [CoachingSession]) -> Int {
+        sessions.filter { session in
+            directRepairTargets.contains { matches(session, target: $0) }
+        }.count
+    }
+
+    private static let directRepairTargets: [LocalRepairTarget] = [
+        LocalRepairTarget(dayOfWeek: .tuesday, startTime: "13:30", endTime: "15:00", venue: .apex, studentNames: ["vivian wu"]),
+        LocalRepairTarget(dayOfWeek: .tuesday, startTime: "15:00", endTime: "16:00", venue: .apex, studentNames: ["steve", "ting ting"]),
+        LocalRepairTarget(dayOfWeek: .friday, startTime: "14:30", endTime: "16:00", venue: .apex, studentNames: ["vivian wu"]),
+        LocalRepairTarget(dayOfWeek: .friday, startTime: "20:00", endTime: "21:00", venue: .apex, studentNames: ["frank tan"]),
+        LocalRepairTarget(dayOfWeek: .saturday, startTime: "12:00", endTime: "14:00", venue: .trs, studentNames: ["ben le", "bryan hiew", "issac yiu", "long", "patrick ng", "yy"]),
+        LocalRepairTarget(dayOfWeek: .saturday, startTime: "14:00", endTime: "15:00", venue: .trs, studentNames: ["samantha c"])
+    ]
+
+    private static func matches(_ session: CoachingSession, target: LocalRepairTarget) -> Bool {
+        let names = Set(session.studentList.map { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        return session.venueValue == target.venue && names == target.studentNames
+    }
+
     static func monday(of date: Date) -> Date {
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: date)
@@ -381,6 +443,17 @@ private enum PlanningApplyError: LocalizedError {
     }
 }
 
+private enum LocalRepairError: LocalizedError {
+    case expectedRecords(Int, Int)
+
+    var errorDescription: String? {
+        switch self {
+        case let .expectedRecords(expected, found):
+            return "Expected to find exactly \(expected) affected records, but found \(found). No records were changed."
+        }
+    }
+}
+
 struct PlanningAutomationView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Student.name) private var students: [Student]
@@ -396,6 +469,7 @@ struct PlanningAutomationView: View {
     @State private var previewedDraft: PlanningDraftRequest?
     @State private var previewedDraftIsValid = false
     @State private var isApplyConfirmationPresented = false
+    @State private var isRepairConfirmationPresented = false
 
     private var snapshot: PlanningSnapshot {
         PlanningAutomation.snapshot(
@@ -425,6 +499,13 @@ struct PlanningAutomationView: View {
                             snapshotText = value
                             notice = "Snapshot copied. It contains no contact details."
                         }
+                    }
+
+                    if PlanningAutomation.directDraftRepairCandidateCount(sessions: sessions) > 0 {
+                        Button("Republish affected draft records to iCloud") {
+                            isRepairConfirmationPresented = true
+                        }
+                        .tint(.orange)
                     }
 
                     if !notice.isEmpty {
@@ -468,6 +549,18 @@ struct PlanningAutomationView: View {
                 } footer: {
                     Text("The preview validates names, hidden students, times, venues, overlapping draft sessions, and allocations. It cannot save a plan.")
                 }
+
+                if PlanningAutomation.directDraftRepairCandidateCount(sessions: sessions) > 0 {
+                    Section {
+                        Button("Republish affected draft records to iCloud") {
+                            isRepairConfirmationPresented = true
+                        }
+                    } header: {
+                        Text("CloudKit repair")
+                    } footer: {
+                        Text("One-time repair for the six locally inserted draft sessions. No other sessions are touched.")
+                    }
+                }
             }
             .navigationTitle("Automation")
             .scrollContentBackground(.hidden)
@@ -481,6 +574,12 @@ struct PlanningAutomationView: View {
                 }
             } message: {
                 Text(applyConfirmationMessage)
+            }
+            .alert("Republish affected records?", isPresented: $isRepairConfirmationPresented) {
+                Button("Cancel", role: .cancel) { }
+                Button("Republish", role: .destructive, action: republishDirectDraftSessions)
+            } message: {
+                Text("This recreates only the six affected records through SwiftData so CloudKit can export them. Your backup is already available if needed.")
             }
         }
     }
@@ -578,6 +677,16 @@ struct PlanningAutomationView: View {
             )
             refreshSnapshot()
             notice = "Applied \(count) draft sessions. No messages were prepared or sent."
+        } catch {
+            notice = error.localizedDescription
+        }
+    }
+
+    private func republishDirectDraftSessions() {
+        do {
+            let count = try PlanningAutomation.republishDirectDraftSessions(sessions: sessions, modelContext: modelContext)
+            refreshSnapshot()
+            notice = "Republished \(count) affected records through SwiftData. Keep CoachPlanner open while CloudKit exports them, then check the iPhone."
         } catch {
             notice = error.localizedDescription
         }

@@ -64,23 +64,95 @@
 		A40000000000000000000002 /* CoachPlanner */ = {
 			isa = PBXGroup;
 			children = (
-				FBD32EA42FED7386008E8EA4 /* CoachPlanner.entitlements */,
-				A20000000000000000000001 /* CoachPlannerApp.swift */,
-				A20000000000000000000006 /* AppStyle.swift */,
-				A20000000000000000000002 /* Student.swift */,
-				A20000000000000000000003 /* StudentListView.swift */,
-				A20000000000000000000004 /* StudentEditorView.swift */,
-				FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */,
-				FB9F74212FEC56CC0039EE52 /* RootTabView.swift */,
-				FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */,
-				FB9F74232FEC56CC0039EE52 /* SessionListView.swift */,
-				C0A000000000000000000002 /* PlanningAutomationView.swift */,
-				A20000000000000000000007 /* SocialSession.swift */,
-				A20000000000000000000008 /* SocialSessionListView.swift */,
-				FB3A86EF2FED3C2800F18F03 /* AppIcon.xcassets */,
-				FB8726712FEE5792005C59E9 /* FinanceBridge.swift */,
+				C0B000000000000000000001 /* App */,
+				C0B000000000000000000002 /* Models */,
+				C0B000000000000000000003 /* Features */,
+				C0B000000000000000000004 /* Services */,
+				C0B000000000000000000005 /* Resources */,
 			);
 			path = CoachPlanner;
+			sourceTree = "<group>";
+		};
+		C0B000000000000000000001 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000001 /* CoachPlannerApp.swift */,
+				FB9F74212FEC56CC0039EE52 /* RootTabView.swift */,
+				A20000000000000000000006 /* AppStyle.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		C0B000000000000000000002 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000002 /* Student.swift */,
+				FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */,
+				A20000000000000000000007 /* SocialSession.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		C0B000000000000000000003 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				C0B000000000000000000006 /* Automation */,
+				C0B000000000000000000007 /* Sessions */,
+				C0B000000000000000000008 /* Socials */,
+				C0B000000000000000000009 /* Students */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		C0B000000000000000000004 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				FB8726712FEE5792005C59E9 /* FinanceBridge.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		C0B000000000000000000005 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				FB3A86EF2FED3C2800F18F03 /* AppIcon.xcassets */,
+				FBD32EA42FED7386008E8EA4 /* CoachPlanner.entitlements */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		C0B000000000000000000006 /* Automation */ = {
+			isa = PBXGroup;
+			children = (
+				C0A000000000000000000002 /* PlanningAutomationView.swift */,
+			);
+			path = Automation;
+			sourceTree = "<group>";
+		};
+		C0B000000000000000000007 /* Sessions */ = {
+			isa = PBXGroup;
+			children = (
+				FB9F74232FEC56CC0039EE52 /* SessionListView.swift */,
+				FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */,
+			);
+			path = Sessions;
+			sourceTree = "<group>";
+		};
+		C0B000000000000000000008 /* Socials */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000008 /* SocialSessionListView.swift */,
+			);
+			path = Socials;
+			sourceTree = "<group>";
+		};
+		C0B000000000000000000009 /* Students */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000003 /* StudentListView.swift */,
+				A20000000000000000000004 /* StudentEditorView.swift */,
+			);
+			path = Students;
 			sourceTree = "<group>";
 		};
 		A40000000000000000000003 /* Products */ = {
@@ -298,14 +370,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
-				CODE_SIGN_ENTITLEMENTS = CoachPlanner/CoachPlanner.entitlements;
+				CODE_SIGN_ENTITLEMENTS = CoachPlanner/Resources/CoachPlanner.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DEVELOPMENT_TEAM = F4PCJ46P2A;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = CoachPlanner/Info.plist;
+				INFOPLIST_FILE = CoachPlanner/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = CoachPlanner;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.sports";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -327,14 +399,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
-				CODE_SIGN_ENTITLEMENTS = CoachPlanner/CoachPlanner.entitlements;
+				CODE_SIGN_ENTITLEMENTS = CoachPlanner/Resources/CoachPlanner.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER = NO;
 				DEVELOPMENT_TEAM = F4PCJ46P2A;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = CoachPlanner/Info.plist;
+				INFOPLIST_FILE = CoachPlanner/Resources/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = CoachPlanner;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.sports";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

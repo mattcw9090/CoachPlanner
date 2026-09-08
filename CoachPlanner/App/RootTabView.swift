@@ -4,10 +4,12 @@ import SwiftUI
 
 struct RootTabView: View {
     @Environment(\.modelContext) private var modelContext
+    @Query private var coachingSessions: [CoachingSession]
     @State private var selectedSection: AppSection = .sessions
     @State private var cloudRefreshID = UUID()
     @State private var awaitingInitialCloudImport: Bool?
     @State private var socialsWeekStart = SocialSessionListView.monday(of: .now)
+    @State private var didAttemptCloudKitRepair = false
 
     private static let syncLogger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.matthewchew.CoachPlanner",
@@ -16,7 +18,17 @@ struct RootTabView: View {
 
     var body: some View {
         rootContent
-            .onAppear(perform: prepareInitialImportRefresh)
+            .onAppear {
+                prepareInitialImportRefresh()
+                repairDirectDraftRecordsIfNeeded()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                    didAttemptCloudKitRepair = false
+                    repairDirectDraftRecordsIfNeeded()
+                }
+            }
+            .onChange(of: coachingSessions.count) { _, _ in
+                repairDirectDraftRecordsIfNeeded()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .coachPlannerCloudKitImportCompleted)) { _ in
                 refreshAfterInitialImportIfNeeded()
             }
@@ -25,6 +37,33 @@ struct RootTabView: View {
                     awaitingInitialCloudImport = false
                 }
             }
+            .toolbar {
+                ToolbarItem(placement: .automatic) {
+                    Button("Repair draft sync") {
+                        didAttemptCloudKitRepair = false
+                        repairDirectDraftRecordsIfNeeded()
+                    }
+                    .help("Republish the seven locally inserted draft records through SwiftData")
+                }
+            }
+    }
+
+    private func repairDirectDraftRecordsIfNeeded() {
+        guard !didAttemptCloudKitRepair else { return }
+        guard !coachingSessions.isEmpty else { return }
+        didAttemptCloudKitRepair = true
+        let candidateCount = PlanningAutomation.directDraftRepairCandidateCount(sessions: coachingSessions)
+        Self.syncLogger.notice("CloudKit draft repair candidates: \(candidateCount, privacy: .public) of \(coachingSessions.count, privacy: .public)")
+        guard candidateCount == 6 else { return }
+        do {
+            _ = try PlanningAutomation.republishDirectDraftSessions(
+                sessions: coachingSessions,
+                modelContext: modelContext
+            )
+            Self.syncLogger.notice("Republished the affected draft records through SwiftData for CloudKit export")
+        } catch {
+            Self.syncLogger.error("CloudKit draft repair was not applied: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     @ViewBuilder
