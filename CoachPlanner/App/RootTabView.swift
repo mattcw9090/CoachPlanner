@@ -219,7 +219,6 @@ private struct AppSettingsView: View {
     @StateObject private var cloud = SupabaseCloud.shared
     @State private var cloudEmail = ""
     @State private var cloudPassword = ""
-    @State private var isIdentityLinkConfirmationPresented = false
 
     private var phoneNumberBinding: Binding<String> {
         Binding(
@@ -306,27 +305,14 @@ private struct AppSettingsView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
-                        Button("Link existing cloud IDs") {
-                            isIdentityLinkConfirmationPresented = true
+                        Button("Sync cloud data") {
+                            Task { await cloud.syncAll(in: modelContext) }
                         }
                         .buttonStyle(.borderless)
-                        Button("Sync coaching sessions") {
-                            Task { await cloud.syncCoachingSessions(in: modelContext) }
-                        }
-                        .buttonStyle(.borderless)
-                        Button("Sync students and outsiders") {
-                            Task { await cloud.syncStudentsAndOutsiders(in: modelContext) }
-                        }
-                        .buttonStyle(.borderless)
-                        if let result = cloud.lastIdentityLinkResult {
-                            Text("Updated this run: \(result.studentsLinked) students, \(result.outsidersLinked) outsiders, \(result.sessionsLinked) sessions, \(result.courtsLinked) court bookings, \(result.socialsLinked) socials, \(result.hiddenPeopleLinked) hidden people, and \(result.attendancesLinked) attendances.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
                         if let result = cloud.lastSyncResult {
-                            Text("Sync: pushed \(result.pushed), pulled \(result.pulled), conflicts \(result.conflicts), skipped \(result.skipped).")
+                            Label(result.summary, systemImage: result.needsAttention ? "exclamationmark.triangle" : "checkmark.circle")
                                 .font(.footnote)
-                                .foregroundStyle(result.conflicts == 0 ? Color.secondary : Color.orange)
+                                .foregroundStyle(result.needsAttention ? Color.orange : Color.green)
                         }
                     }
 
@@ -338,21 +324,13 @@ private struct AppSettingsView: View {
                 } header: {
                     Text("Supabase Cloud")
                 } footer: {
-                    Text("The cloud snapshot is read-only. Your password is used only to obtain a short-lived session token and is never stored; the token is kept in the device Keychain.")
+                    Text("Cloud sync runs only when you tap a sync action. Your password is used only to obtain a short-lived session token and is never stored; the token is kept in the device Keychain.")
                 }
             }
             .navigationTitle("Settings")
             .scrollContentBackground(.hidden)
             .background(AppStyle.background)
             .desktopContentWidth(720)
-            .alert("Link existing cloud IDs?", isPresented: $isIdentityLinkConfirmationPresented) {
-                Button("Link IDs") {
-                    Task { await cloud.linkExistingIdentityIDs(in: modelContext) }
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This updates only local sync IDs. It does not create, delete, or change cloud records.")
-            }
         }
         .background(
             PhoneContactPickerPresenter(

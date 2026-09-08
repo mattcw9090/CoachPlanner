@@ -37,11 +37,14 @@ Never put the `service_role` key in the iPhone app, repository, migration bundle
 5. Run `import_bundle.py --dry-run` first, then perform the real upload.
 6. Compare row counts before changing the app to read from the API.
 
-## First app connection
+## App connection and staged sync
 
-CoachPlanner includes a read-only Supabase connection in Settings. It uses the project's publishable key, signs in through Supabase Auth, stores only the returned session token in the device Keychain, and displays a cloud snapshot count. This is deliberately separate from the SwiftData/iCloud store: this first version does not write app records to Supabase.
+CoachPlanner connects to Supabase from Settings. It uses the project's publishable key, signs in through Supabase Auth, stores only the returned session token in the device Keychain, and displays a cloud snapshot count. SwiftData/CloudKit remains the offline local store while the explicit sync actions reconcile timestamped records with Supabase.
 
 1. Build and run CoachPlanner on the iPhone or Mac Catalyst target.
 2. Open **Settings → Supabase Cloud**.
 3. Sign in with the Auth user created for the project.
-4. Confirm the snapshot counts match the migration verification before enabling any cloud write path.
+4. Confirm the snapshot counts match the migration verification.
+5. Tap **Sync cloud data**. A repeat sync with no further changes should report that cloud data is up to date.
+
+The manual sync updates already-linked students, outsiders, coaching sessions, court bookings, social sessions, and social attendance. Relationship-only tables without `updated_at` conflict metadata (`coaching_session_students`, `social_session_students`, `student_hidden_weeks`, and `social_hidden_people`) remain linked/imported data rather than fully reconciled mutable records. Keep CloudKit enabled until those relationships and create/delete flows have their own verified migration path.

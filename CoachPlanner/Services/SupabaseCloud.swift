@@ -31,7 +31,6 @@ final class SupabaseCloud: ObservableObject {
     @Published private(set) var snapshot: CloudSnapshot?
     @Published private(set) var lastError: String?
     @Published private(set) var lastSuccessfulRefreshAt: Date?
-    @Published private(set) var lastIdentityLinkResult: IdentityLinkResult?
     @Published private(set) var lastSyncResult: SyncRunResult?
 
     private let keychain = SupabaseKeychain()
@@ -79,125 +78,37 @@ final class SupabaseCloud: ObservableObject {
         accessToken = nil
         snapshot = nil
         isSignedIn = false
+        lastSyncResult = nil
         keychain.delete("access_token")
         keychain.delete("refresh_token")
     }
 
-    func linkExistingIdentityIDs(in context: ModelContext) async {
-        lastError = nil
+    func syncAll(in context: ModelContext) async {
+        var combined = SyncRunResult.zero
+
+        await syncStudentsAndOutsiders(in: context)
+        guard lastError == nil, let peopleResult = lastSyncResult else { return }
+        combined = combined.adding(peopleResult)
+
+        await syncCourtsSocialsAndAttendance(in: context)
+        guard lastError == nil, let socialResult = lastSyncResult else { return }
+        combined = combined.adding(socialResult)
+
+        await syncCoachingSessions(in: context)
+        guard lastError == nil, let sessionResult = lastSyncResult else { return }
+        combined = combined.adding(sessionResult)
+        lastSyncResult = combined
+
         do {
-            guard let accessToken else { throw SupabaseCloudError.notSignedIn }
-
-            let localStudents = try context.fetch(FetchDescriptor<Student>())
-            let localOutsiders = try context.fetch(FetchDescriptor<Outsider>())
-            let localSessions = try context.fetch(FetchDescriptor<CoachingSession>())
-            let localCourts = try context.fetch(FetchDescriptor<CourtBooking>())
-            let localSocials = try context.fetch(FetchDescriptor<SocialSession>())
-            let localHiddenPeople = try context.fetch(FetchDescriptor<SocialHiddenPerson>())
-            let localAttendances = try context.fetch(FetchDescriptor<SocialAttendance>())
-            let cloudStudents = try await fetchStudentRecords(token: accessToken)
-            let cloudOutsiders = try await fetchOutsiderRecords(token: accessToken)
-            let cloudSessions = try await fetchSessionRecords(token: accessToken)
-            let cloudCourts = try await fetchCourtRecords(token: accessToken)
-            let cloudSocials = try await fetchSocialRecords(token: accessToken)
-            let cloudHiddenPeople = try await fetchHiddenPersonRecords(token: accessToken)
-            let cloudAttendances = try await fetchAttendanceRecords(token: accessToken)
-
-            var linkedStudents = 0
-            let studentsByName = Dictionary(grouping: cloudStudents, by: { $0.name.normalizedSyncName })
-            for student in localStudents {
-                let candidates = studentsByName[student.name.normalizedSyncName] ?? []
-                guard candidates.count == 1 else { continue }
-                let cloudStudent = candidates[0]
-                if student.syncID != cloudStudent.id || student.lastSyncedAt != cloudStudent.updatedAt {
-                    student.syncID = cloudStudent.id
-                    student.lastSyncedAt = cloudStudent.updatedAt
-                    linkedStudents += 1
-                }
-            }
-
-            var linkedOutsiders = 0
-            let outsidersByName = Dictionary(grouping: cloudOutsiders, by: { $0.name.normalizedSyncName })
-            for outsider in localOutsiders {
-                let candidates = outsidersByName[outsider.name.normalizedSyncName] ?? []
-                guard candidates.count == 1, outsider.syncID != candidates[0].id else { continue }
-                outsider.syncID = candidates[0].id
-                linkedOutsiders += 1
-            }
-
-            var remainingCloudSessions = cloudSessions
-            var linkedSessions = 0
-            for session in localSessions {
-                guard let index = remainingCloudSessions.firstIndex(where: { $0.matches(session) }) else { continue }
-                let cloudSession = remainingCloudSessions.remove(at: index)
-                if session.syncID != cloudSession.id || session.lastSyncedAt != cloudSession.updatedAt {
-                    session.syncID = cloudSession.id
-                    session.lastSyncedAt = cloudSession.updatedAt
-                    linkedSessions += 1
-                }
-            }
-
-            var remainingCloudCourts = cloudCourts
-            var linkedCourts = 0
-            for booking in localCourts {
-                guard let index = remainingCloudCourts.firstIndex(where: { $0.matches(booking) }) else { continue }
-                booking.syncID = remainingCloudCourts.remove(at: index).id
-                linkedCourts += 1
-            }
-
-            var remainingCloudSocials = cloudSocials
-            var linkedSocials = 0
-            for social in localSocials {
-                guard let index = remainingCloudSocials.firstIndex(where: { $0.matches(social) }) else { continue }
-                social.syncID = remainingCloudSocials.remove(at: index).id
-                linkedSocials += 1
-            }
-
-            var linkedHiddenPeople = 0
-            for hiddenPerson in localHiddenPeople {
-                guard let sessionID = hiddenPerson.session?.syncID else { continue }
-                let studentID = hiddenPerson.student?.syncID
-                let outsiderID = hiddenPerson.outsider?.syncID
-                guard let cloudRecord = cloudHiddenPeople.first(where: {
-                    $0.socialSessionID == sessionID && $0.studentID == studentID && $0.outsiderID == outsiderID
-                }) else { continue }
-                hiddenPerson.syncID = cloudRecord.id
-                linkedHiddenPeople += 1
-            }
-
-            var linkedAttendances = 0
-            for attendance in localAttendances {
-                guard let sessionID = attendance.session?.syncID else { continue }
-                let studentID = attendance.student?.syncID
-                let outsiderID = attendance.outsider?.syncID
-                guard let cloudRecord = cloudAttendances.first(where: {
-                    $0.socialSessionID == sessionID && $0.studentID == studentID &&
-                        $0.outsiderID == outsiderID && $0.status == attendance.status &&
-                        $0.paymentStatus == attendance.paymentStatus
-                }) else { continue }
-                attendance.syncID = cloudRecord.id
-                linkedAttendances += 1
-            }
-
-            if context.hasChanges {
-                try context.save()
-            }
-            lastIdentityLinkResult = IdentityLinkResult(
-                studentsLinked: linkedStudents,
-                sessionsLinked: linkedSessions,
-                sessionsUnmatched: remainingCloudSessions.count,
-                courtsLinked: linkedCourts,
-                socialsLinked: linkedSocials,
-                outsidersLinked: linkedOutsiders,
-                hiddenPeopleLinked: linkedHiddenPeople,
-                attendancesLinked: linkedAttendances
-            )
+            let refreshedSnapshot = try await fetchSnapshotWithTokenRenewal()
+            snapshot = refreshedSnapshot
+            recordSuccessfulRefresh(at: refreshedSnapshot.fetchedAt)
         } catch {
             lastError = error.localizedDescription
         }
     }
 
-    func syncCoachingSessions(in context: ModelContext) async {
+    private func syncCoachingSessions(in context: ModelContext) async {
         lastError = nil
         do {
             guard let accessToken else { throw SupabaseCloudError.notSignedIn }
@@ -210,25 +121,37 @@ final class SupabaseCloud: ObservableObject {
             var skipped = 0
 
             for local in localSessions {
-                guard let cloud = cloudByID[local.syncID], let baseline = local.lastSyncedAt else {
+                guard let cloud = cloudByID[local.syncID] else {
                     skipped += 1
                     continue
                 }
-                let localChanged = local.updatedAt > baseline
+                let baseline = local.lastSyncedAt ?? cloud.updatedAt
+                if local.lastSyncedAt == nil {
+                    local.lastSyncedAt = baseline
+                }
+                var localChanged = local.updatedAt > baseline
                 let cloudChanged = cloud.updatedAt > baseline
+                if !localChanged && !cloudChanged && !cloud.matchesPayload(of: local) {
+                    localChanged = true
+                }
                 if localChanged && cloudChanged {
                     conflicts += 1
                 } else if localChanged {
                     let updated = try await updateCloudSession(local, expectedUpdatedAt: baseline, token: accessToken)
+                    local.updatedAt = updated.updatedAt
                     local.lastSyncedAt = updated.updatedAt
                     pushed += 1
                 } else if cloudChanged {
                     SyncTimestamping.isApplyingRemoteChange = true
+                    local.weekStart = cloud.weekStart
+                    local.dayOfWeek = cloud.dayOfWeek
                     local.startTime = cloud.startTime
                     local.endTime = cloud.endTime
                     local.venue = cloud.venue
                     local.status = cloud.status
                     local.courtNumber = cloud.courtNumber
+                    local.sessionFee = cloud.sessionFee
+                    local.sessionDescription = cloud.sessionDescription
                     local.updatedAt = cloud.updatedAt
                     local.lastSyncedAt = cloud.updatedAt
                     SyncTimestamping.isApplyingRemoteChange = false
@@ -237,15 +160,21 @@ final class SupabaseCloud: ObservableObject {
                 cloudByID.removeValue(forKey: local.syncID)
             }
 
-            if context.hasChanges { try context.save() }
-            lastSyncResult = SyncRunResult(pushed: pushed, pulled: pulled, conflicts: conflicts, skipped: skipped)
+            try saveSyncChanges(in: context)
+            lastSyncResult = SyncRunResult(
+                pushed: pushed,
+                pulled: pulled,
+                conflicts: conflicts,
+                skipped: skipped,
+                cloudOnly: cloudByID.count
+            )
         } catch {
             SyncTimestamping.isApplyingRemoteChange = false
             lastError = error.localizedDescription
         }
     }
 
-    func syncStudentsAndOutsiders(in context: ModelContext) async {
+    private func syncStudentsAndOutsiders(in context: ModelContext) async {
         lastError = nil
         do {
             guard let accessToken else { throw SupabaseCloudError.notSignedIn }
@@ -259,14 +188,25 @@ final class SupabaseCloud: ObservableObject {
             var skipped = 0
 
             for student in localStudents {
-                guard let cloud = cloudStudents.first(where: { $0.id == student.syncID }),
-                      let baseline = student.lastSyncedAt else { skipped += 1; continue }
-                let localChanged = student.updatedAt > baseline
+                guard let cloud = cloudStudents.first(where: { $0.id == student.syncID }) else {
+                    skipped += 1
+                    continue
+                }
+                let baseline = student.lastSyncedAt ?? cloud.updatedAt
+                if student.lastSyncedAt == nil {
+                    student.lastSyncedAt = baseline
+                }
+                var localChanged = student.updatedAt > baseline
                 let cloudChanged = cloud.updatedAt > baseline
+                if !localChanged && !cloudChanged && !cloud.matchesPayload(of: student) {
+                    localChanged = true
+                }
                 if localChanged && cloudChanged { conflicts += 1 }
                 else if localChanged {
                     let updated = try await updateCloudStudent(student, expectedUpdatedAt: baseline, token: accessToken)
-                    student.lastSyncedAt = updated.updatedAt; pushed += 1
+                    student.updatedAt = updated.updatedAt
+                    student.lastSyncedAt = updated.updatedAt
+                    pushed += 1
                 } else if cloudChanged {
                     SyncTimestamping.isApplyingRemoteChange = true
                     student.name = cloud.name; student.gender = cloud.gender
@@ -279,14 +219,25 @@ final class SupabaseCloud: ObservableObject {
             }
 
             for outsider in localOutsiders {
-                guard let cloud = cloudOutsiders.first(where: { $0.id == outsider.syncID }),
-                      let baseline = outsider.lastSyncedAt else { skipped += 1; continue }
-                let localChanged = outsider.updatedAt > baseline
+                guard let cloud = cloudOutsiders.first(where: { $0.id == outsider.syncID }) else {
+                    skipped += 1
+                    continue
+                }
+                let baseline = outsider.lastSyncedAt ?? cloud.updatedAt
+                if outsider.lastSyncedAt == nil {
+                    outsider.lastSyncedAt = baseline
+                }
+                var localChanged = outsider.updatedAt > baseline
                 let cloudChanged = cloud.updatedAt > baseline
+                if !localChanged && !cloudChanged && !cloud.matchesPayload(of: outsider) {
+                    localChanged = true
+                }
                 if localChanged && cloudChanged { conflicts += 1 }
                 else if localChanged {
                     let updated = try await updateCloudOutsider(outsider, expectedUpdatedAt: baseline, token: accessToken)
-                    outsider.lastSyncedAt = updated.updatedAt; pushed += 1
+                    outsider.updatedAt = updated.updatedAt
+                    outsider.lastSyncedAt = updated.updatedAt
+                    pushed += 1
                 } else if cloudChanged {
                     SyncTimestamping.isApplyingRemoteChange = true
                     outsider.name = cloud.name; outsider.gender = cloud.gender
@@ -296,8 +247,168 @@ final class SupabaseCloud: ObservableObject {
                     SyncTimestamping.isApplyingRemoteChange = false; pulled += 1
                 }
             }
-            if context.hasChanges { try context.save() }
-            lastSyncResult = SyncRunResult(pushed: pushed, pulled: pulled, conflicts: conflicts, skipped: skipped)
+            try saveSyncChanges(in: context)
+            lastSyncResult = SyncRunResult(
+                pushed: pushed,
+                pulled: pulled,
+                conflicts: conflicts,
+                skipped: skipped,
+                cloudOnly: 0
+            )
+        } catch {
+            SyncTimestamping.isApplyingRemoteChange = false
+            lastError = error.localizedDescription
+        }
+    }
+
+    private func syncCourtsSocialsAndAttendance(in context: ModelContext) async {
+        lastError = nil
+        do {
+            guard let accessToken else { throw SupabaseCloudError.notSignedIn }
+            let localCourts = try context.fetch(FetchDescriptor<CourtBooking>())
+            let localSocials = try context.fetch(FetchDescriptor<SocialSession>())
+            let localAttendances = try context.fetch(FetchDescriptor<SocialAttendance>())
+            let cloudCourts = try await fetchCourtRecords(token: accessToken)
+            let cloudSocials = try await fetchSocialRecords(token: accessToken)
+            let cloudAttendances = try await fetchAttendanceRecords(token: accessToken)
+
+            let cloudCourtsByID = Dictionary(uniqueKeysWithValues: cloudCourts.map { ($0.id, $0) })
+            let cloudSocialsByID = Dictionary(uniqueKeysWithValues: cloudSocials.map { ($0.id, $0) })
+            let cloudAttendancesByID = Dictionary(uniqueKeysWithValues: cloudAttendances.map { ($0.id, $0) })
+            var pushed = 0
+            var pulled = 0
+            var conflicts = 0
+            var skipped = 0
+
+            for booking in localCourts {
+                guard let cloud = cloudCourtsByID[booking.syncID] else {
+                    skipped += 1
+                    continue
+                }
+                let baseline = booking.lastSyncedAt ?? cloud.updatedAt
+                if booking.lastSyncedAt == nil {
+                    booking.lastSyncedAt = baseline
+                }
+                var localChanged = booking.updatedAt > baseline
+                let cloudChanged = cloud.updatedAt > baseline
+                if !localChanged && !cloudChanged && !cloud.matchesPayload(of: booking) {
+                    localChanged = true
+                }
+                if localChanged && cloudChanged {
+                    conflicts += 1
+                } else if localChanged {
+                    let updated = try await updateCloudCourtBooking(
+                        booking,
+                        expectedUpdatedAt: baseline,
+                        token: accessToken
+                    )
+                    booking.updatedAt = updated.updatedAt
+                    booking.lastSyncedAt = updated.updatedAt
+                    pushed += 1
+                } else if cloudChanged {
+                    booking.weekStart = cloud.weekStart
+                    booking.dayOfWeek = cloud.dayOfWeek
+                    booking.startTime = cloud.startTime
+                    booking.endTime = cloud.endTime
+                    booking.venue = cloud.venue
+                    booking.courtNumber = cloud.courtNumber
+                    booking.updatedAt = cloud.updatedAt
+                    booking.lastSyncedAt = cloud.updatedAt
+                    pulled += 1
+                }
+            }
+
+            for social in localSocials {
+                guard let cloud = cloudSocialsByID[social.syncID] else {
+                    skipped += 1
+                    continue
+                }
+                let baseline = social.lastSyncedAt ?? cloud.updatedAt
+                if social.lastSyncedAt == nil {
+                    social.lastSyncedAt = baseline
+                }
+                var localChanged = social.updatedAt > baseline
+                let cloudChanged = cloud.updatedAt > baseline
+                if !localChanged && !cloudChanged && !cloud.matchesPayload(of: social) {
+                    localChanged = true
+                }
+                if localChanged && cloudChanged {
+                    conflicts += 1
+                } else if localChanged {
+                    let updated = try await updateCloudSocialSession(
+                        social,
+                        expectedUpdatedAt: baseline,
+                        token: accessToken
+                    )
+                    social.updatedAt = updated.updatedAt
+                    social.lastSyncedAt = updated.updatedAt
+                    pushed += 1
+                } else if cloudChanged {
+                    social.title = cloud.title
+                    social.weekStart = cloud.weekStart
+                    social.dayOfWeek = cloud.dayOfWeek
+                    social.startTime = cloud.startTime
+                    social.endTime = cloud.endTime
+                    social.venue = cloud.venue
+                    social.status = cloud.status
+                    social.areCourtsBooked = cloud.areCourtsBooked
+                    social.courtNumbers = cloud.courtNumbers
+                    social.shuttlecockCost = cloud.shuttlecockCost
+                    social.courtCost = cloud.courtCost
+                    social.updatedAt = cloud.updatedAt
+                    social.lastSyncedAt = cloud.updatedAt
+                    pulled += 1
+                }
+            }
+
+            for attendance in localAttendances {
+                guard let cloud = cloudAttendancesByID[attendance.syncID] else {
+                    skipped += 1
+                    continue
+                }
+                let baseline = attendance.lastSyncedAt ?? cloud.updatedAt
+                if attendance.lastSyncedAt == nil {
+                    attendance.lastSyncedAt = baseline
+                }
+                var localChanged = attendance.updatedAt > baseline
+                let cloudChanged = cloud.updatedAt > baseline
+                if !localChanged && !cloudChanged && !cloud.matchesPayload(of: attendance) {
+                    localChanged = true
+                }
+                if localChanged && cloudChanged {
+                    conflicts += 1
+                } else if localChanged {
+                    let updated = try await updateCloudAttendance(
+                        attendance,
+                        expectedUpdatedAt: baseline,
+                        token: accessToken
+                    )
+                    attendance.updatedAt = updated.updatedAt
+                    attendance.lastSyncedAt = updated.updatedAt
+                    pushed += 1
+                } else if cloudChanged {
+                    attendance.status = cloud.status
+                    attendance.paymentStatus = cloud.paymentStatus
+                    attendance.updatedAt = cloud.updatedAt
+                    attendance.lastSyncedAt = cloud.updatedAt
+                    pulled += 1
+                }
+            }
+
+            try saveSyncChanges(in: context)
+            let localCourtIDs = Set(localCourts.map(\.syncID))
+            let localSocialIDs = Set(localSocials.map(\.syncID))
+            let localAttendanceIDs = Set(localAttendances.map(\.syncID))
+            let cloudOnly = cloudCourts.filter { !localCourtIDs.contains($0.id) }.count
+                + cloudSocials.filter { !localSocialIDs.contains($0.id) }.count
+                + cloudAttendances.filter { !localAttendanceIDs.contains($0.id) }.count
+            lastSyncResult = SyncRunResult(
+                pushed: pushed,
+                pulled: pulled,
+                conflicts: conflicts,
+                skipped: skipped,
+                cloudOnly: cloudOnly
+            )
         } catch {
             SyncTimestamping.isApplyingRemoteChange = false
             lastError = error.localizedDescription
@@ -307,6 +418,13 @@ final class SupabaseCloud: ObservableObject {
     private func recordSuccessfulRefresh(at date: Date) {
         lastSuccessfulRefreshAt = date
         UserDefaults.standard.set(date, forKey: lastRefreshDefaultsKey)
+    }
+
+    private func saveSyncChanges(in context: ModelContext) throws {
+        guard context.hasChanges else { return }
+        SyncTimestamping.isApplyingRemoteChange = true
+        defer { SyncTimestamping.isApplyingRemoteChange = false }
+        try context.save()
     }
 
     private func fetchSnapshotWithTokenRenewal() async throws -> CloudSnapshot {
@@ -359,7 +477,12 @@ final class SupabaseCloud: ObservableObject {
         async let coachingSessions = fetchIDs(table: "coaching_sessions", token: accessToken)
         async let courtBookings = fetchIDs(table: "court_bookings", token: accessToken)
         async let socialSessions = fetchIDs(table: "social_sessions", token: accessToken)
-        async let socialAttendance = fetchIDs(table: "social_attendance", token: accessToken, scopedToWorkspace: false)
+        async let socialAttendance = fetchIDs(
+            table: "social_attendance",
+            token: accessToken,
+            scopedToWorkspace: false,
+            excludesSoftDeleted: false
+        )
 
         return CloudSnapshot(
             students: try await students.count,
@@ -372,7 +495,12 @@ final class SupabaseCloud: ObservableObject {
         )
     }
 
-    private func fetchIDs(table: String, token: String, scopedToWorkspace: Bool = true) async throws -> [CloudID] {
+    private func fetchIDs(
+        table: String,
+        token: String,
+        scopedToWorkspace: Bool = true,
+        excludesSoftDeleted: Bool = true
+    ) async throws -> [CloudID] {
         var components = URLComponents(
             url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/").appendingPathComponent(table),
             resolvingAgainstBaseURL: false
@@ -382,6 +510,9 @@ final class SupabaseCloud: ObservableObject {
             components.queryItems?.append(
                 URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")
             )
+        }
+        if excludesSoftDeleted {
+            components.queryItems?.append(URLQueryItem(name: "deleted_at", value: "is.null"))
         }
         let data = try await send(url: components.url!, method: "GET", body: nil, token: token)
         return try JSONDecoder().decode([CloudID].self, from: data)
@@ -409,7 +540,7 @@ final class SupabaseCloud: ObservableObject {
             resolvingAgainstBaseURL: false
         )!
         components.queryItems = [
-            URLQueryItem(name: "select", value: "id,start_time,end_time,venue,status,court_number,updated_at"),
+            URLQueryItem(name: "select", value: "id,week_start,day_of_week,start_time,end_time,venue,status,court_number,session_fee,session_description,updated_at"),
             URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)"),
             URLQueryItem(name: "deleted_at", value: "is.null"),
             URLQueryItem(name: "order", value: "start_time.asc")
@@ -431,14 +562,19 @@ final class SupabaseCloud: ObservableObject {
         )!
         components.queryItems = [
             URLQueryItem(name: "id", value: "eq.\(session.syncID.uuidString)"),
-            URLQueryItem(name: "updated_at", value: "eq.\(Self.isoFormatter.string(from: expectedUpdatedAt))")
+            URLQueryItem(name: "updated_at", value: "gte.\(Self.isoFormatter.string(from: expectedUpdatedAt.addingTimeInterval(-0.001)))"),
+            URLQueryItem(name: "updated_at", value: "lte.\(Self.isoFormatter.string(from: expectedUpdatedAt.addingTimeInterval(0.001)))")
         ]
         let body: [String: Any] = [
-            "start_time": Self.isoFormatter.string(from: session.startTime),
-            "end_time": Self.isoFormatter.string(from: session.endTime),
+            "week_start": session.weekStart.map { Self.dateOnlyFormatter.string(from: $0) } ?? NSNull(),
+            "day_of_week": session.dayOfWeek,
+            "start_time": Self.isoFormatter.string(from: session.effectiveStartTime),
+            "end_time": Self.isoFormatter.string(from: session.effectiveEndTime),
             "venue": session.venue,
             "status": session.status,
-            "court_number": session.courtNumber
+            "court_number": session.courtNumber,
+            "session_fee": session.sessionFee,
+            "session_description": session.sessionDescription ?? NSNull()
         ]
         let data = try await send(
             url: components.url!, method: "PATCH",
@@ -471,6 +607,73 @@ final class SupabaseCloud: ObservableObject {
         return try await updateCloudRecord(table: "outsiders", id: outsider.syncID, body: body, expectedUpdatedAt: expectedUpdatedAt, token: token)
     }
 
+    private func updateCloudCourtBooking(
+        _ booking: CourtBooking,
+        expectedUpdatedAt: Date,
+        token: String
+    ) async throws -> CloudCourtRecord {
+        let body: [String: Any] = [
+            "week_start": booking.weekStart.map { Self.dateOnlyFormatter.string(from: $0) } ?? NSNull(),
+            "day_of_week": booking.dayOfWeek,
+            "start_time": Self.isoFormatter.string(from: booking.effectiveStartTime),
+            "end_time": Self.isoFormatter.string(from: booking.effectiveEndTime),
+            "venue": booking.venue,
+            "court_number": booking.courtNumber
+        ]
+        return try await updateCloudRecord(
+            table: "court_bookings",
+            id: booking.syncID,
+            body: body,
+            expectedUpdatedAt: expectedUpdatedAt,
+            token: token
+        )
+    }
+
+    private func updateCloudSocialSession(
+        _ social: SocialSession,
+        expectedUpdatedAt: Date,
+        token: String
+    ) async throws -> CloudSocialRecord {
+        let body: [String: Any] = [
+            "title": social.title,
+            "week_start": Self.dateOnlyFormatter.string(from: social.weekStart),
+            "day_of_week": social.dayOfWeek,
+            "start_time": Self.isoFormatter.string(from: social.effectiveStartTime),
+            "end_time": Self.isoFormatter.string(from: social.effectiveEndTime),
+            "venue": social.venue,
+            "status": social.status,
+            "are_courts_booked": social.areCourtsBooked,
+            "court_numbers": social.courtNumbers,
+            "shuttlecock_cost": social.shuttlecockCost,
+            "court_cost": social.courtCost
+        ]
+        return try await updateCloudRecord(
+            table: "social_sessions",
+            id: social.syncID,
+            body: body,
+            expectedUpdatedAt: expectedUpdatedAt,
+            token: token
+        )
+    }
+
+    private func updateCloudAttendance(
+        _ attendance: SocialAttendance,
+        expectedUpdatedAt: Date,
+        token: String
+    ) async throws -> CloudAttendanceRecord {
+        let body: [String: Any] = [
+            "status": attendance.status,
+            "payment_status": attendance.paymentStatus
+        ]
+        return try await updateCloudRecord(
+            table: "social_attendance",
+            id: attendance.syncID,
+            body: body,
+            expectedUpdatedAt: expectedUpdatedAt,
+            token: token
+        )
+    }
+
     private func updateCloudRecord<Record: Decodable>(
         table: String,
         id: UUID,
@@ -484,7 +687,8 @@ final class SupabaseCloud: ObservableObject {
         )!
         components.queryItems = [
             URLQueryItem(name: "id", value: "eq.\(id.uuidString)"),
-            URLQueryItem(name: "updated_at", value: "eq.\(Self.isoFormatter.string(from: expectedUpdatedAt))")
+            URLQueryItem(name: "updated_at", value: "gte.\(Self.isoFormatter.string(from: expectedUpdatedAt.addingTimeInterval(-0.001)))"),
+            URLQueryItem(name: "updated_at", value: "lte.\(Self.isoFormatter.string(from: expectedUpdatedAt.addingTimeInterval(0.001)))")
         ]
         let data = try await send(
             url: components.url!, method: "PATCH",
@@ -505,13 +709,22 @@ final class SupabaseCloud: ObservableObject {
         return formatter
     }()
 
+    private static let dateOnlyFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Australia/Perth")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
     private func fetchCourtRecords(token: String) async throws -> [CloudCourtRecord] {
         var components = URLComponents(
             url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/court_bookings"),
             resolvingAgainstBaseURL: false
         )!
         components.queryItems = [
-            URLQueryItem(name: "select", value: "id,start_time,end_time,venue,court_number"),
+            URLQueryItem(name: "select", value: "id,week_start,day_of_week,start_time,end_time,venue,court_number,updated_at"),
             URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)"),
             URLQueryItem(name: "deleted_at", value: "is.null")
         ]
@@ -527,7 +740,7 @@ final class SupabaseCloud: ObservableObject {
             resolvingAgainstBaseURL: false
         )!
         components.queryItems = [
-            URLQueryItem(name: "select", value: "id,title,start_time,end_time,venue,status,court_numbers"),
+            URLQueryItem(name: "select", value: "id,title,week_start,day_of_week,start_time,end_time,venue,status,are_courts_booked,court_numbers,shuttlecock_cost,court_cost,updated_at"),
             URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)"),
             URLQueryItem(name: "deleted_at", value: "is.null")
         ]
@@ -553,14 +766,15 @@ final class SupabaseCloud: ObservableObject {
         return try decoder.decode([CloudOutsiderRecord].self, from: data)
     }
 
-    private func fetchHiddenPersonRecords(token: String) async throws -> [CloudHiddenPersonRecord] {
-        let data = try await fetchRelationData(table: "social_hidden_people", select: "id,social_session_id,student_id,outsider_id", token: token)
-        return try JSONDecoder().decode([CloudHiddenPersonRecord].self, from: data)
-    }
-
     private func fetchAttendanceRecords(token: String) async throws -> [CloudAttendanceRecord] {
-        let data = try await fetchRelationData(table: "social_attendance", select: "id,social_session_id,student_id,outsider_id,status,payment_status", token: token)
-        return try JSONDecoder().decode([CloudAttendanceRecord].self, from: data)
+        let data = try await fetchRelationData(
+            table: "social_attendance",
+            select: "id,social_session_id,student_id,outsider_id,status,payment_status,updated_at",
+            token: token
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .supabaseTimestamp
+        return try decoder.decode([CloudAttendanceRecord].self, from: data)
     }
 
     private func fetchRelationData(table: String, select: String, token: String) async throws -> Data {
@@ -606,22 +820,86 @@ final class SupabaseCloud: ObservableObject {
     }
 }
 
-struct IdentityLinkResult: Equatable {
-    let studentsLinked: Int
-    let sessionsLinked: Int
-    let sessionsUnmatched: Int
-    let courtsLinked: Int
-    let socialsLinked: Int
-    let outsidersLinked: Int
-    let hiddenPeopleLinked: Int
-    let attendancesLinked: Int
-}
-
 struct SyncRunResult: Equatable {
     let pushed: Int
     let pulled: Int
     let conflicts: Int
     let skipped: Int
+    let cloudOnly: Int
+
+    static let zero = SyncRunResult(pushed: 0, pulled: 0, conflicts: 0, skipped: 0, cloudOnly: 0)
+
+    var needsAttention: Bool {
+        conflicts > 0 || skipped > 0 || cloudOnly > 0
+    }
+
+    var summary: String {
+        if needsAttention {
+            return "Sync needs attention: \(conflicts) conflicts, \(skipped) unmatched local, \(cloudOnly) unmatched cloud."
+        }
+        if pushed == 0 && pulled == 0 {
+            return "Cloud data is up to date."
+        }
+        return "Sync complete: \(pushed) uploaded, \(pulled) downloaded."
+    }
+
+    func adding(_ other: SyncRunResult) -> SyncRunResult {
+        SyncRunResult(
+            pushed: pushed + other.pushed,
+            pulled: pulled + other.pulled,
+            conflicts: conflicts + other.conflicts,
+            skipped: skipped + other.skipped,
+            cloudOnly: cloudOnly + other.cloudOnly
+        )
+    }
+}
+
+private extension CoachingSession {
+    var effectiveStartTime: Date {
+        effectiveDate(using: startTime)
+    }
+
+    var effectiveEndTime: Date {
+        effectiveDate(using: endTime)
+    }
+
+    private func effectiveDate(using time: Date) -> Date {
+        guard let weekStart else { return time }
+        let calendar = Calendar.current
+        let day = calendar.date(byAdding: .day, value: max(dayOfWeek - 1, 0), to: weekStart) ?? weekStart
+        let components = calendar.dateComponents([.hour, .minute, .second], from: time)
+        return calendar.date(
+            bySettingHour: components.hour ?? 0,
+            minute: components.minute ?? 0,
+            second: components.second ?? 0,
+            of: day
+        ) ?? time
+    }
+}
+
+private extension CourtBooking {
+    var effectiveStartTime: Date {
+        effectiveDate(using: startTime)
+    }
+
+    var effectiveEndTime: Date {
+        effectiveDate(using: endTime)
+    }
+
+    private func effectiveDate(using time: Date) -> Date {
+        guard let weekStart else { return time }
+        return time.applyingSyncWeek(weekStart, dayOfWeek: dayOfWeek)
+    }
+}
+
+private extension SocialSession {
+    var effectiveStartTime: Date {
+        startTime.applyingSyncWeek(weekStart, dayOfWeek: dayOfWeek)
+    }
+
+    var effectiveEndTime: Date {
+        endTime.applyingSyncWeek(weekStart, dayOfWeek: dayOfWeek)
+    }
 }
 
 private struct CloudID: Decodable {
@@ -648,6 +926,15 @@ private struct CloudStudentRecord: Decodable {
         case isHidden = "is_hidden"
         case updatedAt = "updated_at"
     }
+
+    func matchesPayload(of student: Student) -> Bool {
+        name == student.name &&
+            gender == student.gender &&
+            contactPreference == student.contactPreference &&
+            contactDetail == student.contactDetail &&
+            sessionsDemand == student.sessionsDemand &&
+            isHidden == student.isHidden
+    }
 }
 
 private struct CloudOutsiderRecord: Decodable {
@@ -664,19 +951,12 @@ private struct CloudOutsiderRecord: Decodable {
         case contactDetail = "contact_detail"
         case updatedAt = "updated_at"
     }
-}
 
-private struct CloudHiddenPersonRecord: Decodable {
-    let id: UUID
-    let socialSessionID: UUID
-    let studentID: UUID?
-    let outsiderID: UUID?
-
-    enum CodingKeys: String, CodingKey {
-        case id
-        case socialSessionID = "social_session_id"
-        case studentID = "student_id"
-        case outsiderID = "outsider_id"
+    func matchesPayload(of outsider: Outsider) -> Bool {
+        name == outsider.name &&
+            gender == outsider.gender &&
+            contactPreference == outsider.contactPreference &&
+            contactDetail == outsider.contactDetail
     }
 }
 
@@ -687,6 +967,7 @@ private struct CloudAttendanceRecord: Decodable {
     let outsiderID: UUID?
     let status: String
     let paymentStatus: String
+    let updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -695,95 +976,171 @@ private struct CloudAttendanceRecord: Decodable {
         case outsiderID = "outsider_id"
         case status
         case paymentStatus = "payment_status"
+        case updatedAt = "updated_at"
+    }
+
+    func matchesPayload(of attendance: SocialAttendance) -> Bool {
+        status == attendance.status && paymentStatus == attendance.paymentStatus
     }
 }
 
 private struct CloudSessionRecord: Decodable {
     let id: UUID
+    let weekStart: Date?
+    let dayOfWeek: Int
     let startTime: Date
     let endTime: Date
     let venue: String
     let status: String
     let courtNumber: String
+    let sessionFee: Double
+    let sessionDescription: String?
     let updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
         case id
+        case weekStart = "week_start"
+        case dayOfWeek = "day_of_week"
         case startTime = "start_time"
         case endTime = "end_time"
         case venue
         case status
         case courtNumber = "court_number"
+        case sessionFee = "session_fee"
+        case sessionDescription = "session_description"
         case updatedAt = "updated_at"
     }
 
     func matches(_ session: CoachingSession) -> Bool {
-        abs(startTime.timeIntervalSince(session.startTime)) < 1 &&
-            abs(endTime.timeIntervalSince(session.endTime)) < 1 &&
+        dayOfWeek == session.dayOfWeek &&
+            sameWeek(as: session.weekStart) &&
+            startTime.syncMinutes == session.startTime.syncMinutes &&
+            endTime.syncMinutes == session.endTime.syncMinutes &&
             venue == session.venue &&
             status == session.status &&
             courtNumber == session.courtNumber
+    }
+
+    func matchesPayload(of session: CoachingSession) -> Bool {
+        matches(session) &&
+            abs(sessionFee - session.sessionFee) < 0.005 &&
+            sessionDescription == session.sessionDescription
+    }
+
+    private func sameWeek(as localWeekStart: Date?) -> Bool {
+        guard let weekStart, let localWeekStart else { return weekStart == nil && localWeekStart == nil }
+        return Calendar.current.isDate(weekStart, inSameDayAs: localWeekStart)
+    }
+}
+
+private extension Date {
+    var syncMinutes: Int {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: self)
+        return (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    }
+
+    func applyingSyncWeek(_ weekStart: Date, dayOfWeek: Int) -> Date {
+        let calendar = Calendar.current
+        let day = calendar.date(byAdding: .day, value: max(dayOfWeek - 1, 0), to: weekStart) ?? weekStart
+        let components = calendar.dateComponents([.hour, .minute, .second], from: self)
+        return calendar.date(
+            bySettingHour: components.hour ?? 0,
+            minute: components.minute ?? 0,
+            second: components.second ?? 0,
+            of: day
+        ) ?? self
     }
 }
 
 private struct CloudCourtRecord: Decodable {
     let id: UUID
+    let weekStart: Date?
+    let dayOfWeek: Int
     let startTime: Date
     let endTime: Date
     let venue: String
     let courtNumber: String
+    let updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
         case id
+        case weekStart = "week_start"
+        case dayOfWeek = "day_of_week"
         case startTime = "start_time"
         case endTime = "end_time"
         case venue
         case courtNumber = "court_number"
+        case updatedAt = "updated_at"
     }
 
     func matches(_ booking: CourtBooking) -> Bool {
-        abs(startTime.timeIntervalSince(booking.startTime)) < 1 &&
-            abs(endTime.timeIntervalSince(booking.endTime)) < 1 &&
+        dayOfWeek == booking.dayOfWeek &&
+            sameSyncWeek(weekStart, booking.weekStart) &&
+            startTime.syncMinutes == booking.startTime.syncMinutes &&
+            endTime.syncMinutes == booking.endTime.syncMinutes &&
             venue == booking.venue &&
             courtNumber == booking.courtNumber
+    }
+
+    func matchesPayload(of booking: CourtBooking) -> Bool {
+        matches(booking)
     }
 }
 
 private struct CloudSocialRecord: Decodable {
     let id: UUID
     let title: String
+    let weekStart: Date
+    let dayOfWeek: Int
     let startTime: Date
     let endTime: Date
     let venue: String
     let status: String
+    let areCourtsBooked: Bool
     let courtNumbers: String
+    let shuttlecockCost: Double
+    let courtCost: Double
+    let updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
         case id
         case title
+        case weekStart = "week_start"
+        case dayOfWeek = "day_of_week"
         case startTime = "start_time"
         case endTime = "end_time"
         case venue
         case status
+        case areCourtsBooked = "are_courts_booked"
         case courtNumbers = "court_numbers"
+        case shuttlecockCost = "shuttlecock_cost"
+        case courtCost = "court_cost"
+        case updatedAt = "updated_at"
     }
 
     func matches(_ social: SocialSession) -> Bool {
         title == social.title &&
-            abs(startTime.timeIntervalSince(social.startTime)) < 1 &&
-            abs(endTime.timeIntervalSince(social.endTime)) < 1 &&
-            venue == social.venue &&
+            Calendar.current.isDate(weekStart, inSameDayAs: social.weekStart) &&
+            dayOfWeek == social.dayOfWeek &&
+            startTime.syncMinutes == social.startTime.syncMinutes &&
+            endTime.syncMinutes == social.endTime.syncMinutes &&
+            venue == social.venue
+    }
+
+    func matchesPayload(of social: SocialSession) -> Bool {
+        matches(social) &&
             status == social.status &&
-            courtNumbers == social.courtNumbers
+            areCourtsBooked == social.areCourtsBooked &&
+            courtNumbers == social.courtNumbers &&
+            abs(shuttlecockCost - social.shuttlecockCost) < 0.005 &&
+            abs(courtCost - social.courtCost) < 0.005
     }
 }
 
-private extension String {
-    var normalizedSyncName: String {
-        trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
+private func sameSyncWeek(_ first: Date?, _ second: Date?) -> Bool {
+    guard let first, let second else { return first == nil && second == nil }
+    return Calendar.current.isDate(first, inSameDayAs: second)
 }
-
 
 private extension JSONDecoder.DateDecodingStrategy {
     static let supabaseTimestamp: Self = .custom { decoder in
@@ -793,6 +1150,12 @@ private extension JSONDecoder.DateDecodingStrategy {
         if let date = formatter.date(from: value) { return date }
         formatter.formatOptions = [.withInternetDateTime]
         if let date = formatter.date(from: value) { return date }
+        let dateOnlyFormatter = DateFormatter()
+        dateOnlyFormatter.calendar = Calendar(identifier: .gregorian)
+        dateOnlyFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateOnlyFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        dateOnlyFormatter.dateFormat = "yyyy-MM-dd"
+        if let date = dateOnlyFormatter.date(from: value) { return date }
         throw DecodingError.dataCorruptedError(
             in: try decoder.singleValueContainer(),
             debugDescription: "Invalid Supabase timestamp"
