@@ -39,13 +39,12 @@ Never put the `service_role` key in the iPhone app, repository, migration bundle
 
 ## App connection and manual sync
 
-CoachPlanner connects to Supabase from Settings. It uses the project's publishable key, signs in through Supabase Auth, stores only the returned session token in the device Keychain, and displays a cloud snapshot count. SwiftData remains the offline local cache while the explicit sync action reconciles timestamped records with Supabase.
+CoachPlanner connects to Supabase from Settings. It uses the project's publishable key, signs in through Supabase Auth, and stores only the returned session token in the device Keychain. SwiftData remains the offline local cache while the explicit sync action reconciles timestamped records with Supabase.
 
 1. Build and run CoachPlanner on the iPhone or Mac Catalyst target.
 2. Open **Settings → Supabase Cloud**.
 3. Sign in with the Auth user created for the project.
-4. Confirm the snapshot counts match the migration verification.
-5. Tap **Sync cloud data**. A repeat sync with no further changes should report that cloud data is up to date.
+4. Tap **Sync cloud data**. A repeat sync with no further changes should report that cloud data is up to date.
 
 Before installing the create/delete and relationship-sync build over an existing Supabase project, run [`migrations/2026-09-08_relationship_versions.sql`](./migrations/2026-09-08_relationship_versions.sql) once in the SQL Editor. It is safe to run repeatedly. The triggers advance the parent record's version when only a student list, hidden week, hidden person, or attendance changes.
 

@@ -9,28 +9,12 @@ enum SupabaseConfiguration {
     static let workspaceID = UUID(uuidString: "0db2b4f5-ff7c-4fbd-b71b-e2ddf9d5def6")!
 }
 
-struct CloudSnapshot: Equatable {
-    let students: Int
-    let outsiders: Int
-    let coachingSessions: Int
-    let courtBookings: Int
-    let socialSessions: Int
-    let socialAttendance: Int
-    let fetchedAt: Date
-
-    var summary: String {
-        "\(students) students, \(coachingSessions) coaching sessions, \(socialSessions) social session"
-    }
-}
-
 @MainActor
 final class SupabaseCloud: ObservableObject {
     static let shared = SupabaseCloud()
 
     @Published private(set) var isSignedIn = false
-    @Published private(set) var snapshot: CloudSnapshot?
     @Published private(set) var lastError: String?
-    @Published private(set) var lastSuccessfulRefreshAt: Date?
     @Published private(set) var lastSyncResult: SyncRunResult?
     @Published private(set) var isSyncing = false
 
@@ -38,47 +22,30 @@ final class SupabaseCloud: ObservableObject {
     private var accessToken: String?
     private var syncLedger = SupabaseSyncLedger.load()
 
-    private let lastRefreshDefaultsKey = "SupabaseCloud.lastSuccessfulRefreshAt"
-
     private init() {
         accessToken = keychain.read("access_token")
         isSignedIn = accessToken != nil
-        lastSuccessfulRefreshAt = UserDefaults.standard.object(forKey: lastRefreshDefaultsKey) as? Date
     }
 
     func signIn(email: String, password: String) async {
         lastError = nil
         do {
             let session = try await authenticate(email: email, password: password)
+            try await verifyWorkspaceAccess(token: session.accessToken)
             accessToken = session.accessToken
             keychain.write(session.accessToken, key: "access_token")
             if let refreshToken = session.refreshToken {
                 keychain.write(refreshToken, key: "refresh_token")
             }
             isSignedIn = true
-            let refreshedSnapshot = try await fetchSnapshot()
-            snapshot = refreshedSnapshot
-            recordSuccessfulRefresh(at: refreshedSnapshot.fetchedAt)
         } catch {
             isSignedIn = false
             lastError = error.localizedDescription
         }
     }
 
-    func refreshSnapshot() async {
-        lastError = nil
-        do {
-            let refreshedSnapshot = try await fetchSnapshotWithTokenRenewal()
-            snapshot = refreshedSnapshot
-            recordSuccessfulRefresh(at: refreshedSnapshot.fetchedAt)
-        } catch {
-            lastError = error.localizedDescription
-        }
-    }
-
     func signOut() {
         accessToken = nil
-        snapshot = nil
         isSignedIn = false
         lastSyncResult = nil
         keychain.delete("access_token")
@@ -134,14 +101,6 @@ final class SupabaseCloud: ObservableObject {
         combined = combined.adding(sessionResult)
         lastSyncResult = combined
         syncLedger.save()
-
-        do {
-            let refreshedSnapshot = try await fetchSnapshotWithTokenRenewal()
-            snapshot = refreshedSnapshot
-            recordSuccessfulRefresh(at: refreshedSnapshot.fetchedAt)
-        } catch {
-            lastError = error.localizedDescription
-        }
     }
 
     private func syncCoachingSessions(in context: ModelContext) async {
@@ -841,25 +800,11 @@ final class SupabaseCloud: ObservableObject {
         )
     }
 
-    private func recordSuccessfulRefresh(at date: Date) {
-        lastSuccessfulRefreshAt = date
-        UserDefaults.standard.set(date, forKey: lastRefreshDefaultsKey)
-    }
-
     private func saveSyncChanges(in context: ModelContext) throws {
         guard context.hasChanges else { return }
         SyncTimestamping.isApplyingRemoteChange = true
         defer { SyncTimestamping.isApplyingRemoteChange = false }
         try context.save()
-    }
-
-    private func fetchSnapshotWithTokenRenewal() async throws -> CloudSnapshot {
-        do {
-            return try await fetchSnapshot()
-        } catch SupabaseCloudError.requestFailed(let message) where message.contains("JWT expired") {
-            try await renewAccessToken()
-            return try await fetchSnapshot()
-        }
     }
 
     private func renewAccessToken() async throws {
@@ -893,36 +838,6 @@ final class SupabaseCloud: ObservableObject {
         return try JSONDecoder().decode(AuthSession.self, from: data)
     }
 
-    private func fetchSnapshot() async throws -> CloudSnapshot {
-        guard let accessToken else {
-            throw SupabaseCloudError.notSignedIn
-        }
-
-        try await verifyWorkspaceAccess(token: accessToken)
-
-        async let students = fetchIDs(table: "students", token: accessToken)
-        async let outsiders = fetchIDs(table: "outsiders", token: accessToken)
-        async let coachingSessions = fetchIDs(table: "coaching_sessions", token: accessToken)
-        async let courtBookings = fetchIDs(table: "court_bookings", token: accessToken)
-        async let socialSessions = fetchIDs(table: "social_sessions", token: accessToken)
-        async let socialAttendance = fetchIDs(
-            table: "social_attendance",
-            token: accessToken,
-            scopedToWorkspace: false,
-            excludesSoftDeleted: false
-        )
-
-        return CloudSnapshot(
-            students: try await students.count,
-            outsiders: try await outsiders.count,
-            coachingSessions: try await coachingSessions.count,
-            courtBookings: try await courtBookings.count,
-            socialSessions: try await socialSessions.count,
-            socialAttendance: try await socialAttendance.count,
-            fetchedAt: .now
-        )
-    }
-
     private func verifyWorkspaceAccess(token: String) async throws {
         var components = URLComponents(
             url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/workspaces"),
@@ -937,29 +852,6 @@ final class SupabaseCloud: ObservableObject {
         guard workspaces.contains(where: { $0.id == SupabaseConfiguration.workspaceID }) else {
             throw SupabaseCloudError.workspaceUnavailable
         }
-    }
-
-    private func fetchIDs(
-        table: String,
-        token: String,
-        scopedToWorkspace: Bool = true,
-        excludesSoftDeleted: Bool = true
-    ) async throws -> [CloudID] {
-        var components = URLComponents(
-            url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/").appendingPathComponent(table),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [URLQueryItem(name: "select", value: "id")]
-        if scopedToWorkspace {
-            components.queryItems?.append(
-                URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")
-            )
-        }
-        if excludesSoftDeleted {
-            components.queryItems?.append(URLQueryItem(name: "deleted_at", value: "is.null"))
-        }
-        let data = try await send(url: components.url!, method: "GET", body: nil, token: token)
-        return try JSONDecoder().decode([CloudID].self, from: data)
     }
 
     private func fetchStudentRecords(token: String) async throws -> [CloudStudentRecord] {

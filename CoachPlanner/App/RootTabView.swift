@@ -208,45 +208,32 @@ private struct AppSettingsView: View {
                     .textContentType(.password)
 
                     HStack {
-                        Button(cloud.isSignedIn ? "Refresh cloud snapshot" : "Sign in and check cloud") {
-                            Task {
-                                if cloud.isSignedIn {
-                                    await cloud.refreshSnapshot()
-                                } else {
-                                    await cloud.signIn(email: cloudEmail, password: cloudPassword)
-                                    cloudPassword = ""
-                                }
-                            }
-                        }
-                        .disabled(cloud.isSyncing || (!cloud.isSignedIn && (cloudEmail.isEmpty || cloudPassword.isEmpty)))
-
                         if cloud.isSignedIn {
+                            Button(cloud.isSyncing ? "Syncing…" : "Sync cloud data") {
+                                Task { await cloud.syncAll(in: modelContext) }
+                            }
+                            .disabled(cloud.isSyncing)
+
                             Button("Sign out") {
                                 cloud.signOut()
                             }
                             .buttonStyle(.borderless)
                             .disabled(cloud.isSyncing)
+                        } else {
+                            Button("Sign in") {
+                                Task {
+                                    await cloud.signIn(email: cloudEmail, password: cloudPassword)
+                                    cloudPassword = ""
+                                }
+                            }
+                            .disabled(cloudEmail.isEmpty || cloudPassword.isEmpty)
                         }
                     }
 
-                    if let snapshot = cloud.snapshot {
-                        Label("Cloud snapshot: \(snapshot.summary)", systemImage: "checkmark.circle")
-                            .foregroundStyle(.green)
-                        if let refreshedAt = cloud.lastSuccessfulRefreshAt {
-                            Text("Last refreshed \(refreshedAt.formatted(date: .abbreviated, time: .shortened))")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                        }
-                        Button(cloud.isSyncing ? "Syncing…" : "Sync cloud data") {
-                            Task { await cloud.syncAll(in: modelContext) }
-                        }
-                        .buttonStyle(.borderless)
-                        .disabled(cloud.isSyncing)
-                        if let result = cloud.lastSyncResult {
-                            Label(result.summary, systemImage: result.needsAttention ? "exclamationmark.triangle" : "checkmark.circle")
-                                .font(.footnote)
-                                .foregroundStyle(result.needsAttention ? Color.orange : Color.green)
-                        }
+                    if let result = cloud.lastSyncResult {
+                        Label(result.summary, systemImage: result.needsAttention ? "exclamationmark.triangle" : "checkmark.circle")
+                            .font(.footnote)
+                            .foregroundStyle(result.needsAttention ? Color.orange : Color.green)
                     }
 
                     if let error = cloud.lastError {
