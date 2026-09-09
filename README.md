@@ -39,3 +39,7 @@ The local store paths and SwiftData schema remain unchanged from the earlier bui
 For routine use, sync before starting work on a device and again after finishing changes. Resolve any reported conflict before editing the same record on another device.
 
 Local scheduled planning can read a privacy-limited, read-only Supabase snapshot without opening the app through `Tools/coachplanner-cloud snapshot --week next`. One-time Keychain-backed setup is documented in `Backend/README.md`.
+
+## Reusable weekly planning skill
+
+Codex tasks running in this repository can invoke `$coachplanner-weekly-planning`. The repository skill reads the cloud snapshot and the local `PrivatePlanning/SchedulingProfile.md`, checks data freshness, and produces a review-only timetable draft without navigating the app UI or changing any records. Scheduled-task prompts should invoke the skill explicitly so the workflow does not depend on automatic skill selection.

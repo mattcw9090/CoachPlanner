@@ -1,0 +1,7 @@
+interface:
+  display_name: "CoachPlanner Weekly Planning"
+  short_description: "Draft coaching weeks from the cloud snapshot"
+  default_prompt: "Use $coachplanner-weekly-planning to draft my next coaching week from the latest cloud snapshot."
+
+policy:
+  allow_implicit_invocation: true
