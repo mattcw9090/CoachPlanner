@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+TOOL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec /usr/bin/env python3 "$TOOL_DIR/../Backend/coachplanner_cloud.py" "$@"

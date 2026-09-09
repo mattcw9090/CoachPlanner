@@ -37,3 +37,5 @@ SwiftData keeps an offline local cache on each device. Supabase is the shared cl
 The local store paths and SwiftData schema remain unchanged from the earlier builds, so installing this version over an existing installation keeps the device's current records. The app no longer requests iCloud or remote-notification capabilities.
 
 For routine use, sync before starting work on a device and again after finishing changes. Resolve any reported conflict before editing the same record on another device.
+
+Local scheduled planning can read a privacy-limited, read-only Supabase snapshot without opening the app through `Tools/coachplanner-cloud snapshot --week next`. One-time Keychain-backed setup is documented in `Backend/README.md`.

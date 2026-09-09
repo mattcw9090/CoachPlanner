@@ -9,5 +9,9 @@ xcuserdata/
 DerivedData/
 build/
 
+# Python tooling
+__pycache__/
+*.py[cod]
+
 # Swift Package Manager
 .build/

@@ -17,8 +17,31 @@ This directory defines the first cloud-backed storage contract. It is provider-n
 - `openapi.yaml` — the minimum API contract for storage migration and synchronization.
 - `export_swiftdata_store.py` — read-only exporter for the existing Mac SwiftData store.
 - `import_bundle.py` — authenticated, idempotent uploader for an exported bundle.
+- `coachplanner_cloud.py` — read-only Supabase command used by local planning automation.
+- `coachplanner_cloud_config.json` — tracked non-secret project URL, publishable key, and workspace ID for that command.
 - `SupabaseSetup.md` — provider-specific setup and secret-handling checklist.
 - `supabase_policies.sql` — owner-scoped Row Level Security policies.
+
+## Read planning data without opening the app
+
+The local automation command reads the authenticated Supabase workspace directly. It has no database write commands and deliberately excludes contact details, fees, and session descriptions.
+
+Sign in once; the password is entered invisibly and is never stored. The short Supabase refresh token is kept in a CLI-specific macOS Keychain entry, separate from the iPhone and Mac app sessions. Access tokens exist only in memory while a command runs:
+
+```sh
+Tools/coachplanner-cloud auth login --email YOUR_SUPABASE_EMAIL
+```
+
+Check access and request the next Monday-Sunday planning snapshot:
+
+```sh
+Tools/coachplanner-cloud auth status
+Tools/coachplanner-cloud snapshot --week next
+```
+
+Use `--week current` or an explicit Monday such as `--week 2026-09-14` when needed. Add `--output /private/tmp/coachplanner-snapshot.json` to keep the full JSON in an owner-readable file instead of standard output.
+
+The output includes the prior-week baseline, target-week sessions, court bookings, student demand, week-specific hiding, and calculated underallocation. It also states that app changes remain absent until **Sync cloud data** is tapped on the device where those changes were made.
 
 ## Export the existing Mac store
 
