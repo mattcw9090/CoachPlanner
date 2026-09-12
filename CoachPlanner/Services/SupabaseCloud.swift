@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import OSLog
 import Security
 import SwiftData
 
@@ -19,11 +20,18 @@ final class SupabaseCloud: ObservableObject {
     @Published private(set) var isSyncing = false
 
     private let keychain = SupabaseKeychain()
+    private let urlSession: URLSession
+    private let defaults: UserDefaults
     private var accessToken: String?
-    private var syncLedger = SupabaseSyncLedger.load()
+    private var syncLedger: SupabaseSyncLedger
+    private var requestCount = 0
+    private static let logger = Logger(subsystem: "com.matthewchew.CoachPlanner", category: "SupabaseSync")
 
-    private init() {
-        accessToken = keychain.read("access_token")
+    private init(urlSession: URLSession = .shared, defaults: UserDefaults = .standard, restoreSession: Bool = true) {
+        self.urlSession = urlSession
+        self.defaults = defaults
+        syncLedger = SupabaseSyncLedger.load(from: defaults)
+        accessToken = restoreSession ? keychain.read("access_token") : nil
         isSignedIn = accessToken != nil
     }
 
@@ -56,12 +64,15 @@ final class SupabaseCloud: ObservableObject {
     func syncAll(in context: ModelContext) async {
         guard !isSyncing else { return }
         isSyncing = true
+        requestCount = 0
+        let startedAt = Date()
         lastSyncResult = nil
         let autosaveWasEnabled = context.autosaveEnabled
         context.autosaveEnabled = false
         defer {
             context.autosaveEnabled = autosaveWasEnabled
             isSyncing = false
+            Self.logger.info("Sync finished in \(Date().timeIntervalSince(startedAt), privacy: .public)s; requests: \(self.requestCount, privacy: .public); succeeded: \(self.lastError == nil, privacy: .public)")
         }
 
         lastError = nil
@@ -101,7 +112,7 @@ final class SupabaseCloud: ObservableObject {
         }
         combined = combined.adding(sessionResult)
         lastSyncResult = combined
-        syncLedger.save()
+        syncLedger.save(to: defaults)
     }
 
     private func syncCoachingSessions(in context: ModelContext) async {
@@ -110,12 +121,18 @@ final class SupabaseCloud: ObservableObject {
             guard let accessToken else { throw SupabaseCloudError.notSignedIn }
             let localSessions = try context.fetch(FetchDescriptor<CoachingSession>())
             let localStudents = try context.fetch(FetchDescriptor<Student>())
-            let cloudSessions = try await fetchSessionRecords(token: accessToken)
-            let cloudLinks = try await fetchCoachingSessionStudentLinks(token: accessToken)
+            async let sessionsRequest = fetchSessionRecords(token: accessToken)
+            async let linksRequest = fetchCoachingSessionStudentLinks(token: accessToken)
+            let (cloudSessions, cloudLinks) = try await (sessionsRequest, linksRequest)
             let studentByID = localStudents.reduce(into: [UUID: Student]()) { $0[$1.syncID] = $1 }
             let cloudStudentIDsBySession = Dictionary(grouping: cloudLinks, by: \.sessionID)
                 .mapValues { Set($0.map(\.studentID)) }
             var remainingCloud = Dictionary(uniqueKeysWithValues: cloudSessions.map { ($0.id, $0) })
+            try await deleteCloudRows(
+                table: "coaching_session_students", column: "session_id",
+                ids: Set(cloudSessions.filter { $0.deletedAt != nil }.map(\.id))
+                    .intersection(cloudLinks.map(\.sessionID)), token: accessToken
+            )
             var nextLedger: [String: Date] = [:]
             var pushed = 0
             var pulled = 0
@@ -128,8 +145,10 @@ final class SupabaseCloud: ObservableObject {
                 guard let cloud = remainingCloud.removeValue(forKey: local.syncID) else {
                     if local.lastSyncedAt == nil || syncLedger.coachingSessions[ledgerKey] == nil {
                         var created = try await insertCloudSession(local, token: accessToken)
-                        try await replaceCloudStudents(for: local, token: accessToken)
-                        created = try await fetchCurrentSession(id: local.syncID, token: accessToken)
+                        if !local.studentList.isEmpty {
+                            try await replaceCloudStudents(for: local, token: accessToken)
+                            created = try await fetchCurrentSession(id: local.syncID, token: accessToken)
+                        }
                         local.updatedAt = created.updatedAt
                         local.lastSyncedAt = created.updatedAt
                         nextLedger[ledgerKey] = created.updatedAt
@@ -145,7 +164,6 @@ final class SupabaseCloud: ObservableObject {
 
 
                 if cloud.deletedAt != nil {
-                    try await cleanupCloudRelationships(forSessionID: cloud.id, token: accessToken)
                     SyncTimestamping.isApplyingRemoteChange = true
                     context.delete(local)
                     SyncTimestamping.isApplyingRemoteChange = false
@@ -176,9 +194,11 @@ final class SupabaseCloud: ObservableObject {
                         nextLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
-                    _ = try await updateCloudSession(local, expectedUpdatedAt: baseline, token: accessToken)
-                    try await replaceCloudStudents(for: local, token: accessToken)
-                    let updated = try await fetchCurrentSession(id: local.syncID, token: accessToken)
+                    var updated = try await updateCloudSession(local, expectedUpdatedAt: baseline, token: accessToken)
+                    if localStudentIDs != cloudStudentIDs {
+                        try await replaceCloudStudents(for: local, token: accessToken)
+                        updated = try await fetchCurrentSession(id: local.syncID, token: accessToken)
+                    }
                     local.updatedAt = updated.updatedAt
                     local.lastSyncedAt = updated.updatedAt
                     nextLedger[ledgerKey] = updated.updatedAt
@@ -196,10 +216,7 @@ final class SupabaseCloud: ObservableObject {
             }
 
             for cloud in remainingCloud.values {
-                guard cloud.deletedAt == nil else {
-                    try await cleanupCloudRelationships(forSessionID: cloud.id, token: accessToken)
-                    continue
-                }
+                guard cloud.deletedAt == nil else { continue }
                 let ledgerKey = SupabaseSyncLedger.key(for: cloud.id)
                 if let baseline = syncLedger.coachingSessions[ledgerKey] {
                     if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
@@ -251,9 +268,16 @@ final class SupabaseCloud: ObservableObject {
             guard let accessToken else { throw SupabaseCloudError.notSignedIn }
             let localStudents = try context.fetch(FetchDescriptor<Student>())
             let localOutsiders = try context.fetch(FetchDescriptor<Outsider>())
-            let cloudStudents = try await fetchStudentRecords(token: accessToken)
-            let cloudOutsiders = try await fetchOutsiderRecords(token: accessToken)
-            let cloudHiddenWeeks = try await fetchHiddenWeekRecords(token: accessToken)
+            async let studentsRequest = fetchStudentRecords(token: accessToken)
+            async let outsidersRequest = fetchOutsiderRecords(token: accessToken)
+            async let hiddenWeeksRequest = fetchHiddenWeekRecords(token: accessToken)
+            let (cloudStudents, cloudOutsiders, cloudHiddenWeeks) = try await (studentsRequest, outsidersRequest, hiddenWeeksRequest)
+            try await cleanupCloudRelationships(
+                forStudentIDs: Set(cloudStudents.filter { $0.deletedAt != nil }.map(\.id)), token: accessToken
+            )
+            try await cleanupCloudRelationships(
+                forOutsiderIDs: Set(cloudOutsiders.filter { $0.deletedAt != nil }.map(\.id)), token: accessToken
+            )
             var remainingCloudStudents = Dictionary(uniqueKeysWithValues: cloudStudents.map { ($0.id, $0) })
             var remainingCloudOutsiders = Dictionary(uniqueKeysWithValues: cloudOutsiders.map { ($0.id, $0) })
             let hiddenWeeksByStudent = Dictionary(grouping: cloudHiddenWeeks, by: \.studentID)
@@ -270,8 +294,10 @@ final class SupabaseCloud: ObservableObject {
                 guard let cloud = remainingCloudStudents.removeValue(forKey: student.syncID) else {
                     if student.lastSyncedAt == nil || syncLedger.students[ledgerKey] == nil {
                         var created = try await insertCloudStudent(student, token: accessToken)
-                        try await replaceCloudHiddenWeeks(for: student, token: accessToken)
-                        created = try await fetchCurrentStudent(id: student.syncID, token: accessToken)
+                        if !(student.hiddenWeeks ?? []).isEmpty {
+                            try await replaceCloudHiddenWeeks(for: student, token: accessToken)
+                            created = try await fetchCurrentStudent(id: student.syncID, token: accessToken)
+                        }
                         student.updatedAt = created.updatedAt
                         student.lastSyncedAt = created.updatedAt
                         for hiddenWeek in student.hiddenWeeks ?? [] {
@@ -290,7 +316,6 @@ final class SupabaseCloud: ObservableObject {
                 }
 
                 if cloud.deletedAt != nil {
-                    try await cleanupCloudRelationships(forStudentID: cloud.id, token: accessToken)
                     SyncTimestamping.isApplyingRemoteChange = true
                     try deleteLocalStudent(student, in: context)
                     SyncTimestamping.isApplyingRemoteChange = false
@@ -325,9 +350,11 @@ final class SupabaseCloud: ObservableObject {
                         nextStudentLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
-                    _ = try await updateCloudStudent(student, expectedUpdatedAt: baseline, token: accessToken)
-                    try await replaceCloudHiddenWeeks(for: student, token: accessToken)
-                    let updated = try await fetchCurrentStudent(id: student.syncID, token: accessToken)
+                    var updated = try await updateCloudStudent(student, expectedUpdatedAt: baseline, token: accessToken)
+                    if localHiddenWeekKeys != cloudHiddenWeekKeys {
+                        try await replaceCloudHiddenWeeks(for: student, token: accessToken)
+                        updated = try await fetchCurrentStudent(id: student.syncID, token: accessToken)
+                    }
                     student.updatedAt = updated.updatedAt
                     student.lastSyncedAt = updated.updatedAt
                     for hiddenWeek in student.hiddenWeeks ?? [] {
@@ -354,10 +381,7 @@ final class SupabaseCloud: ObservableObject {
             }
 
             for cloud in remainingCloudStudents.values {
-                guard cloud.deletedAt == nil else {
-                    try await cleanupCloudRelationships(forStudentID: cloud.id, token: accessToken)
-                    continue
-                }
+                guard cloud.deletedAt == nil else { continue }
                 let ledgerKey = SupabaseSyncLedger.key(for: cloud.id)
                 if let baseline = syncLedger.students[ledgerKey] {
                     if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
@@ -371,7 +395,7 @@ final class SupabaseCloud: ObservableObject {
                             expectedUpdatedAt: baseline,
                             token: accessToken
                         )
-                        try await cleanupCloudRelationships(forStudentID: cloud.id, token: accessToken)
+                        try await cleanupCloudRelationships(forStudentIDs: [cloud.id], token: accessToken)
                         pushed += 1
                     }
                 } else {
@@ -409,7 +433,6 @@ final class SupabaseCloud: ObservableObject {
                 }
 
                 if cloud.deletedAt != nil {
-                    try await cleanupCloudRelationships(forOutsiderID: cloud.id, token: accessToken)
                     SyncTimestamping.isApplyingRemoteChange = true
                     try deleteLocalOutsider(outsider, in: context)
                     SyncTimestamping.isApplyingRemoteChange = false
@@ -454,10 +477,7 @@ final class SupabaseCloud: ObservableObject {
             }
 
             for cloud in remainingCloudOutsiders.values {
-                guard cloud.deletedAt == nil else {
-                    try await cleanupCloudRelationships(forOutsiderID: cloud.id, token: accessToken)
-                    continue
-                }
+                guard cloud.deletedAt == nil else { continue }
                 let ledgerKey = SupabaseSyncLedger.key(for: cloud.id)
                 if let baseline = syncLedger.outsiders[ledgerKey] {
                     if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
@@ -471,7 +491,7 @@ final class SupabaseCloud: ObservableObject {
                             expectedUpdatedAt: baseline,
                             token: accessToken
                         )
-                        try await cleanupCloudRelationships(forOutsiderID: cloud.id, token: accessToken)
+                        try await cleanupCloudRelationships(forOutsiderIDs: [cloud.id], token: accessToken)
                         pushed += 1
                     }
                 } else {
@@ -629,10 +649,26 @@ final class SupabaseCloud: ObservableObject {
         let localSocials = try context.fetch(FetchDescriptor<SocialSession>())
         let localStudents = try context.fetch(FetchDescriptor<Student>())
         let localOutsiders = try context.fetch(FetchDescriptor<Outsider>())
-        let cloudSocials = try await fetchSocialRecords(token: token)
-        let cloudStudentLinks = try await fetchSocialSessionStudentLinks(token: token)
-        let cloudHiddenPeople = try await fetchHiddenPersonRecords(token: token)
-        let cloudAttendances = try await fetchAttendanceRecords(token: token)
+        async let socialsRequest = fetchSocialRecords(token: token)
+        async let linksRequest = fetchSocialSessionStudentLinks(token: token)
+        async let hiddenPeopleRequest = fetchHiddenPersonRecords(token: token)
+        async let attendancesRequest = fetchAttendanceRecords(token: token)
+        let (cloudSocials, cloudStudentLinks, cloudHiddenPeople, cloudAttendances) = try await (
+            socialsRequest, linksRequest, hiddenPeopleRequest, attendancesRequest
+        )
+        let deletedSocialIDs = Set(cloudSocials.filter { $0.deletedAt != nil }.map(\.id))
+        try await deleteCloudRows(
+            table: "social_session_students", column: "session_id",
+            ids: deletedSocialIDs.intersection(cloudStudentLinks.map(\.sessionID)), token: token
+        )
+        try await deleteCloudRows(
+            table: "social_hidden_people", column: "social_session_id",
+            ids: deletedSocialIDs.intersection(cloudHiddenPeople.map(\.socialSessionID)), token: token
+        )
+        try await deleteCloudRows(
+            table: "social_attendance", column: "social_session_id",
+            ids: deletedSocialIDs.intersection(cloudAttendances.map(\.socialSessionID)), token: token
+        )
 
         let studentsByID = localStudents.reduce(into: [UUID: Student]()) { $0[$1.syncID] = $1 }
         let outsidersByID = localOutsiders.reduce(into: [UUID: Outsider]()) { $0[$1.syncID] = $1 }
@@ -652,8 +688,14 @@ final class SupabaseCloud: ObservableObject {
             guard let cloud = remainingCloud.removeValue(forKey: social.syncID) else {
                 if social.lastSyncedAt == nil || syncLedger.socialSessions[ledgerKey] == nil {
                     var created = try await insertCloudSocialSession(social, token: token)
-                    try await replaceCloudRelationships(for: social, token: token)
-                    created = try await fetchCurrentSocial(id: social.syncID, token: token)
+                    if !social.studentList.isEmpty || !social.hiddenPersonList.isEmpty || !social.attendanceList.isEmpty {
+                        try await replaceCloudRelationships(
+                            for: social, studentsChanged: !social.studentList.isEmpty,
+                            hiddenPeopleChanged: !social.hiddenPersonList.isEmpty,
+                            attendanceChanged: !social.attendanceList.isEmpty, token: token
+                        )
+                        created = try await fetchCurrentSocial(id: social.syncID, token: token)
+                    }
                     social.updatedAt = created.updatedAt
                     social.lastSyncedAt = created.updatedAt
                     stampSocialChildren(social, parentTimestamp: created.updatedAt)
@@ -669,7 +711,6 @@ final class SupabaseCloud: ObservableObject {
             }
 
             if cloud.deletedAt != nil {
-                try await cleanupCloudRelationships(forSocialID: cloud.id, token: token)
                 SyncTimestamping.isApplyingRemoteChange = true
                 context.delete(social)
                 SyncTimestamping.isApplyingRemoteChange = false
@@ -688,11 +729,10 @@ final class SupabaseCloud: ObservableObject {
             let cloudHiddenKeys = Set(cloudHidden.compactMap(\.participantKey))
             let localAttendanceValues = Set(social.attendanceList.compactMap(\.syncValue))
             let cloudAttendanceValues = Set(cloudAttendance.compactMap(\.syncValue))
-            let relationshipsMatch = Set(social.studentList.map(\.syncID)) == cloudStudentIDs &&
-                localHiddenKeys == cloudHiddenKeys &&
-                social.hiddenPersonList.count == cloudHidden.count &&
-                localAttendanceValues == cloudAttendanceValues &&
-                social.attendanceList.count == cloudAttendance.count
+            let studentsChanged = Set(social.studentList.map(\.syncID)) != cloudStudentIDs
+            let hiddenPeopleChanged = localHiddenKeys != cloudHiddenKeys || social.hiddenPersonList.count != cloudHidden.count
+            let attendanceChanged = localAttendanceValues != cloudAttendanceValues || social.attendanceList.count != cloudAttendance.count
+            let relationshipsMatch = !studentsChanged && !hiddenPeopleChanged && !attendanceChanged
             let payloadsMatch = cloud.matchesPayload(of: social) && relationshipsMatch
 
             if !localChanged && !cloudChanged &&
@@ -711,13 +751,18 @@ final class SupabaseCloud: ObservableObject {
                     nextLedger[ledgerKey] = baseline
                 }
             } else if localChanged {
-                _ = try await updateCloudSocialSession(
+                var updated = try await updateCloudSocialSession(
                     social,
                     expectedUpdatedAt: baseline,
                     token: token
                 )
-                try await replaceCloudRelationships(for: social, token: token)
-                let updated = try await fetchCurrentSocial(id: social.syncID, token: token)
+                if !relationshipsMatch {
+                    try await replaceCloudRelationships(
+                        for: social, studentsChanged: studentsChanged, hiddenPeopleChanged: hiddenPeopleChanged,
+                        attendanceChanged: attendanceChanged, token: token
+                    )
+                    updated = try await fetchCurrentSocial(id: social.syncID, token: token)
+                }
                 social.updatedAt = updated.updatedAt
                 social.lastSyncedAt = updated.updatedAt
                 stampSocialChildren(social, parentTimestamp: updated.updatedAt)
@@ -745,10 +790,7 @@ final class SupabaseCloud: ObservableObject {
         }
 
         for cloud in remainingCloud.values {
-            guard cloud.deletedAt == nil else {
-                try await cleanupCloudRelationships(forSocialID: cloud.id, token: token)
-                continue
-            }
+            guard cloud.deletedAt == nil else { continue }
             let ledgerKey = SupabaseSyncLedger.key(for: cloud.id)
             if let baseline = syncLedger.socialSessions[ledgerKey] {
                 if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
@@ -856,34 +898,23 @@ final class SupabaseCloud: ObservableObject {
     }
 
     private func fetchStudentRecords(token: String) async throws -> [CloudStudentRecord] {
-        var components = URLComponents(
-            url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/students"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [
-            URLQueryItem(name: "select", value: "id,name,gender,contact_preference,contact_detail,sessions_demand,is_hidden,created_at,updated_at,deleted_at"),
-            URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")
-        ]
-        let data = try await send(url: components.url!, method: "GET", body: nil, token: token)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .supabaseTimestamp
-        return try decoder.decode([CloudStudentRecord].self, from: data)
+        try await fetchCloudRecords(
+            table: "students",
+            select: "id,name,gender,contact_preference,contact_detail,sessions_demand,is_hidden,created_at,updated_at,deleted_at",
+            order: "id.asc",
+            filters: [URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")],
+            token: token
+        )
     }
 
     private func fetchSessionRecords(token: String) async throws -> [CloudSessionRecord] {
-        var components = URLComponents(
-            url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/coaching_sessions"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [
-            URLQueryItem(name: "select", value: "id,week_start,day_of_week,start_time,end_time,venue,status,court_number,session_fee,session_description,created_at,updated_at,deleted_at"),
-            URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)"),
-            URLQueryItem(name: "order", value: "start_time.asc")
-        ]
-        let data = try await send(url: components.url!, method: "GET", body: nil, token: token)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .supabaseTimestamp
-        return try decoder.decode([CloudSessionRecord].self, from: data)
+        try await fetchCloudRecords(
+            table: "coaching_sessions",
+            select: "id,week_start,day_of_week,start_time,end_time,venue,status,court_number,session_fee,session_description,created_at,updated_at,deleted_at",
+            order: "id.asc",
+            filters: [URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")],
+            token: token
+        )
     }
 
     private func updateCloudSession(
@@ -1182,108 +1213,116 @@ final class SupabaseCloud: ObservableObject {
     }()
 
     private func fetchCourtRecords(token: String) async throws -> [CloudCourtRecord] {
-        var components = URLComponents(
-            url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/court_bookings"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [
-            URLQueryItem(name: "select", value: "id,week_start,day_of_week,start_time,end_time,venue,court_number,created_at,updated_at,deleted_at"),
-            URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")
-        ]
-        let data = try await send(url: components.url!, method: "GET", body: nil, token: token)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .supabaseTimestamp
-        return try decoder.decode([CloudCourtRecord].self, from: data)
+        try await fetchCloudRecords(
+            table: "court_bookings",
+            select: "id,week_start,day_of_week,start_time,end_time,venue,court_number,created_at,updated_at,deleted_at",
+            order: "id.asc",
+            filters: [URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")],
+            token: token
+        )
     }
 
     private func fetchSocialRecords(token: String) async throws -> [CloudSocialRecord] {
-        var components = URLComponents(
-            url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/social_sessions"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [
-            URLQueryItem(name: "select", value: "id,title,week_start,day_of_week,start_time,end_time,venue,status,are_courts_booked,court_numbers,shuttlecock_cost,court_cost,created_at,updated_at,deleted_at"),
-            URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")
-        ]
-        let data = try await send(url: components.url!, method: "GET", body: nil, token: token)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .supabaseTimestamp
-        return try decoder.decode([CloudSocialRecord].self, from: data)
+        try await fetchCloudRecords(
+            table: "social_sessions",
+            select: "id,title,week_start,day_of_week,start_time,end_time,venue,status,are_courts_booked,court_numbers,shuttlecock_cost,court_cost,created_at,updated_at,deleted_at",
+            order: "id.asc",
+            filters: [URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")],
+            token: token
+        )
     }
 
     private func fetchOutsiderRecords(token: String) async throws -> [CloudOutsiderRecord] {
-        var components = URLComponents(
-            url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/outsiders"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [
-            URLQueryItem(name: "select", value: "id,name,gender,contact_preference,contact_detail,created_at,updated_at,deleted_at"),
-            URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")
-        ]
-        let data = try await send(url: components.url!, method: "GET", body: nil, token: token)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .supabaseTimestamp
-        return try decoder.decode([CloudOutsiderRecord].self, from: data)
+        try await fetchCloudRecords(
+            table: "outsiders",
+            select: "id,name,gender,contact_preference,contact_detail,created_at,updated_at,deleted_at",
+            order: "id.asc",
+            filters: [URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")],
+            token: token
+        )
     }
 
     private func fetchAttendanceRecords(token: String) async throws -> [CloudAttendanceRecord] {
-        let data = try await fetchRelationData(
+        try await fetchCloudRecords(
             table: "social_attendance",
             select: "id,social_session_id,student_id,outsider_id,status,payment_status,created_at,updated_at",
+            order: "id.asc",
             token: token
         )
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .supabaseTimestamp
-        return try decoder.decode([CloudAttendanceRecord].self, from: data)
     }
 
     private func fetchHiddenWeekRecords(token: String) async throws -> [CloudHiddenWeekRecord] {
-        let data = try await fetchRelationData(
+        try await fetchCloudRecords(
             table: "student_hidden_weeks",
             select: "student_id,week_start,created_at",
+            order: "student_id.asc,week_start.asc",
             token: token
         )
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .supabaseTimestamp
-        return try decoder.decode([CloudHiddenWeekRecord].self, from: data)
     }
 
     private func fetchCoachingSessionStudentLinks(token: String) async throws -> [CloudSessionStudentLink] {
-        let data = try await fetchRelationData(
+        try await fetchCloudRecords(
             table: "coaching_session_students",
             select: "session_id,student_id",
+            order: "session_id.asc,student_id.asc",
             token: token
         )
-        return try JSONDecoder().decode([CloudSessionStudentLink].self, from: data)
     }
 
     private func fetchSocialSessionStudentLinks(token: String) async throws -> [CloudSessionStudentLink] {
-        let data = try await fetchRelationData(
+        try await fetchCloudRecords(
             table: "social_session_students",
             select: "session_id,student_id",
+            order: "session_id.asc,student_id.asc",
             token: token
         )
-        return try JSONDecoder().decode([CloudSessionStudentLink].self, from: data)
     }
 
     private func fetchHiddenPersonRecords(token: String) async throws -> [CloudHiddenPersonRecord] {
-        let data = try await fetchRelationData(
+        try await fetchCloudRecords(
             table: "social_hidden_people",
             select: "id,social_session_id,student_id,outsider_id,created_at",
+            order: "id.asc",
             token: token
         )
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .supabaseTimestamp
-        return try decoder.decode([CloudHiddenPersonRecord].self, from: data)
     }
 
-    private func fetchRelationData(table: String, select: String, token: String) async throws -> Data {
-        var components = URLComponents(
-            url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/\(table)"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [URLQueryItem(name: "select", value: select)]
-        return try await send(url: components.url!, method: "GET", body: nil, token: token)
+    private func fetchCloudRecords<Record: Decodable>(
+        table: String, select: String, order: String,
+        filters: [URLQueryItem] = [], token: String
+    ) async throws -> [Record] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .supabaseTimestamp
+        var records: [Record] = []
+        var expectedTotal: Int?
+        while true {
+            var components = URLComponents(
+                url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/\(table)"),
+                resolvingAgainstBaseURL: false
+            )!
+            components.queryItems = filters + [
+                URLQueryItem(name: "select", value: select),
+                URLQueryItem(name: "order", value: order),
+                URLQueryItem(name: "offset", value: String(records.count)),
+                URLQueryItem(name: "limit", value: "500")
+            ]
+            let (data, response) = try await sendResponse(
+                url: components.url!, method: "GET", body: nil, token: token, prefer: "count=exact"
+            )
+            let page = try decoder.decode([Record].self, from: data)
+            // Never reconcile deletions against a server-truncated table.
+            guard let range = response.value(forHTTPHeaderField: "Content-Range"),
+                  let totalText = range.split(separator: "/").last,
+                  let total = Int(totalText), total >= 0,
+                  expectedTotal == nil || expectedTotal == total,
+                  records.count + page.count <= total else {
+                throw SupabaseCloudError.invalidResponse
+            }
+            expectedTotal = total
+            records.append(contentsOf: page)
+            if records.count == total { return records }
+            guard !page.isEmpty else { throw SupabaseCloudError.invalidResponse }
+        }
     }
 
     private func replaceCloudHiddenWeeks(
@@ -1439,52 +1478,71 @@ final class SupabaseCloud: ObservableObject {
         return social
     }
 
-    private func replaceCloudRelationships(for social: SocialSession, token: String) async throws {
-        try await cleanupCloudRelationships(forSocialID: social.syncID, token: token)
-
-        let studentRows = social.studentList.map { student in
-            [
-                "session_id": social.syncID.uuidString,
-                "student_id": student.syncID.uuidString
-            ]
-        }
-        try await insertCloudRows(table: "social_session_students", rows: studentRows, token: token)
-
-        let hiddenRows = social.hiddenPersonList.compactMap { person -> [String: Any]? in
-            var row: [String: Any] = [
-                "id": person.syncID.uuidString,
-                "social_session_id": social.syncID.uuidString,
-                "created_at": Self.isoFormatter.string(from: person.createdAt)
-            ]
-            if let student = person.student {
-                row["student_id"] = student.syncID.uuidString
-            } else if let outsider = person.outsider {
-                row["outsider_id"] = outsider.syncID.uuidString
-            } else {
-                return nil
+    private func replaceCloudRelationships(
+        for social: SocialSession,
+        studentsChanged: Bool,
+        hiddenPeopleChanged: Bool,
+        attendanceChanged: Bool,
+        token: String
+    ) async throws {
+        if studentsChanged {
+            try await deleteCloudRows(
+                table: "social_session_students", column: "session_id", ids: [social.syncID], token: token
+            )
+            let studentRows = social.studentList.map { student in
+                [
+                    "session_id": social.syncID.uuidString,
+                    "student_id": student.syncID.uuidString
+                ]
             }
-            return row
+            try await insertCloudRows(table: "social_session_students", rows: studentRows, token: token)
         }
-        try await insertCloudRows(table: "social_hidden_people", rows: hiddenRows, token: token)
 
-        let attendanceRows = social.attendanceList.compactMap { attendance -> [String: Any]? in
-            var row: [String: Any] = [
-                "id": attendance.syncID.uuidString,
-                "social_session_id": social.syncID.uuidString,
-                "status": attendance.status,
-                "payment_status": attendance.paymentStatus,
-                "created_at": Self.isoFormatter.string(from: attendance.createdAt)
-            ]
-            if let student = attendance.student {
-                row["student_id"] = student.syncID.uuidString
-            } else if let outsider = attendance.outsider {
-                row["outsider_id"] = outsider.syncID.uuidString
-            } else {
-                return nil
+        if hiddenPeopleChanged {
+            try await deleteCloudRows(
+                table: "social_hidden_people", column: "social_session_id", ids: [social.syncID], token: token
+            )
+            let hiddenRows = social.hiddenPersonList.compactMap { person -> [String: Any]? in
+                var row: [String: Any] = [
+                    "id": person.syncID.uuidString,
+                    "social_session_id": social.syncID.uuidString,
+                    "created_at": Self.isoFormatter.string(from: person.createdAt)
+                ]
+                if let student = person.student {
+                    row["student_id"] = student.syncID.uuidString
+                } else if let outsider = person.outsider {
+                    row["outsider_id"] = outsider.syncID.uuidString
+                } else {
+                    return nil
+                }
+                return row
             }
-            return row
+            try await insertCloudRows(table: "social_hidden_people", rows: hiddenRows, token: token)
         }
-        try await insertCloudRows(table: "social_attendance", rows: attendanceRows, token: token)
+
+        if attendanceChanged {
+            try await deleteCloudRows(
+                table: "social_attendance", column: "social_session_id", ids: [social.syncID], token: token
+            )
+            let attendanceRows = social.attendanceList.compactMap { attendance -> [String: Any]? in
+                var row: [String: Any] = [
+                    "id": attendance.syncID.uuidString,
+                    "social_session_id": social.syncID.uuidString,
+                    "status": attendance.status,
+                    "payment_status": attendance.paymentStatus,
+                    "created_at": Self.isoFormatter.string(from: attendance.createdAt)
+                ]
+                if let student = attendance.student {
+                    row["student_id"] = student.syncID.uuidString
+                } else if let outsider = attendance.outsider {
+                    row["outsider_id"] = outsider.syncID.uuidString
+                } else {
+                    return nil
+                }
+                return row
+            }
+            try await insertCloudRows(table: "social_attendance", rows: attendanceRows, token: token)
+        }
     }
 
     private func stampSocialChildren(_ social: SocialSession, parentTimestamp: Date) {
@@ -1666,22 +1724,18 @@ final class SupabaseCloud: ObservableObject {
         return outsider
     }
 
-    private func cleanupCloudRelationships(forStudentID id: UUID, token: String) async throws {
+    private func cleanupCloudRelationships(forStudentIDs ids: Set<UUID>, token: String) async throws {
         for table in ["coaching_session_students", "social_session_students", "student_hidden_weeks", "social_hidden_people", "social_attendance"] {
             try await deleteCloudRows(
-                table: table,
-                filters: [URLQueryItem(name: "student_id", value: "eq.\(id.uuidString)")],
-                token: token
+                table: table, column: "student_id", ids: ids, token: token
             )
         }
     }
 
-    private func cleanupCloudRelationships(forOutsiderID id: UUID, token: String) async throws {
+    private func cleanupCloudRelationships(forOutsiderIDs ids: Set<UUID>, token: String) async throws {
         for table in ["social_hidden_people", "social_attendance"] {
             try await deleteCloudRows(
-                table: table,
-                filters: [URLQueryItem(name: "outsider_id", value: "eq.\(id.uuidString)")],
-                token: token
+                table: table, column: "outsider_id", ids: ids, token: token
             )
         }
     }
@@ -1745,6 +1799,17 @@ final class SupabaseCloud: ObservableObject {
             id: id,
             token: token
         )
+    }
+
+    private func deleteCloudRows(table: String, column: String, ids: Set<UUID>, token: String) async throws {
+        // Bound URL length while cleaning old tombstones in batches instead of per record.
+        let sortedIDs = ids.map(\.uuidString).sorted()
+        for start in stride(from: 0, to: sortedIDs.count, by: 100) {
+            let batch = sortedIDs[start..<min(start + 100, sortedIDs.count)].joined(separator: ",")
+            try await deleteCloudRows(
+                table: table, filters: [URLQueryItem(name: column, value: "in.(\(batch))")], token: token
+            )
+        }
     }
 
     private func deleteCloudRows(
@@ -1812,6 +1877,19 @@ final class SupabaseCloud: ObservableObject {
         token: String? = nil,
         prefer: String? = nil
     ) async throws -> Data {
+        try await sendResponse(
+            url: url, method: method, body: body, authenticated: authenticated, token: token, prefer: prefer
+        ).0
+    }
+
+    private func sendResponse(
+        url: URL,
+        method: String,
+        body: Data?,
+        authenticated: Bool = true,
+        token: String? = nil,
+        prefer: String? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue(SupabaseConfiguration.publishableKey, forHTTPHeaderField: "apikey")
@@ -1826,7 +1904,8 @@ final class SupabaseCloud: ObservableObject {
         }
         request.httpBody = body
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        requestCount += 1
+        let (data, response) = try await urlSession.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw SupabaseCloudError.invalidResponse
         }
@@ -1834,7 +1913,7 @@ final class SupabaseCloud: ObservableObject {
             let message = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
             throw SupabaseCloudError.requestFailed(message)
         }
-        return data
+        return (data, httpResponse)
     }
 }
 
@@ -1881,17 +1960,17 @@ private struct SupabaseSyncLedger: Codable, Equatable {
     var courtBookings: [String: Date] = [:]
     var socialSessions: [String: Date] = [:]
 
-    static func load() -> Self {
-        guard let data = UserDefaults.standard.data(forKey: defaultsKey),
+    static func load(from defaults: UserDefaults) -> Self {
+        guard let data = defaults.data(forKey: defaultsKey),
               let ledger = try? JSONDecoder().decode(Self.self, from: data) else {
             return Self()
         }
         return ledger
     }
 
-    func save() {
+    func save(to defaults: UserDefaults) {
         guard let data = try? JSONEncoder().encode(self) else { return }
-        UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        defaults.set(data, forKey: Self.defaultsKey)
     }
 
     static func key(for id: UUID) -> String {
@@ -2295,23 +2374,25 @@ private func sameSyncWeek(_ first: Date?, _ second: Date?) -> Bool {
 }
 
 private extension JSONDecoder.DateDecodingStrategy {
-    static let supabaseTimestamp: Self = .custom { decoder in
-        let value = try decoder.singleValueContainer().decode(String.self)
+    static var supabaseTimestamp: Self {
+        // A decoder reuses its formatters for every date in the response.
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: value) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        if let date = formatter.date(from: value) { return date }
+        let secondsFormatter = ISO8601DateFormatter()
+        secondsFormatter.formatOptions = [.withInternetDateTime]
         let dateOnlyFormatter = DateFormatter()
         dateOnlyFormatter.calendar = Calendar(identifier: .gregorian)
         dateOnlyFormatter.locale = Locale(identifier: "en_US_POSIX")
         dateOnlyFormatter.timeZone = TimeZone(secondsFromGMT: 0)
         dateOnlyFormatter.dateFormat = "yyyy-MM-dd"
-        if let date = dateOnlyFormatter.date(from: value) { return date }
-        throw DecodingError.dataCorruptedError(
-            in: try decoder.singleValueContainer(),
-            debugDescription: "Invalid Supabase timestamp"
-        )
+        return .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            let value = try container.decode(String.self)
+            if let date = formatter.date(from: value) { return date }
+            if let date = secondsFormatter.date(from: value) { return date }
+            if let date = dateOnlyFormatter.date(from: value) { return date }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid Supabase timestamp")
+        }
     }
 }
 

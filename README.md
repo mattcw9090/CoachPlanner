@@ -38,6 +38,17 @@ The local store paths and SwiftData schema remain unchanged from the earlier bui
 
 For routine use, sync before starting work on a device and again after finishing changes. Resolve any reported conflict before editing the same record on another device.
 
+Sync overlaps independent downloads within each stage, batches cleanup for deleted records, and only replaces relationships that changed. Downloads are paginated so the server's row limit cannot silently truncate the cache. The `SupabaseSync` log category records each run's duration and request count without logging record contents or credentials.
+
+Run the isolated SwiftData/Supabase regression checks on a Mac with Xcode installed:
+
+```sh
+bash Tests/run-supabase-sync-tests.sh
+python3 -m unittest discover -s Backend/tests -v
+```
+
+The sync tests intercept every network request and use an in-memory store and isolated preferences. They cover uploads, downloads, deletions, conflicts, relationship edits, pagination failures, and request counts without using the installed app's data or Keychain session.
+
 Local scheduled planning can read a privacy-limited, read-only Supabase snapshot without opening the app through `Tools/coachplanner-cloud snapshot --week next`. One-time Keychain-backed setup is documented in `Backend/README.md`.
 
 ## Reusable weekly planning skill
