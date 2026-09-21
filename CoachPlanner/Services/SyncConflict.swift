@@ -21,3 +21,8 @@ struct SyncConflictDifference: Identifiable, Equatable {
     let localValue: String
     let cloudValue: String
 }
+
+enum SyncConflictChoice: String {
+    case device
+    case cloud
+}

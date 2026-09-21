@@ -5,6 +5,7 @@ private final class SyncMockServer: @unchecked Sendable {
     var tables: [String: [[String: Any]]] = [:]
     var requests: [(method: String, table: String)] = []
     var requestURLs: [URL] = []
+    var resolutionRequests: [[String: Any]] = []
     var afterResponse: (@MainActor @Sendable (URLRequest) -> Void)?
     var pageLimit = 500
     var failLaterPage = false
@@ -101,6 +102,9 @@ private final class SyncMockServer: @unchecked Sendable {
                     }
                 }
                 let body = try JSONSerialization.jsonObject(with: data)
+                if table == "resolve_coachplanner_conflict" {
+                    return try resolveConflict(body as! [String: Any])
+                }
                 if method == "POST" {
                     result = (body as? [[String: Any]]) ?? [body as! [String: Any]]
                     for index in result.indices {
@@ -127,6 +131,105 @@ private final class SyncMockServer: @unchecked Sendable {
             }
             return (200, try JSONSerialization.data(withJSONObject: result), headers)
         }
+    }
+
+    private func selected(_ row: [String: Any], fields: String) -> [String: Any] {
+        Dictionary(uniqueKeysWithValues: fields.split(separator: ",").map {
+            let key = String($0); return (key, row[key] ?? NSNull())
+        })
+    }
+
+    private func relationshipTables(for table: String) -> [(String, String, String)] {
+        switch table {
+        case "students": return [("student_hidden_weeks", "student_id", "student_id,week_start,created_at")]
+        case "coaching_sessions": return [("coaching_session_students", "session_id", "session_id,student_id")]
+        case "social_sessions": return [
+            ("social_session_students", "session_id", "session_id,student_id"),
+            ("social_hidden_people", "social_session_id", "id,social_session_id,student_id,outsider_id,created_at"),
+            ("social_attendance", "social_session_id", "id,social_session_id,student_id,outsider_id,status,payment_status,created_at,updated_at")
+        ]
+        default: return []
+        }
+    }
+
+    private func conflictSnapshot(table: String, id: String, incoming: Set<String> = []) -> [String: Any] {
+        let fields: String
+        switch table {
+        case "students": fields = "id,name,gender,contact_preference,contact_detail,sessions_demand,is_hidden,created_at,updated_at,deleted_at"
+        case "outsiders": fields = "id,name,gender,contact_preference,contact_detail,created_at,updated_at,deleted_at"
+        case "coaching_sessions": fields = "id,week_start,day_of_week,start_time,end_time,venue,status,court_number,session_fee,session_description,created_at,updated_at,deleted_at"
+        case "court_bookings": fields = "id,week_start,day_of_week,start_time,end_time,venue,court_number,created_at,updated_at,deleted_at"
+        case "social_sessions": fields = "id,title,week_start,day_of_week,start_time,end_time,venue,status,are_courts_booked,court_numbers,shuttlecock_cost,court_cost,created_at,updated_at,deleted_at"
+        default: preconditionFailure("Unexpected resolution table")
+        }
+        let parent = tables[table]?.first { ($0["id"] as? String)?.lowercased() == id.lowercased() }
+        var children: [String: Any] = [:]
+        for (child, column, selection) in relationshipTables(for: table) {
+            children[child] = (tables[child] ?? []).filter {
+                ($0[column] as? String)?.lowercased() == id.lowercased()
+            }.map { selected($0, fields: selection) }
+        }
+        if table == "students" || table == "outsiders" {
+            let column = table == "students" ? "student_id" : "outsider_id"
+            let candidates = [
+                ("coaching_session_students", "session_id,student_id"),
+                ("social_session_students", "session_id,student_id"),
+                ("social_hidden_people", "id,social_session_id,student_id,outsider_id,created_at"),
+                ("social_attendance", "id,social_session_id,student_id,outsider_id,status,payment_status,created_at,updated_at")
+            ]
+            for (child, selection) in candidates where incoming.contains(child) {
+                children[child] = (tables[child] ?? []).filter {
+                    ($0[column] as? String)?.lowercased() == id.lowercased()
+                }.map { selected($0, fields: selection) }
+            }
+        }
+        return ["record": parent.map { selected($0, fields: fields) } as Any? ?? NSNull(), "relationships": children]
+    }
+
+    private func canonical(_ value: Any) throws -> String {
+        if let rows = value as? [Any] { return "[" + (try rows.map(canonical)).sorted().joined(separator: ",") + "]" }
+        if let object = value as? [String: Any] {
+            return "{" + (try object.keys.sorted().map { key in key + ":" + (try canonical(object[key]!)) }).joined(separator: ",") + "}"
+        }
+        return String(data: try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys]), encoding: .utf8)!
+    }
+
+    private func resolveConflict(_ body: [String: Any]) throws -> (Int, Data, [String: String]) {
+        resolutionRequests.append(body)
+        let table = body["p_table"] as! String, id = body["p_record_id"] as! String
+        let expected = body["p_expected"] as! [String: Any]
+        let expectedChildren = expected["relationships"] as! [String: Any]
+        let incoming = Set(expectedChildren.keys).subtracting(relationshipTables(for: table).map { $0.0 })
+        let current = conflictSnapshot(table: table, id: id, incoming: incoming)
+        guard try canonical(body["p_expected"]!) == canonical(current) else {
+            return (409, Data(#"{"code":"40001","message":"Conflict changed; review the latest versions."}"#.utf8), [:])
+        }
+        if body["p_choice"] as? String == "device" {
+            guard let index = tables[table]?.firstIndex(where: { ($0["id"] as? String)?.lowercased() == id.lowercased() }) else {
+                return (409, Data("{}".utf8), [:])
+            }
+            if let replacement = body["p_replacement"] as? [String: Any] {
+                tables[table]![index].merge(replacement["record"] as! [String: Any]) { _, new in new }
+                tables[table]![index]["deleted_at"] = NSNull()
+                let children = replacement["relationships"] as! [String: Any]
+                for (child, column, _) in relationshipTables(for: table) {
+                    tables[child, default: []].removeAll { ($0[column] as? String)?.lowercased() == id.lowercased() }
+                    let rows = children[child] as? [[String: Any]] ?? []
+                    tables[child, default: []].append(contentsOf: rows.map { row in
+                        var saved = row
+                        if child == "social_attendance" { saved["updated_at"] = timestamp() }
+                        return saved
+                    })
+                }
+            } else {
+                tables[table]![index]["deleted_at"] = timestamp()
+                for (child, column, _) in relationshipTables(for: table) {
+                    tables[child, default: []].removeAll { ($0[column] as? String)?.lowercased() == id.lowercased() }
+                }
+            }
+            tables[table]![index]["updated_at"] = timestamp()
+        }
+        return (200, try JSONSerialization.data(withJSONObject: conflictSnapshot(table: table, id: id, incoming: incoming)), [:])
     }
 
     private func touchParent(_ table: String, row: [String: Any]) {
@@ -366,6 +469,8 @@ private extension SupabaseCloud {
         check(dates.count == 3 && dates[0] == dates[1], "date-only, seconds and fractional timestamps decode")
         try await runIncrementalSyncTests(session: session)
         try await runConflictReportTests(session: session)
+        try await runConflictResolutionTests(session: session)
+        try await runPersonRestorationTests(session: session)
         print("All Supabase sync regression checks passed. No live cloud or app data used.")
     }
 
@@ -942,5 +1047,355 @@ private extension SupabaseCloud {
         cloud.clearConflictReports()
         check(cloud.conflicts.isEmpty && cloud.conflictDetailsLastCheckedAt == nil,
               "sign-out report cleanup clears comparison data without touching the test Keychain")
+    }
+
+    static func runConflictResolutionTests(session: URLSession) async throws {
+        func check(_ condition: @autoclosure () -> Bool, _ message: String) {
+            precondition(condition(), message)
+            print("PASS: \(message)")
+        }
+        let server = SyncMockProtocol.server
+        for choice in [SyncConflictChoice.device, .cloud] {
+            let useDevice = choice == .device
+            let label = useDevice ? "device" : "cloud"
+            let suite = "CoachPlanner.ConflictResolutionTests.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
+                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+            let context = ModelContext(try ModelContainer(for: schema, configurations: [configuration]))
+            context.autosaveEnabled = false
+            let cloud = SupabaseCloud(urlSession: session, defaults: defaults, restoreSession: false)
+            cloud.accessToken = "e30.eyJleHAiOjQxMDI0NDQ4MDB9.fixture"
+            server.lock.withLock {
+                server.tables = ["workspaces": [["id": SupabaseConfiguration.workspaceID.uuidString]]]
+                server.resolutionRequests = []; server.failTable = nil; server.afterResponse = nil
+                server.failLaterPage = false; server.pageLimit = 500; server.hiddenReadTables = []
+            }
+            let week = dateOnlyFormatter.date(from: "2026-09-14")!
+            let start = week.addingTimeInterval(10 * 3600), end = start.addingTimeInterval(3600)
+            let alice = Student(name: "Resolution Alice", gender: "", contactPreference: .sms, contactDetail: "")
+            let bob = Student(name: "Resolution Bob", gender: "", contactPreference: .sms, contactDetail: "")
+            let casey = Outsider(name: "Resolution Casey", gender: "", contactPreference: .sms, contactDetail: "")
+            let coaching = CoachingSession(weekStart: week, dayOfWeek: .monday, startTime: start, endTime: end,
+                                           venue: .apex, sessionFee: 50, students: [alice])
+            let court = CourtBooking(weekStart: week, dayOfWeek: .tuesday, startTime: start, endTime: end,
+                                     venue: .apex, courtNumber: "1")
+            let social = SocialSession(title: "Resolution Social", weekStart: week, dayOfWeek: .friday,
+                                       startTime: start, endTime: end, venue: .apex, students: [alice],
+                                       hiddenPeople: [SocialHiddenPerson(student: bob)],
+                                       attendances: [SocialAttendance(student: alice, status: .pending)])
+            context.insert(alice); context.insert(bob); context.insert(casey)
+            context.insert(coaching); context.insert(court); context.insert(social)
+            try context.save()
+            await cloud.syncAll(in: context)
+            check(cloud.lastError == nil, "\(label) resolution fixture uploads without live data")
+            alice.name = "Alice device"; alice.updatedAt = alice.lastSyncedAt!.addingTimeInterval(30)
+            alice.hiddenWeeks = [StudentHiddenWeek(student: alice, weekStart: week)]
+            casey.name = "Casey device"; casey.updatedAt = casey.lastSyncedAt!.addingTimeInterval(30)
+            court.courtNumber = "2"; court.updatedAt = court.lastSyncedAt!.addingTimeInterval(30)
+            coaching.sessionFee = 75; coaching.studentList = [bob]
+            coaching.updatedAt = coaching.lastSyncedAt!.addingTimeInterval(30)
+            social.title = "Social device"; social.studentList = [bob]
+            for child in social.hiddenPersonList { context.delete(child) }
+            for child in social.attendanceList { context.delete(child) }
+            social.hiddenPersonList = [SocialHiddenPerson(student: alice)]
+            social.attendanceList = [SocialAttendance(student: nil, outsider: casey, status: .confirmed, paymentStatus: .paid)]
+            social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30)
+            try context.save()
+            server.edit("students", id: alice.syncID, fields: ["name": "Alice cloud"])
+            server.edit("outsiders", id: casey.syncID, fields: ["name": "Casey cloud"])
+            server.edit("court_bookings", id: court.syncID, fields: ["court_number": "3"])
+            server.edit("coaching_sessions", id: coaching.syncID, fields: ["session_fee": 80])
+            server.edit("social_sessions", id: social.syncID, fields: ["title": "Social cloud"])
+            await cloud.syncAll(in: context)
+            check(cloud.lastError == nil && cloud.conflicts.count == 5, "\(label) resolution begins with five independently reviewed conflicts")
+            let reports = Dictionary(uniqueKeysWithValues: cloud.conflicts.map { ($0.recordID, $0) })
+            let beforeCloudChoice = try JSONSerialization.data(withJSONObject: server.lock.withLock { server.tables }, options: .sortedKeys)
+            server.clearRequests()
+            for (index, id) in [alice.syncID, casey.syncID, court.syncID, coaching.syncID, social.syncID].enumerated() {
+                let message = try await cloud.resolveConflict(reports[id]!, choice: choice, in: context)
+                check(!message.isEmpty && !cloud.conflicts.contains { $0.recordID == id } && cloud.conflicts.count == 4 - index,
+                      "\(label) choice resolves one reviewed \(reports[id]!.entityName) without clearing other reports")
+            }
+            check(alice.name == (useDevice ? "Alice device" : "Alice cloud") &&
+                  casey.name == (useDevice ? "Casey device" : "Casey cloud") && court.courtNumber == (useDevice ? "2" : "3") &&
+                  coaching.sessionFee == (useDevice ? 75 : 80) && social.title == (useDevice ? "Social device" : "Social cloud"),
+                  "\(label) choice applies the selected scalar values for every parent type")
+            check((alice.hiddenWeeks ?? []).count == (useDevice ? 1 : 0) &&
+                  Set(coaching.studentList.map(\.syncID)) == [useDevice ? bob.syncID : alice.syncID],
+                  "\(label) choice preserves the selected hidden weeks and coaching participants")
+            check(Set(social.studentList.map(\.syncID)) == [useDevice ? bob.syncID : alice.syncID] &&
+                  social.hiddenPersonList.count == 1 && social.hiddenPersonList[0].student?.syncID == (useDevice ? alice.syncID : bob.syncID) &&
+                  social.attendanceList.count == 1 && social.attendanceList[0].status == (useDevice ? "Confirmed" : "Pending") &&
+                  social.attendanceList[0].paymentStatus == (useDevice ? "Paid" : "Unpaid") &&
+                  (useDevice ? social.attendanceList[0].outsider?.syncID == casey.syncID : social.attendanceList[0].student?.syncID == alice.syncID),
+                  "\(label) choice applies social participants, hidden people, attendance and payments together")
+            check(server.lock.withLock { server.resolutionRequests.count } == 5 &&
+                  server.writes.allSatisfy { $0.table == "resolve_coachplanner_conflict" },
+                  "\(label) resolution uses guarded atomic RPCs rather than unguarded table writes")
+            if !useDevice {
+                let afterCloudChoice = try JSONSerialization.data(withJSONObject: server.lock.withLock { server.tables }, options: .sortedKeys)
+                check(beforeCloudChoice == afterCloudChoice, "keeping the cloud version makes no cloud record changes")
+            }
+            server.clearRequests()
+            await cloud.syncAll(in: context)
+            check(cloud.lastError == nil && cloud.conflicts.isEmpty && server.writes.isEmpty,
+                  "\(label) resolution leaves an acknowledged state with no echo uploads")
+            let previousRPCCount = server.lock.withLock { server.resolutionRequests.count }
+            do {
+                _ = try await cloud.resolveConflict(reports[alice.syncID]!, choice: choice, in: context)
+                preconditionFailure("An already resolved report must be rejected")
+            } catch {}
+            check(server.lock.withLock { server.resolutionRequests.count } == previousRPCCount,
+                  "\(label) resolution rejects an already resolved report before another RPC")
+
+            let deletedCourtID = court.syncID
+            context.delete(court); try context.save()
+            server.edit("court_bookings", id: deletedCourtID, fields: ["court_number": "Cloud after deletion"])
+            await cloud.syncChanges(CloudSyncScope(courtBookings: [deletedCourtID]), in: context)
+            let deletion = cloud.conflicts.first { $0.recordID == deletedCourtID }!
+            _ = try await cloud.resolveConflict(deletion, choice: choice, in: context)
+            let remaining = try context.fetch(FetchDescriptor<CourtBooking>()).filter { $0.syncID == deletedCourtID }
+            let remoteDeleted = server.rows("court_bookings").first { $0["id"] as? String == deletedCourtID.uuidString }?["deleted_at"] as? String != nil
+            check(cloud.conflicts.isEmpty && (useDevice ? remaining.isEmpty && remoteDeleted : remaining.first?.courtNumber == "Cloud after deletion" && !remoteDeleted),
+                  "\(label) choice safely resolves a local deletion versus a newer cloud record")
+
+            if !useDevice {
+                alice.name = "Cloud-choice local draft"; alice.updatedAt = alice.lastSyncedAt!.addingTimeInterval(30)
+                try context.save()
+                server.edit("students", id: alice.syncID, fields: ["name": "Cloud-choice reviewed value"])
+                await cloud.syncChanges(CloudSyncScope(students: [alice.syncID]), in: context)
+                let pendingCloudChoice = cloud.conflicts.first { $0.recordID == alice.syncID }!
+                server.lock.withLock {
+                    server.afterResponse = { @MainActor request in
+                        guard request.url?.lastPathComponent == "resolve_coachplanner_conflict" else { return }
+                        alice.name = "Local edit during cloud choice"
+                        alice.updatedAt = alice.updatedAt.addingTimeInterval(30)
+                        try! context.save()
+                    }
+                }
+                do {
+                    _ = try await cloud.resolveConflict(pendingCloudChoice, choice: .cloud, in: context)
+                    preconditionFailure("Choosing cloud must not overwrite an edit made during the request")
+                } catch {}
+                server.lock.withLock { server.afterResponse = nil }
+                check(alice.name == "Local edit during cloud choice" && cloud.conflicts.contains { $0.recordID == alice.syncID },
+                      "an edit during cloud-choice resolution blocks the pull and keeps the local edit and report")
+                continue
+            }
+            social.title = "Social guarded device"; social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30)
+            try context.save()
+            server.edit("social_sessions", id: social.syncID, fields: ["title": "Social guarded cloud"])
+            await cloud.syncChanges(CloudSyncScope(socialSessions: [social.syncID]), in: context)
+            let relationshipReview = cloud.conflicts.first { $0.recordID == social.syncID }!
+            let attendanceID = UUID(uuidString: server.rows("social_attendance")[0]["id"] as! String)!
+            server.edit("social_attendance", id: attendanceID, fields: ["payment_status": "Unpaid"])
+            do {
+                _ = try await cloud.resolveConflict(relationshipReview, choice: .device, in: context)
+                preconditionFailure("A changed child record must reject stale resolution")
+            } catch {}
+            check(social.title == "Social guarded device" && social.attendanceList[0].paymentStatus == "Paid" &&
+                  server.rows("social_attendance")[0]["payment_status"] as? String == "Unpaid" &&
+                  cloud.conflicts.contains { $0.recordID == social.syncID },
+                  "changed attendance rejects an old resolution snapshot even when the parent version did not change")
+            await cloud.syncChanges(CloudSyncScope(socialSessions: [social.syncID]), in: context)
+            _ = try await cloud.resolveConflict(cloud.conflicts.first { $0.recordID == social.syncID }!, choice: .cloud, in: context)
+            alice.name = "Device guarded edit"; alice.updatedAt = alice.lastSyncedAt!.addingTimeInterval(30)
+            try context.save()
+            server.edit("students", id: alice.syncID, fields: ["name": "Cloud guarded edit"])
+            await cloud.syncChanges(CloudSyncScope(students: [alice.syncID]), in: context)
+            var guarded = cloud.conflicts.first { $0.recordID == alice.syncID }!
+            server.edit("students", id: alice.syncID, fields: ["name": "Cloud newer than review"])
+            do {
+                _ = try await cloud.resolveConflict(guarded, choice: .device, in: context)
+                preconditionFailure("A newer cloud record must reject stale resolution")
+            } catch {}
+            check(alice.name == "Device guarded edit" && cloud.conflicts.contains { $0.recordID == alice.syncID } &&
+                  server.rows("students").first { $0["id"] as? String == alice.syncID.uuidString }?["name"] as? String == "Cloud newer than review",
+                  "a newer cloud version rejects the stale atomic write without changing either choice")
+            await cloud.syncChanges(CloudSyncScope(students: [alice.syncID]), in: context)
+            guarded = cloud.conflicts.first { $0.recordID == alice.syncID }!
+            let beforeLocalEdit = server.lock.withLock { server.resolutionRequests.count }
+            alice.name = "Device newer than review"; alice.updatedAt = alice.updatedAt.addingTimeInterval(30)
+            try context.save()
+            do {
+                _ = try await cloud.resolveConflict(guarded, choice: .cloud, in: context)
+                preconditionFailure("A saved newer local edit must reject stale resolution")
+            } catch {}
+            check(alice.name == "Device newer than review" && server.lock.withLock { server.resolutionRequests.count } == beforeLocalEdit &&
+                  cloud.conflicts.contains { $0.recordID == alice.syncID },
+                  "a local edit since review is retained and rejected before the resolution RPC")
+            await cloud.syncChanges(CloudSyncScope(students: [alice.syncID]), in: context)
+            guarded = cloud.conflicts.first { $0.recordID == alice.syncID }!
+            alice.name = "Unsaved resolution editor"
+            do {
+                _ = try await cloud.resolveConflict(guarded, choice: .cloud, in: context)
+                preconditionFailure("Unsaved edits must block resolution")
+            } catch {}
+            check(alice.name == "Unsaved resolution editor" && server.lock.withLock { server.resolutionRequests.count } == beforeLocalEdit,
+                  "unsaved editor changes block resolution without discarding the edit")
+            alice.name = "Device newer than review"; try context.save()
+            cloud.isSyncing = true
+            do {
+                _ = try await cloud.resolveConflict(guarded, choice: .device, in: context)
+                preconditionFailure("Busy sync must reject resolution")
+            } catch {}
+            cloud.isSyncing = false
+            check(server.lock.withLock { server.resolutionRequests.count } == beforeLocalEdit,
+                  "resolution cannot overlap an active sync")
+            server.lock.withLock { server.failTable = "resolve_coachplanner_conflict" }
+            do {
+                _ = try await cloud.resolveConflict(guarded, choice: .device, in: context)
+                preconditionFailure("Failed RPC must not resolve a report")
+            } catch {}
+            server.lock.withLock { server.failTable = nil }
+            check(cloud.conflicts.contains { $0.recordID == alice.syncID } && alice.name == "Device newer than review",
+                  "an RPC failure retains the reviewed conflict and local choice")
+            server.lock.withLock {
+                server.afterResponse = { @MainActor request in
+                    guard request.url?.lastPathComponent == "resolve_coachplanner_conflict" else { return }
+                    alice.name = "Device edit during resolution"
+                    alice.updatedAt = alice.updatedAt.addingTimeInterval(30)
+                    try! context.save()
+                }
+            }
+            _ = try? await cloud.resolveConflict(guarded, choice: .device, in: context)
+            server.lock.withLock { server.afterResponse = nil }
+            check(alice.name == "Device edit during resolution" && alice.updatedAt > alice.lastSyncedAt! &&
+                  cloud.conflicts.contains { $0.recordID == alice.syncID },
+                  "an edit saved during resolution survives the response and remains unresolved")
+
+            let deletedPerson = Student(name: "Referenced deletion", gender: "", contactPreference: .sms, contactDetail: "")
+            context.insert(deletedPerson); try context.save()
+            let deletedPersonID = deletedPerson.syncID
+            await cloud.syncChanges(CloudSyncScope(students: [deletedPersonID]), in: context)
+            context.delete(deletedPerson); try context.save()
+            server.edit("students", id: deletedPersonID, fields: ["name": "Remote edited deleted person"])
+            await cloud.syncChanges(CloudSyncScope(students: [deletedPersonID]), in: context)
+            let personDeletion = cloud.conflicts.first { $0.recordID == deletedPersonID }!
+            server.lock.withLock {
+                server.tables["coaching_session_students", default: []].append([
+                    "session_id": coaching.syncID.uuidString, "student_id": deletedPersonID.uuidString
+                ])
+            }
+            let beforePersonDeletion = server.lock.withLock { server.resolutionRequests.count }
+            do {
+                _ = try await cloud.resolveConflict(personDeletion, choice: .device, in: context)
+                preconditionFailure("New incoming links must block a previously reviewed person deletion")
+            } catch {}
+            check(server.lock.withLock { server.resolutionRequests.count } == beforePersonDeletion + 1 &&
+                  cloud.conflicts.contains { $0.recordID == deletedPersonID } &&
+                  server.rows("students").first { $0["id"] as? String == deletedPersonID.uuidString }?["deleted_at"] as? String == nil &&
+                  server.rows("coaching_session_students").contains { $0["student_id"] as? String == deletedPersonID.uuidString },
+                  "a new incoming participant link rejects stale person deletion without deleting the person or link")
+        }
+    }
+
+    static func runPersonRestorationTests(session: URLSession) async throws {
+        func check(_ condition: @autoclosure () -> Bool, _ message: String) {
+            precondition(condition(), message)
+            print("PASS: \(message)")
+        }
+        let server = SyncMockProtocol.server
+        for restoreStudent in [true, false] {
+            let label = restoreStudent ? "student" : "outsider"
+            let suite = "CoachPlanner.PersonRestorationTests.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
+                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+            let context = ModelContext(try ModelContainer(for: schema, configurations: [configuration]))
+            context.autosaveEnabled = false
+            let cloud = SupabaseCloud(urlSession: session, defaults: defaults, restoreSession: false)
+            cloud.accessToken = "e30.eyJleHAiOjQxMDI0NDQ4MDB9.fixture"
+            server.lock.withLock {
+                server.tables = ["workspaces": [["id": SupabaseConfiguration.workspaceID.uuidString]]]
+                server.resolutionRequests = []; server.failTable = nil; server.afterResponse = nil
+                server.failLaterPage = false; server.pageLimit = 500; server.hiddenReadTables = []
+            }
+            let week = dateOnlyFormatter.date(from: "2026-09-14")!
+            let start = week.addingTimeInterval(10 * 3600), end = start.addingTimeInterval(3600)
+            let alice = Student(name: "Restore Alice", gender: "", contactPreference: .sms, contactDetail: "")
+            let bob = Student(name: "Restore Bob", gender: "", contactPreference: .sms, contactDetail: "")
+            let casey = Outsider(name: "Restore Casey", gender: "", contactPreference: .sms, contactDetail: "")
+            let coaching = CoachingSession(weekStart: week, dayOfWeek: .monday, startTime: start, endTime: end,
+                                           venue: .apex, students: [alice, bob])
+            let social = SocialSession(title: "Restore Social", weekStart: week, dayOfWeek: .friday,
+                                       startTime: start, endTime: end, venue: .apex, students: [alice, bob],
+                                       hiddenPeople: [SocialHiddenPerson(student: alice), SocialHiddenPerson(outsider: casey)],
+                                       attendances: [SocialAttendance(student: alice, status: .confirmed, paymentStatus: .paid),
+                                                     SocialAttendance(student: nil, outsider: casey, status: .pending)])
+            context.insert(alice); context.insert(bob); context.insert(casey); context.insert(coaching); context.insert(social)
+            try context.save()
+            await cloud.syncAll(in: context)
+            check(cloud.lastError == nil, "\(label) restoration fixture uploads linked parent and child records")
+            let aliceID = alice.syncID, caseyID = casey.syncID
+            let id = restoreStudent ? aliceID : caseyID
+            let table = restoreStudent ? "students" : "outsiders"
+            let scope = restoreStudent ? CloudSyncScope(students: [id]) : CloudSyncScope(outsiders: [id])
+            if restoreStudent { context.delete(alice) } else { context.delete(casey) }
+            if restoreStudent { coaching.updatedAt = coaching.lastSyncedAt!.addingTimeInterval(30) }
+            social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30)
+            try context.save()
+            server.edit(table, id: id, fields: ["name": "Restored cloud \(label)"])
+            await cloud.syncChanges(scope, in: context)
+            let report = cloud.conflicts.first { $0.recordID == id }!
+            _ = try await cloud.resolveConflict(report, choice: .cloud, in: context)
+            check(Set(coaching.studentList.map(\.syncID)) == [aliceID, bob.syncID] &&
+                  Set(social.studentList.map(\.syncID)) == [aliceID, bob.syncID] &&
+                  social.hiddenPersonList.contains { $0.student?.syncID == aliceID } &&
+                  social.hiddenPersonList.contains { $0.outsider?.syncID == caseyID } &&
+                  social.attendanceList.contains { $0.student?.syncID == aliceID && $0.status == "Confirmed" && $0.paymentStatus == "Paid" } &&
+                  social.attendanceList.contains { $0.outsider?.syncID == caseyID && $0.status == "Pending" },
+                  "restoring a \(label) restores incoming coaching, social, hidden and attendance links locally")
+            await cloud.syncAll(in: context)
+            check(cloud.lastError == nil && cloud.conflicts.isEmpty &&
+                  server.rows("coaching_session_students").contains { $0["student_id"] as? String == aliceID.uuidString } &&
+                  server.rows("social_session_students").contains { $0["student_id"] as? String == aliceID.uuidString } &&
+                  server.rows("social_hidden_people").contains { $0["student_id"] as? String == aliceID.uuidString } &&
+                  server.rows("social_hidden_people").contains { $0["outsider_id"] as? String == caseyID.uuidString } &&
+                  server.rows("social_attendance").contains { $0["student_id"] as? String == aliceID.uuidString } &&
+                  server.rows("social_attendance").contains { $0["outsider_id"] as? String == caseyID.uuidString },
+                  "normal sync after \(label) restoration cannot erase the restored incoming cloud links")
+
+            if restoreStudent {
+                social.title = "Orphan local version"; social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30)
+                social.attendanceList.append(SocialAttendance(student: nil, status: .pending))
+                try context.save()
+                server.edit("social_sessions", id: social.syncID, fields: ["title": "Valid cloud version"])
+                await cloud.syncChanges(CloudSyncScope(socialSessions: [social.syncID]), in: context)
+                let orphanReport = cloud.conflicts.first { $0.recordID == social.syncID }!
+                _ = try await cloud.resolveConflict(orphanReport, choice: .cloud, in: context)
+                check(social.title == "Valid cloud version" && social.attendanceList.count == 2 &&
+                      social.attendanceList.allSatisfy { $0.student != nil || $0.outsider != nil } && cloud.conflicts.isEmpty,
+                      "cloud choice repairs orphan local attendance without requiring a valid local upload replacement")
+            } else {
+                let restored = try context.fetch(FetchDescriptor<Outsider>()).first { $0.syncID == caseyID }!
+                context.delete(restored); social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30)
+                try context.save()
+                server.edit("outsiders", id: caseyID, fields: ["name": "Second cloud restoration"])
+                await cloud.syncChanges(scope, in: context)
+                let secondReport = cloud.conflicts.first { $0.recordID == caseyID }!
+                server.lock.withLock {
+                    server.afterResponse = { @MainActor request in
+                        guard request.url?.lastPathComponent == "resolve_coachplanner_conflict" else { return }
+                        social.title = "Saved while restoring person"
+                        social.updatedAt = social.updatedAt.addingTimeInterval(30)
+                        try! context.save()
+                    }
+                }
+                do {
+                    _ = try await cloud.resolveConflict(secondReport, choice: .cloud, in: context)
+                    preconditionFailure("A changed related social must reject person restoration")
+                } catch {}
+                server.lock.withLock { server.afterResponse = nil }
+                check(social.title == "Saved while restoring person" && cloud.conflicts.contains { $0.recordID == caseyID } &&
+                      !social.hiddenPersonList.contains { $0.outsider?.syncID == caseyID },
+                      "a related session edit during person restoration is preserved and prevents stale link restoration")
+            }
+        }
     }
 }

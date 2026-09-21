@@ -20,6 +20,7 @@ final class SupabaseCloud: ObservableObject {
     @Published private(set) var isSyncing = false
     @Published private(set) var conflicts: [SyncConflict] = []
     @Published private(set) var conflictDetailsLastCheckedAt: Date?
+    @Published private(set) var resolvingConflictID: String?
     private(set) var deferredChanges = CloudSyncScope()
 
     private let keychain = SupabaseKeychain()
@@ -33,6 +34,8 @@ final class SupabaseCloud: ObservableObject {
     private var tokenRefreshTask: Task<String, Error>?
     private var authGeneration = 0
     private var syncingAuthGeneration: Int?
+    private var fetchedConflictRows: [String: [[String: Any]]] = [:]
+    private var conflictResolutionSnapshots: [String: ConflictResolutionSnapshot] = [:]
     private static let logger = Logger(subsystem: "com.matthewchew.CoachPlanner", category: "SupabaseSync")
 
     private init(urlSession: URLSession = .shared, defaults: UserDefaults = .standard, restoreSession: Bool = true) {
@@ -90,6 +93,7 @@ final class SupabaseCloud: ObservableObject {
         deferredChanges = CloudSyncScope()
         needsDependencyRecovery = false
         requestCount = 0
+        fetchedConflictRows = [:]
         let startedAt = Date()
         lastSyncResult = nil
         let autosaveWasEnabled = context.autosaveEnabled
@@ -265,7 +269,8 @@ final class SupabaseCloud: ObservableObject {
                         conflicts += 1
                         reportedIDs.insert(local.syncID)
                         publishConflict(coachingConflict(local: local, cloud: cloud,
-                                                        cloudStudentIDs: cloudStudentIDs, studentsByID: studentByID))
+                                                        cloudStudentIDs: cloudStudentIDs, studentsByID: studentByID),
+                                        localRevision: revision(of: local))
                         nextLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
@@ -471,7 +476,8 @@ final class SupabaseCloud: ObservableObject {
                         conflicts += 1
                         reportedStudentIDs.insert(student.syncID)
                         publishConflict(studentConflict(local: student, cloud: cloud,
-                                                       localHiddenWeeks: localHiddenWeekKeys, cloudHiddenWeeks: cloudHiddenWeekKeys))
+                                                       localHiddenWeeks: localHiddenWeekKeys, cloudHiddenWeeks: cloudHiddenWeekKeys),
+                                        localRevision: revision(of: student))
                         nextStudentLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
@@ -516,8 +522,11 @@ final class SupabaseCloud: ObservableObject {
                     if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
                         conflicts += 1
                         reportedStudentIDs.insert(cloud.id)
+                        let incoming = try await personDeletionRelationships(id: cloud.id, isStudent: true, token: accessToken)
                         publishConflict(deletionConflict(table: "students", id: cloud.id, entityName: "Student",
-                                                        title: cloud.name, cloudUpdatedAt: cloud.updatedAt, baseline: baseline))
+                                                        title: cloud.name, cloudUpdatedAt: cloud.updatedAt, baseline: baseline),
+                                        additionalRelationships: incoming,
+                                        incomingParents: try incomingParentRevisions(incoming, in: context))
                         cloudOnly += 1
                         nextStudentLedger[ledgerKey] = baseline
                     } else {
@@ -600,7 +609,7 @@ final class SupabaseCloud: ObservableObject {
                     } else {
                         conflicts += 1
                         reportedOutsiderIDs.insert(outsider.syncID)
-                        publishConflict(outsiderConflict(local: outsider, cloud: cloud))
+                        publishConflict(outsiderConflict(local: outsider, cloud: cloud), localRevision: revision(of: outsider))
                         nextOutsiderLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
@@ -628,8 +637,11 @@ final class SupabaseCloud: ObservableObject {
                     if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
                         conflicts += 1
                         reportedOutsiderIDs.insert(cloud.id)
+                        let incoming = try await personDeletionRelationships(id: cloud.id, isStudent: false, token: accessToken)
                         publishConflict(deletionConflict(table: "outsiders", id: cloud.id, entityName: "Outsider",
-                                                        title: cloud.name, cloudUpdatedAt: cloud.updatedAt, baseline: baseline))
+                                                        title: cloud.name, cloudUpdatedAt: cloud.updatedAt, baseline: baseline),
+                                        additionalRelationships: incoming,
+                                        incomingParents: try incomingParentRevisions(incoming, in: context))
                         cloudOnly += 1
                         nextOutsiderLedger[ledgerKey] = baseline
                     } else {
@@ -758,7 +770,7 @@ final class SupabaseCloud: ObservableObject {
                 } else {
                     conflicts += 1
                     reportedIDs.insert(booking.syncID)
-                    publishConflict(courtConflict(local: booking, cloud: cloud))
+                    publishConflict(courtConflict(local: booking, cloud: cloud), localRevision: revision(of: booking))
                     nextLedger[ledgerKey] = baseline
                 }
             } else if localChanged {
@@ -970,7 +982,7 @@ final class SupabaseCloud: ObservableObject {
                         local: social, cloud: cloud, cloudStudentIDs: cloudStudentIDs,
                         cloudHiddenPeople: cloudHidden, cloudAttendances: cloudAttendance,
                         studentsByID: studentsByID, outsidersByID: outsidersByID
-                    ))
+                    ), localRevision: revision(of: social))
                     nextLedger[ledgerKey] = baseline
                 }
             } else if localChanged {
@@ -1091,16 +1103,383 @@ final class SupabaseCloud: ObservableObject {
         try context.save()
     }
 
+    private struct ConflictResolutionSnapshot {
+        let localRevision: LocalRevision?
+        let cloud: [String: Any]
+        let incomingParents: [IncomingParentRevision]
+    }
+
+    private struct IncomingParentRevision {
+        let table: String
+        let id: UUID
+        let revision: LocalRevision?
+    }
+
+    private static func conflictRelationships(for table: String) -> [(table: String, parent: String)] {
+        switch table {
+        case "students": return [("student_hidden_weeks", "student_id")]
+        case "coaching_sessions": return [("coaching_session_students", "session_id")]
+        case "social_sessions": return [("social_session_students", "session_id"),
+                                        ("social_hidden_people", "social_session_id"),
+                                        ("social_attendance", "social_session_id")]
+        default: return []
+        }
+    }
+
+    private func capturedCloudSnapshot(table: String, id: UUID) -> [String: Any]? {
+        guard let record = fetchedConflictRows[table]?.first(where: { UUID(uuidString: $0["id"] as? String ?? "") == id }) else {
+            return nil
+        }
+        var relationships: [String: Any] = [:]
+        for child in Self.conflictRelationships(for: table) {
+            guard let rows = fetchedConflictRows[child.table] else { return nil }
+            relationships[child.table] = rows.filter { UUID(uuidString: $0[child.parent] as? String ?? "") == id }
+        }
+        return ["record": record, "relationships": relationships]
+    }
+
+    private func personDeletionRelationships(id: UUID, isStudent: Bool, token: String) async throws -> [String: Any] {
+        let column = isStudent ? "student_id" : "outsider_id"
+        let filters = [URLQueryItem(name: column, value: "eq.\(id.uuidString)")]
+        var result: [String: Any] = [:]
+        if isStudent {
+            for table in ["coaching_session_students", "social_session_students"] {
+                fetchedConflictRows[table] = []
+                let _: [CloudSessionStudentLink] = try await fetchCloudRecords(
+                    table: table, select: "session_id,student_id", order: "session_id.asc,student_id.asc",
+                    filters: filters, token: token, applyScope: false
+                )
+                result[table] = fetchedConflictRows[table] ?? []
+            }
+        }
+        fetchedConflictRows["social_hidden_people"] = []
+        let _: [CloudHiddenPersonRecord] = try await fetchCloudRecords(
+            table: "social_hidden_people", select: "id,social_session_id,student_id,outsider_id,created_at", order: "id.asc",
+            filters: filters, token: token, applyScope: false
+        )
+        result["social_hidden_people"] = fetchedConflictRows["social_hidden_people"] ?? []
+        fetchedConflictRows["social_attendance"] = []
+        let _: [CloudAttendanceRecord] = try await fetchCloudRecords(
+            table: "social_attendance", select: "id,social_session_id,student_id,outsider_id,status,payment_status,created_at,updated_at",
+            order: "id.asc", filters: filters, token: token, applyScope: false
+        )
+        result["social_attendance"] = fetchedConflictRows["social_attendance"] ?? []
+        return result
+    }
+
+    private func incomingParentRevisions(_ relationships: [String: Any], in context: ModelContext) throws -> [IncomingParentRevision] {
+        var coaching: Set<UUID> = []
+        var socials: Set<UUID> = []
+        for (table, value) in relationships {
+            guard let rows = value as? [[String: Any]] else { throw SupabaseCloudError.invalidResponse }
+            let column = table == "coaching_session_students" || table == "social_session_students" ? "session_id" : "social_session_id"
+            for row in rows {
+                guard let id = UUID(uuidString: row[column] as? String ?? "") else { throw SupabaseCloudError.invalidResponse }
+                if table == "coaching_session_students" { coaching.insert(id) } else { socials.insert(id) }
+            }
+        }
+        var result: [IncomingParentRevision] = []
+        for (table, ids) in [("coaching_sessions", coaching), ("social_sessions", socials)] {
+            for id in ids {
+                let local = try resolutionModel(table: table, id: id, in: context)
+                result.append(IncomingParentRevision(table: table, id: id, revision: local.map { revision(of: $0) }))
+            }
+        }
+        return result
+    }
+
+    private func verifyIncomingParents(_ parents: [IncomingParentRevision], in context: ModelContext) throws {
+        for parent in parents {
+            guard let reviewed = parent.revision,
+                  let current = try resolutionModel(table: parent.table, id: parent.id, in: context) else {
+                throw ConflictResolutionError.invalidRelationships
+            }
+            guard revision(of: current) == reviewed else { throw ConflictResolutionError.localChanged }
+        }
+    }
+
+    /// Resolves only the exact comparison confirmed by the user. The RPC checks
+    /// the complete captured cloud snapshot and commits parent/children together.
+    /// Normal reconciliation never implicitly chooses a conflict winner.
+    func resolveConflict(_ conflict: SyncConflict, choice: SyncConflictChoice, in context: ModelContext) async throws -> String {
+        guard !isSyncing else { throw ConflictResolutionError.busy }
+        guard conflicts.contains(conflict), let captured = conflictResolutionSnapshots[conflict.id] else {
+            throw ConflictResolutionError.stale
+        }
+        // Do not turn unfinished editor input into an approved overwrite.
+        guard !context.hasChanges else { throw ConflictResolutionError.unsavedChanges }
+        let original = try resolutionModel(table: conflict.table, id: conflict.recordID, in: context)
+        guard original.map({ revision(of: $0) }) == captured.localRevision else {
+            throw ConflictResolutionError.localChanged
+        }
+        if choice == .cloud { try verifyIncomingParents(captured.incomingParents, in: context) }
+        let replacement: Any = choice == .device
+            ? try original.map { try resolutionReplacement(for: $0) } ?? NSNull() : NSNull()
+        isSyncing = true
+        resolvingConflictID = conflict.id
+        syncingAuthGeneration = authGeneration
+        lastError = nil
+        let autosaveWasEnabled = context.autosaveEnabled
+        context.autosaveEnabled = false
+        defer {
+            context.autosaveEnabled = autosaveWasEnabled
+            resolvingConflictID = nil
+            isSyncing = false
+            syncingAuthGeneration = nil
+        }
+        do {
+            let token = try await realtimeAccessToken()
+            try await verifyWorkspaceAccess(token: token)
+            // Authentication and access checks can suspend while an editor saves.
+            guard try resolutionModel(table: conflict.table, id: conflict.recordID, in: context)
+                .map({ revision(of: $0) }) == captured.localRevision else {
+                throw ConflictResolutionError.localChanged
+            }
+            if choice == .cloud { try verifyIncomingParents(captured.incomingParents, in: context) }
+            let data = try await send(
+                url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/rpc/resolve_coachplanner_conflict"),
+                method: "POST", body: JSONSerialization.data(withJSONObject: [
+                    "p_workspace_id": SupabaseConfiguration.workspaceID.uuidString,
+                    "p_table": conflict.table, "p_record_id": conflict.recordID.uuidString,
+                    "p_expected": captured.cloud, "p_choice": choice.rawValue,
+                    "p_replacement": choice == .device ? replacement : NSNull()
+                ]), token: token
+            )
+            guard let snapshot = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let row = snapshot["record"] as? [String: Any],
+                  UUID(uuidString: row["id"] as? String ?? "") == conflict.recordID,
+                  snapshot["relationships"] is [String: Any] else {
+                throw SupabaseCloudError.invalidResponse
+            }
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .supabaseTimestamp
+            let version = try decoder.decode(ResolutionVersion.self, from: JSONSerialization.data(withJSONObject: row))
+            // Save any UI changes made during the request with normal timestamping
+            // before applying remote values, so they can never be mistaken for a pull.
+            if context.hasChanges { try context.save() }
+            let current = try resolutionModel(table: conflict.table, id: conflict.recordID, in: context)
+            let unchanged = current.map({ revision(of: $0) }) == captured.localRevision
+            if choice == .cloud {
+                guard unchanged else { throw ConflictResolutionError.localChanged }
+                try verifyIncomingParents(captured.incomingParents, in: context)
+                do {
+                    try applyResolutionSnapshot(snapshot, table: conflict.table, id: conflict.recordID, to: current, in: context)
+                    try saveSyncChanges(in: context)
+                } catch {
+                    // There were no unsaved user edits when the synchronous apply
+                    // began; rollback only this failed local resolution.
+                    context.rollback()
+                    throw error
+                }
+                recordAcknowledgement(table: conflict.table, id: conflict.recordID, timestamp: version.updatedAt)
+            } else {
+                // Even if the UI changed during the request, acknowledge only the
+                // version that was uploaded and preserve the newer local payload.
+                recordAcknowledgement(table: conflict.table, id: conflict.recordID, timestamp: version.updatedAt)
+                if let current, let sent = captured.localRevision {
+                    _ = acknowledge(current, table: conflict.table, id: conflict.recordID,
+                                    sent: sent, current: revision(of: current), serverTimestamp: version.updatedAt)
+                    if unchanged, let social = current as? SocialSession {
+                        stampSocialChildren(social, parentTimestamp: version.updatedAt)
+                    }
+                } else if !unchanged {
+                    deferChange(table: conflict.table, id: conflict.recordID)
+                }
+                try saveSyncChanges(in: context)
+                if !unchanged {
+                    return "The confirmed device version was saved to the cloud. Newer changes on this device were kept; sync again to review their current state."
+                }
+            }
+            conflicts.removeAll { $0.id == conflict.id }
+            conflictResolutionSnapshots.removeValue(forKey: conflict.id)
+            lastSyncResult = nil
+            return choice == .cloud ? "Cloud version applied to this device."
+                : captured.localRevision == nil ? "Deletion kept. The cloud record was marked deleted."
+                : "Device version saved to the cloud."
+        } catch {
+            let message = error.localizedDescription
+            if message.contains("CP_CONFLICT_STALE") { throw ConflictResolutionError.stale }
+            if message.contains("PGRST202") { throw ConflictResolutionError.serverSetupRequired }
+            throw error
+        }
+    }
+
+    private struct ResolutionVersion: Decodable {
+        let updatedAt: Date
+        enum CodingKeys: String, CodingKey { case updatedAt = "updated_at" }
+    }
+
+    private func resolutionModel(table: String, id: UUID, in context: ModelContext) throws -> (any PersistentModel & SyncTimestamped)? {
+        let models: [any PersistentModel & SyncTimestamped]
+        switch table {
+        case "students": models = try context.fetch(FetchDescriptor<Student>()).filter { $0.syncID == id && !$0.isDeleted }
+        case "outsiders": models = try context.fetch(FetchDescriptor<Outsider>()).filter { $0.syncID == id && !$0.isDeleted }
+        case "coaching_sessions": models = try context.fetch(FetchDescriptor<CoachingSession>()).filter { $0.syncID == id && !$0.isDeleted }
+        case "court_bookings": models = try context.fetch(FetchDescriptor<CourtBooking>()).filter { $0.syncID == id && !$0.isDeleted }
+        case "social_sessions": models = try context.fetch(FetchDescriptor<SocialSession>()).filter { $0.syncID == id && !$0.isDeleted }
+        default: throw SupabaseCloudError.invalidResponse
+        }
+        guard models.count <= 1 else { throw SupabaseCloudError.invalidResponse }
+        return models.first
+    }
+
+    private func revision(of model: any PersistentModel & SyncTimestamped) -> LocalRevision {
+        switch model {
+        case let value as Student: return revision(of: value)
+        case let value as Outsider: return revision(of: value)
+        case let value as CoachingSession: return revision(of: value)
+        case let value as CourtBooking: return revision(of: value)
+        case let value as SocialSession: return revision(of: value)
+        default: preconditionFailure("Unsupported conflict record")
+        }
+    }
+
+    private func resolutionReplacement(for model: any PersistentModel & SyncTimestamped) throws -> [String: Any] {
+        let row: [String: Any]
+        var relationships: [String: Any] = [:]
+        switch model {
+        case let value as Student:
+            row = ["name": value.name, "gender": value.gender, "contact_preference": value.contactPreference,
+                   "contact_detail": value.contactDetail, "sessions_demand": value.sessionsDemand, "is_hidden": value.isHidden]
+            relationships["student_hidden_weeks"] = hiddenWeekRows(for: value)
+        case let value as Outsider:
+            row = ["name": value.name, "gender": value.gender, "contact_preference": value.contactPreference,
+                   "contact_detail": value.contactDetail]
+        case let value as CoachingSession:
+            row = ["week_start": value.weekStart.map { Self.dateOnlyFormatter.string(from: $0) } ?? NSNull(),
+                   "day_of_week": value.dayOfWeek, "start_time": Self.isoFormatter.string(from: value.effectiveStartTime),
+                   "end_time": Self.isoFormatter.string(from: value.effectiveEndTime), "venue": value.venue,
+                   "status": value.status, "court_number": value.courtNumber, "session_fee": value.sessionFee,
+                   "session_description": value.sessionDescription ?? NSNull()]
+            relationships["coaching_session_students"] = coachingStudentRows(for: value)
+        case let value as CourtBooking:
+            row = ["week_start": value.weekStart.map { Self.dateOnlyFormatter.string(from: $0) } ?? NSNull(),
+                   "day_of_week": value.dayOfWeek, "start_time": Self.isoFormatter.string(from: value.effectiveStartTime),
+                   "end_time": Self.isoFormatter.string(from: value.effectiveEndTime), "venue": value.venue,
+                   "court_number": value.courtNumber]
+        case let value as SocialSession:
+            guard value.hiddenPersonList.allSatisfy({ $0.syncParticipantKey != nil }),
+                  value.attendanceList.allSatisfy({ $0.syncParticipantKey != nil }) else {
+                throw ConflictResolutionError.invalidRelationships
+            }
+            row = ["title": value.title, "week_start": Self.dateOnlyFormatter.string(from: value.weekStart),
+                   "day_of_week": value.dayOfWeek, "start_time": Self.isoFormatter.string(from: value.effectiveStartTime),
+                   "end_time": Self.isoFormatter.string(from: value.effectiveEndTime), "venue": value.venue,
+                   "status": value.status, "are_courts_booked": value.areCourtsBooked, "court_numbers": value.courtNumbers,
+                   "shuttlecock_cost": value.shuttlecockCost, "court_cost": value.courtCost]
+            let children = socialRelationshipRows(for: value)
+            relationships = ["social_session_students": children.students, "social_hidden_people": children.hiddenPeople,
+                             "social_attendance": children.attendances]
+        default: throw SupabaseCloudError.invalidResponse
+        }
+        return ["record": row, "relationships": relationships]
+    }
+
+    private func applyResolutionSnapshot(_ snapshot: [String: Any], table: String, id: UUID,
+                                         to local: (any PersistentModel & SyncTimestamped)?, in context: ModelContext) throws {
+        guard let row = snapshot["record"] as? [String: Any], let relationships = snapshot["relationships"] as? [String: Any],
+              row["deleted_at"] == nil || row["deleted_at"] is NSNull else { throw ConflictResolutionError.stale }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .supabaseTimestamp
+        func decode<T: Decodable>(_ type: T.Type, _ object: Any) throws -> T {
+            try decoder.decode(type, from: JSONSerialization.data(withJSONObject: object))
+        }
+        func studentsFor(_ ids: Set<UUID>) throws -> [Student] {
+            let students = try context.fetch(FetchDescriptor<Student>()).filter { ids.contains($0.syncID) && !$0.isDeleted }
+            guard Set(students.map(\.syncID)) == ids else { throw ConflictResolutionError.invalidRelationships }
+            return students
+        }
+        switch table {
+        case "students":
+            let cloud = try decode(CloudStudentRecord.self, row)
+            let weeks = try decode([CloudHiddenWeekRecord].self, relationships["student_hidden_weeks"] ?? [])
+            let student = (local as? Student) ?? makeLocalStudent(from: cloud)
+            if local == nil { context.insert(student) }
+            apply(cloud, to: student)
+            applyCloudHiddenWeeks(weeks, to: student, in: context, parentTimestamp: cloud.updatedAt)
+            if local == nil {
+                try restoreIncomingConflictRelationships(relationships, student: student, outsider: nil, in: context)
+            }
+        case "outsiders":
+            let cloud = try decode(CloudOutsiderRecord.self, row)
+            let outsider = (local as? Outsider) ?? makeLocalOutsider(from: cloud)
+            if local == nil { context.insert(outsider) }
+            apply(cloud, to: outsider)
+            if local == nil {
+                try restoreIncomingConflictRelationships(relationships, student: nil, outsider: outsider, in: context)
+            }
+        case "coaching_sessions":
+            let cloud = try decode(CloudSessionRecord.self, row)
+            let links = try decode([CloudSessionStudentLink].self, relationships["coaching_session_students"] ?? [])
+            let students = try studentsFor(Set(links.map(\.studentID)))
+            let session = (local as? CoachingSession) ?? makeLocalSession(from: cloud, students: students)
+            if local == nil { context.insert(session) }
+            apply(cloud, to: session)
+            session.studentList = students
+        case "court_bookings":
+            let cloud = try decode(CloudCourtRecord.self, row)
+            let booking = (local as? CourtBooking) ?? makeLocalCourtBooking(from: cloud)
+            if local == nil { context.insert(booking) }
+            apply(cloud, to: booking)
+        case "social_sessions":
+            let cloud = try decode(CloudSocialRecord.self, row)
+            let links = try decode([CloudSessionStudentLink].self, relationships["social_session_students"] ?? [])
+            let hidden = try decode([CloudHiddenPersonRecord].self, relationships["social_hidden_people"] ?? [])
+            let attendance = try decode([CloudAttendanceRecord].self, relationships["social_attendance"] ?? [])
+            let students = try context.fetch(FetchDescriptor<Student>()).filter { !$0.isDeleted }
+            let outsiders = try context.fetch(FetchDescriptor<Outsider>()).filter { !$0.isDeleted }
+            let studentsByID = students.reduce(into: [UUID: Student]()) { $0[$1.syncID] = $1 }
+            let outsidersByID = outsiders.reduce(into: [UUID: Outsider]()) { $0[$1.syncID] = $1 }
+            let linked = try validateSocialDependencies(studentIDs: Set(links.map(\.studentID)), hiddenPeople: hidden,
+                                                        attendances: attendance, studentsByID: studentsByID, outsidersByID: outsidersByID)
+            let social = (local as? SocialSession) ?? makeLocalSocialSession(from: cloud, students: linked)
+            if local == nil { context.insert(social) }
+            try applyCloudRelationships(to: social, studentIDs: Set(links.map(\.studentID)), hiddenPeople: hidden,
+                                        attendances: attendance, studentsByID: studentsByID, outsidersByID: outsidersByID,
+                                        in: context, parentTimestamp: cloud.updatedAt)
+            apply(cloud, to: social)
+        default: throw SupabaseCloudError.invalidResponse
+        }
+    }
+
     // Reports describe existing reconciliation decisions; they never choose a
     // winner, write a record, or change conflict detection.
     private func clearConflictReports() {
         conflicts = []
         conflictDetailsLastCheckedAt = nil
+        conflictResolutionSnapshots = [:]
+        fetchedConflictRows = [:]
     }
 
-    private func publishConflict(_ report: SyncConflict) {
+    private func publishConflict(_ report: SyncConflict, localRevision: LocalRevision? = nil,
+                                 additionalRelationships: [String: Any] = [:], incomingParents: [IncomingParentRevision] = []) {
+        if var snapshot = capturedCloudSnapshot(table: report.table, id: report.recordID) {
+            var relationships = snapshot["relationships"] as? [String: Any] ?? [:]
+            relationships.merge(additionalRelationships) { _, new in new }
+            snapshot["relationships"] = relationships
+            conflictResolutionSnapshots[report.id] = ConflictResolutionSnapshot(
+                localRevision: localRevision, cloud: snapshot, incomingParents: incomingParents
+            )
+        } else {
+            conflictResolutionSnapshots.removeValue(forKey: report.id)
+        }
+        let incomingLabels = ["coaching_session_students": "Coaching session links",
+                              "social_session_students": "Social participant links",
+                              "social_hidden_people": "Social visibility entries",
+                              "social_attendance": "Social attendance entries"]
+        let incomingDifferences = additionalRelationships.keys.sorted().compactMap { table -> SyncConflictDifference? in
+            guard let rows = additionalRelationships[table] as? [[String: Any]], !rows.isEmpty else { return nil }
+            return SyncConflictDifference(id: "incoming:\(table)", label: incomingLabels[table] ?? table,
+                                          localValue: "Removed with this person", cloudValue: "\(rows.count) linked entries")
+        }
+        let visibleReport = SyncConflict(
+            id: report.id, table: report.table, recordID: report.recordID, entityName: report.entityName,
+            title: report.title, detectedAt: report.detectedAt, localUpdatedAt: report.localUpdatedAt,
+            cloudUpdatedAt: report.cloudUpdatedAt, reason: report.reason,
+            differences: report.differences + incomingDifferences
+        )
         var updated = conflicts.filter { $0.id != report.id }
-        updated.append(report)
+        updated.append(visibleReport)
         conflicts = updated.sorted {
             if $0.entityName != $1.entityName { return $0.entityName < $1.entityName }
             if $0.title != $1.title { return $0.title.localizedStandardCompare($1.title) == .orderedAscending }
@@ -1134,6 +1513,8 @@ final class SupabaseCloud: ObservableObject {
         conflicts.removeAll {
             $0.table == table && completedIDs.contains($0.recordID) && !reportedIDs.contains($0.recordID)
         }
+        let retained = Set(conflicts.map(\.id))
+        conflictResolutionSnapshots = conflictResolutionSnapshots.filter { retained.contains($0.key) }
     }
 
     private func conflictReport(
@@ -1858,6 +2239,7 @@ final class SupabaseCloud: ObservableObject {
         filters: [URLQueryItem] = [], token: String,
         applyScope: Bool = true
     ) async throws -> [Record] {
+        if applyScope { fetchedConflictRows[table] = [] }
         if applyScope, let (column, ids) = scopedIDs(for: table) {
             // Validate pagination independently for every bounded ID query. A
             // complete scoped result says nothing about records outside it.
@@ -1877,6 +2259,7 @@ final class SupabaseCloud: ObservableObject {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .supabaseTimestamp
         var records: [Record] = []
+        var rawRecords: [[String: Any]] = []
         var expectedTotal: Int?
         while true {
             var components = URLComponents(
@@ -1903,7 +2286,17 @@ final class SupabaseCloud: ObservableObject {
             }
             expectedTotal = total
             records.append(contentsOf: page)
-            if records.count == total { return records }
+            guard let rawPage = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                throw SupabaseCloudError.invalidResponse
+            }
+            let columns = select.split(separator: ",").map(String.init)
+            rawRecords += rawPage.map { row in
+                Dictionary(uniqueKeysWithValues: columns.map { ($0, row[$0] ?? NSNull()) })
+            }
+            if records.count == total {
+                fetchedConflictRows[table, default: []].append(contentsOf: rawRecords)
+                return records
+            }
             guard !page.isEmpty else { throw SupabaseCloudError.invalidResponse }
         }
     }
@@ -3186,6 +3579,163 @@ private struct AuthSession: Decodable {
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
+    }
+}
+
+private extension SupabaseCloud {
+    /// Restores only the reviewed person's incoming links. The caller validates
+    /// affected parent revisions and rolls back this synchronous apply on error.
+    func restoreIncomingConflictRelationships(
+        _ relationships: [String: Any], student: Student?, outsider: Outsider?, in context: ModelContext
+    ) throws {
+        guard (student != nil) != (outsider != nil),
+              student?.isDeleted != true, outsider?.isDeleted != true else {
+            throw ConflictResolutionError.invalidRelationships
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .supabaseTimestamp
+        func decodeRows<T: Decodable>(_ type: T.Type, key: String) throws -> T {
+            guard let rows = relationships[key] as? [[String: Any]] else {
+                throw ConflictResolutionError.invalidRelationships
+            }
+            do { return try decoder.decode(type, from: JSONSerialization.data(withJSONObject: rows)) }
+            catch { throw ConflictResolutionError.invalidRelationships }
+        }
+        let coachingLinks: [CloudSessionStudentLink] = student == nil ? []
+            : try decodeRows([CloudSessionStudentLink].self, key: "coaching_session_students")
+        let socialLinks: [CloudSessionStudentLink] = student == nil ? []
+            : try decodeRows([CloudSessionStudentLink].self, key: "social_session_students")
+        let hidden = try decodeRows([CloudHiddenPersonRecord].self, key: "social_hidden_people")
+        let attendance = try decodeRows([CloudAttendanceRecord].self, key: "social_attendance")
+        guard coachingLinks.allSatisfy({ $0.studentID == student?.syncID }),
+              socialLinks.allSatisfy({ $0.studentID == student?.syncID }),
+              hidden.allSatisfy({ $0.studentID == student?.syncID && $0.outsiderID == outsider?.syncID }),
+              attendance.allSatisfy({ $0.studentID == student?.syncID && $0.outsiderID == outsider?.syncID }),
+              Set(coachingLinks.map(\.sessionID)).count == coachingLinks.count,
+              Set(socialLinks.map(\.sessionID)).count == socialLinks.count,
+              Set(hidden.map(\.id)).count == hidden.count,
+              Set(attendance.map(\.id)).count == attendance.count else {
+            throw ConflictResolutionError.invalidRelationships
+        }
+        let coachingByID = Dictionary(grouping: try context.fetch(FetchDescriptor<CoachingSession>()).filter { !$0.isDeleted }, by: \.syncID)
+        let socialsByID = Dictionary(grouping: try context.fetch(FetchDescriptor<SocialSession>()).filter { !$0.isDeleted }, by: \.syncID)
+        let hiddenByID = Dictionary(grouping: try context.fetch(FetchDescriptor<SocialHiddenPerson>()).filter { !$0.isDeleted }, by: \.syncID)
+        let attendanceByID = Dictionary(grouping: try context.fetch(FetchDescriptor<SocialAttendance>()).filter { !$0.isDeleted }, by: \.syncID)
+        func coachingParent(_ id: UUID) throws -> CoachingSession {
+            guard let matches = coachingByID[id], matches.count == 1 else { throw ConflictResolutionError.invalidRelationships }
+            return matches[0]
+        }
+        func socialParent(_ id: UUID) throws -> SocialSession {
+            guard let matches = socialsByID[id], matches.count == 1 else { throw ConflictResolutionError.invalidRelationships }
+            return matches[0]
+        }
+        func matchesExistingPerson(_ existingStudent: Student?, _ existingOutsider: Outsider?) -> Bool {
+            (existingStudent == nil || existingStudent?.syncID == student?.syncID) &&
+                (existingOutsider == nil || existingOutsider?.syncID == outsider?.syncID)
+        }
+        // Validate all references before inserting or reconnecting any child.
+        for link in coachingLinks {
+            let parent = try coachingParent(link.sessionID)
+            guard parent.studentList.filter({ $0.syncID == link.studentID }).count <= 1 else {
+                throw ConflictResolutionError.invalidRelationships
+            }
+        }
+        for link in socialLinks {
+            let parent = try socialParent(link.sessionID)
+            guard parent.studentList.filter({ $0.syncID == link.studentID }).count <= 1 else {
+                throw ConflictResolutionError.invalidRelationships
+            }
+        }
+        for row in hidden {
+            _ = try socialParent(row.socialSessionID)
+            let matches = hiddenByID[row.id] ?? []
+            guard matches.count <= 1 else { throw ConflictResolutionError.invalidRelationships }
+            if let existing = matches.first {
+                guard (existing.session == nil || existing.session?.syncID == row.socialSessionID),
+                      matchesExistingPerson(existing.student, existing.outsider) else {
+                    throw ConflictResolutionError.invalidRelationships
+                }
+            }
+        }
+        for row in attendance {
+            _ = try socialParent(row.socialSessionID)
+            let matches = attendanceByID[row.id] ?? []
+            guard matches.count <= 1 else { throw ConflictResolutionError.invalidRelationships }
+            if let existing = matches.first {
+                guard (existing.session == nil || existing.session?.syncID == row.socialSessionID),
+                      matchesExistingPerson(existing.student, existing.outsider) else {
+                    throw ConflictResolutionError.invalidRelationships
+                }
+            }
+        }
+        if let student {
+            for link in coachingLinks {
+                let parent = try coachingParent(link.sessionID)
+                parent.studentList = parent.studentList.filter { $0.syncID != student.syncID } + [student]
+            }
+            for link in socialLinks {
+                let parent = try socialParent(link.sessionID)
+                parent.studentList = parent.studentList.filter { $0.syncID != student.syncID } + [student]
+            }
+        }
+        for row in hidden {
+            let parent = try socialParent(row.socialSessionID)
+            let child: SocialHiddenPerson
+            if let existing = hiddenByID[row.id]?.first { child = existing }
+            else if let student {
+                child = SocialHiddenPerson(student: student, createdAt: row.createdAt, syncID: row.id)
+                context.insert(child)
+            } else if let outsider {
+                child = SocialHiddenPerson(outsider: outsider, createdAt: row.createdAt, syncID: row.id)
+                context.insert(child)
+            } else { throw ConflictResolutionError.invalidRelationships }
+            child.student = student
+            child.outsider = outsider
+            child.createdAt = row.createdAt
+            // This cloud table has no updated_at column; created_at is the
+            // captured child timestamp, not a new local edit time.
+            child.updatedAt = row.createdAt
+            child.lastSyncedAt = row.createdAt
+            child.session = parent
+            if !parent.hiddenPersonList.contains(where: { $0.syncID == row.id }) {
+                parent.hiddenPersonList.append(child)
+            }
+        }
+        for row in attendance {
+            let parent = try socialParent(row.socialSessionID)
+            let child: SocialAttendance
+            if let existing = attendanceByID[row.id]?.first { child = existing }
+            else {
+                child = SocialAttendance(student: student, outsider: outsider, createdAt: row.createdAt, syncID: row.id)
+                context.insert(child)
+            }
+            child.student = student
+            child.outsider = outsider
+            child.status = row.status
+            child.paymentStatus = row.paymentStatus
+            child.createdAt = row.createdAt
+            child.updatedAt = row.updatedAt
+            child.lastSyncedAt = row.updatedAt
+            child.session = parent
+            if !parent.attendanceList.contains(where: { $0.syncID == row.id }) {
+                parent.attendanceList.append(child)
+            }
+        }
+    }
+}
+
+private enum ConflictResolutionError: LocalizedError {
+    case busy, stale, localChanged, unsavedChanges, invalidRelationships, serverSetupRequired
+
+    var errorDescription: String? {
+        switch self {
+        case .busy: return "Sync is running. Wait for it to finish, then try again."
+        case .stale: return "This comparison is out of date. Use Sync cloud data in Settings, then review the updated conflict before choosing again."
+        case .localChanged: return "This device changed after the comparison was captured. Your newer edits were kept. Sync cloud data, then review again."
+        case .unsavedChanges: return "Finish saving your current edits before resolving a conflict."
+        case .invalidRelationships: return "Some related people or attendance entries are unavailable. Sync cloud data before reviewing this conflict again."
+        case .serverSetupRequired: return "Conflict resolution needs the latest CoachPlanner database migration. No version was replaced."
+        }
     }
 }
 

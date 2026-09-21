@@ -38,7 +38,11 @@ The local store paths and SwiftData schema remain unchanged from the earlier bui
 
 Changes are saved locally first, then queued durably and grouped briefly before uploading. Supabase Realtime notifications request only affected parent records and their relationships. Startup, reconnect, and occasional foreground recovery perform a complete reconciliation to catch missed notifications. iOS may suspend a background app; reopening it catches up. Offline edits remain queued. Resolve any reported conflict before editing the same record on another device.
 
-**Settings → Cloud sync → Review conflicts** identifies records held back by conflict checks and compares the device and cloud values captured by sync, including individual attendance and payment differences. The review is read-only: opening it does not sync, choose a winner, or overwrite data. Details update through normal sync, stay visible across unrelated updates, and clear only after the affected records are successfully rechecked without conflict. Reports are kept in memory and cleared on sign-out; a new app launch rebuilds them during sync. Conflict resolution and automatic merging are not part of this screen.
+**Settings → Cloud sync → Review conflicts** identifies records held back by conflict checks and compares the device and cloud values captured by sync, including individual attendance and payment differences. Opening it does not change data. Choose **Use this device** or **Use cloud** for one record, then confirm; the choice applies the entire record and its relationships, not individual fields. A locally deleted record instead offers **Keep deletion** or **Restore cloud copy**. An outdated comparison or newer local edit blocks the choice until you sync and review again. No bulk overwrite or automatic conflict winner is enabled.
+
+Explicit conflict resolution requires `Backend/migrations/2026-09-21_conflict_resolution.sql`. The authenticated, owner-scoped database function checks the complete reviewed cloud snapshot and applies parent/relationship changes in one transaction. Missing or stale dependencies and failed child writes abort the transaction. Device edits made while a chosen device version uploads remain local and pending. Tests use mocked requests and a disposable PostgreSQL database; never exercise overwrite/deletion choices on production records as a smoke test.
+
+Conflict details update through normal sync, stay visible across unrelated updates, and clear after a confirmed resolution or a successful recheck without conflict. Reports are kept in memory and cleared on sign-out; a new app launch rebuilds them during sync.
 
 For an existing Supabase project, apply `Backend/migrations/2026-09-21_realtime.sql` after the relationship-version migration. This adds the five parent tables to the Realtime publication while retaining existing row-level security. Without it, uploads and foreground recovery still work, but live notifications cannot connect.
 
@@ -51,6 +55,7 @@ bash Tests/run-supabase-sync-tests.sh
 bash Tests/run-realtime-tests.sh
 bash Tests/run-auto-sync-tests.sh
 python3 -m unittest discover -s Backend/tests -v
+bash Backend/tests/run-conflict-resolution-tests.sh
 ```
 
 The sync tests intercept every network request and use an in-memory store and isolated preferences. They cover uploads, downloads, deletions, conflicts, relationship edits, scoped reconciliation, edits during network requests, pagination failures, and request counts without using the installed app's data or Keychain session. Separate tests exercise the live protocol, durable queue, and save notifications.
