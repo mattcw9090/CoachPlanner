@@ -2,6 +2,7 @@ import SwiftUI
 
 enum AppStorageKey {
     static let trsBookingContactPhone = "trsBookingContactPhone"
+    static let autoSyncOnLaunch = "autoSyncOnLaunch"
 }
 
 enum AustralianPhoneNumber {

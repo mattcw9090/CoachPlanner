@@ -139,6 +139,7 @@ private enum AppSection: String, CaseIterable, Identifiable {
         case .settings: return ","
         }
     }
+
 }
 
 #Preview {
