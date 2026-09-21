@@ -25,6 +25,8 @@
 		C0A000000000000000000007 /* CloudSyncScope.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000008 /* CloudSyncScope.swift */; };
 		C0A000000000000000000009 /* SupabaseAutoSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000010 /* SupabaseAutoSync.swift */; };
 		C0A000000000000000000011 /* SupabaseRealtimeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000012 /* SupabaseRealtimeClient.swift */; };
+		C0A000000000000000000013 /* SyncConflict.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000014 /* SyncConflict.swift */; };
+		C0A000000000000000000015 /* SyncConflictReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000016 /* SyncConflictReviewView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +49,8 @@
 		C0A000000000000000000008 /* CloudSyncScope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSyncScope.swift; sourceTree = "<group>"; };
 		C0A000000000000000000010 /* SupabaseAutoSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseAutoSync.swift; sourceTree = "<group>"; };
 		C0A000000000000000000012 /* SupabaseRealtimeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseRealtimeClient.swift; sourceTree = "<group>"; };
+		C0A000000000000000000014 /* SyncConflict.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncConflict.swift; sourceTree = "<group>"; };
+		C0A000000000000000000016 /* SyncConflictReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncConflictReviewView.swift; sourceTree = "<group>"; };
 		FBD32EA42FED7386008E8EA4 /* CoachPlanner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CoachPlanner.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -120,6 +124,7 @@
 				C0A000000000000000000008 /* CloudSyncScope.swift */,
 				C0A000000000000000000010 /* SupabaseAutoSync.swift */,
 				C0A000000000000000000012 /* SupabaseRealtimeClient.swift */,
+				C0A000000000000000000014 /* SyncConflict.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -163,6 +168,7 @@
 			isa = PBXGroup;
 			children = (
 				C0A000000000000000000006 /* AppSettingsView.swift */,
+				C0A000000000000000000016 /* SyncConflictReviewView.swift */,
 			);
 			path = Settings;
 			sourceTree = "<group>";
@@ -253,6 +259,8 @@
 				C0A000000000000000000007 /* CloudSyncScope.swift in Sources */,
 				C0A000000000000000000009 /* SupabaseAutoSync.swift in Sources */,
 				C0A000000000000000000011 /* SupabaseRealtimeClient.swift in Sources */,
+				C0A000000000000000000013 /* SyncConflict.swift in Sources */,
+				C0A000000000000000000015 /* SyncConflictReviewView.swift in Sources */,
 				A10000000000000000000001 /* CoachPlannerApp.swift in Sources */,
 				A10000000000000000000002 /* Student.swift in Sources */,
 				FB9F74242FEC56CC0039EE52 /* SessionListView.swift in Sources */,

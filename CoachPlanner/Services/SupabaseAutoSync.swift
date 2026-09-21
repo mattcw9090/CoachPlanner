@@ -69,7 +69,7 @@ final class SupabaseAutoSync: ObservableObject {
     private var retryDelay: TimeInterval = 2
     private var lastRecovery = Date.distantPast
     private var hasCompletedSync = false
-    private var hasUnresolvedConflicts = false
+    private var hasUnresolvedConflicts: Bool { !cloud.conflicts.isEmpty }
     private var realtimeState = SupabaseRealtimeClient.State.disconnected
     private var connectionTask: Task<Void, Never>?
     private var nextConnectionAttempt = Date.distantPast
@@ -248,11 +248,6 @@ final class SupabaseAutoSync: ObservableObject {
             if succeeded {
                 self.hasCompletedSync = true
                 self.retryDelay = 2
-                if self.cloud.lastSyncResult?.needsAttention == true {
-                    self.hasUnresolvedConflicts = true
-                } else if full {
-                    self.hasUnresolvedConflicts = false
-                }
                 if full { self.lastRecovery = Date() }
             } else {
                 self.fullSyncRequested = self.fullSyncRequested || full
@@ -330,7 +325,7 @@ final class SupabaseAutoSync: ObservableObject {
         else if !cloud.isSignedIn { status = "Sign in to sync" }
         else if !isOnline { status = "Offline · saved on this device" }
         else if isRunning || cloud.isSyncing { status = "Syncing…" }
-        else if hasUnresolvedConflicts { status = "Conflicting edits need review" }
+        else if hasUnresolvedConflicts { status = "Conflicting edits · see Settings" }
         else if needsAttention { status = "Sync needs attention" }
         else if !isEnabled { status = outbox.pending.isEmpty ? "Automatic sync off" : "Saved on this device" }
         else if !outbox.pending.isEmpty || fullSyncRequested { status = "Waiting to sync…" }

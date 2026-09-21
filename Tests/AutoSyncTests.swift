@@ -285,13 +285,22 @@ private extension SupabaseAutoSync {
         SyncMockProtocol.server.edit("students", id: conflicted.syncID, fields: ["name": "Remote Conflicting Edit"])
         try await coordinator.runOneTestPass()
         check(cloud.lastSyncResult?.conflicts == 1 && coordinator.needsAttention, "A real conflict sets persistent coordinator attention")
+        check(cloud.conflicts.count == 1 && cloud.conflicts[0].recordID == conflicted.syncID &&
+              cloud.conflicts[0].differences.contains { $0.localValue == "Locally Edited Conflict" && $0.cloudValue == "Remote Conflicting Edit" },
+              "Coordinator attention is backed by the exact record and values available for review")
         let unrelatedPerson = Outsider(name: "Unrelated Successful Edit", gender: "", contactPreference: .sms, contactDetail: "")
         context.insert(unrelatedPerson)
         try context.save()
         try await coordinator.runOneTestPass()
         check(cloud.lastSyncResult?.conflicts == 0 && coordinator.needsAttention,
               "An unrelated scoped success does not hide an existing conflict")
+        check(cloud.conflicts.count == 1 && cloud.conflicts[0].recordID == conflicted.syncID,
+              "An unrelated successful upload retains the reviewable conflict record")
         SyncMockProtocol.server.edit("students", id: conflicted.syncID, fields: ["name": conflicted.name])
+        coordinator.enqueue(CloudSyncScope(students: [conflicted.syncID]))
+        try await coordinator.runOneTestPass()
+        check(cloud.lastError == nil && cloud.conflicts.isEmpty && !coordinator.needsAttention,
+              "A scoped recheck that resolves the reviewed record immediately clears stale conflict attention")
         try await coordinator.runOneTestPass(full: true)
         check(cloud.lastError == nil && cloud.lastSyncResult?.conflicts == 0 && !coordinator.needsAttention,
               "A successful full reconciliation clears resolved conflict attention")

@@ -10,6 +10,7 @@ struct AppSettingsView: View {
     @State private var cloudPassword = ""
     @State private var isContactPickerPresented = false
     @State private var isSigningIn = false
+    @State private var isConflictReviewPresented = false
     @FocusState private var focusedCredential: CredentialField?
 
     private enum CredentialField: Hashable {
@@ -60,6 +61,9 @@ struct AppSettingsView: View {
                 trsBookingContactPhone = AustralianPhoneNumber.international(from: phone)
             }
         )
+        .sheet(isPresented: $isConflictReviewPresented) {
+            SyncConflictReviewView(cloud: cloud)
+        }
     }
 
     private var bookingContactCard: some View {
@@ -188,6 +192,32 @@ struct AppSettingsView: View {
                 .foregroundStyle(result.needsAttention ? Color.orange : Color.green)
                 .fixedSize(horizontal: false, vertical: true)
             }
+
+            Button {
+                isConflictReviewPresented = true
+            } label: {
+                HStack(spacing: 10) {
+                    Label("Review conflicts", systemImage: "doc.text.magnifyingglass")
+                    Spacer(minLength: 8)
+                    if !cloud.conflicts.isEmpty {
+                        Text(cloud.conflicts.count.formatted())
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color.orange.opacity(0.14)))
+                            .foregroundStyle(.orange)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.blue)
+            .accessibilityLabel(cloud.conflicts.isEmpty
+                                ? "Review conflicts"
+                                : "Review conflicts, \(cloud.conflicts.count) records")
 
             Toggle("Automatic sync", isOn: $automaticSync.isEnabled)
                 .tint(.blue)

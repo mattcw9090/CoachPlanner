@@ -18,6 +18,8 @@ final class SupabaseCloud: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var lastSyncResult: SyncRunResult?
     @Published private(set) var isSyncing = false
+    @Published private(set) var conflicts: [SyncConflict] = []
+    @Published private(set) var conflictDetailsLastCheckedAt: Date?
     private(set) var deferredChanges = CloudSyncScope()
 
     private let keychain = SupabaseKeychain()
@@ -66,6 +68,7 @@ final class SupabaseCloud: ObservableObject {
         isSignedIn = false
         lastError = nil
         lastSyncResult = nil
+        clearConflictReports()
         keychain.delete("access_token")
         keychain.delete("refresh_token")
     }
@@ -162,6 +165,7 @@ final class SupabaseCloud: ObservableObject {
         combined = combined.adding(sessionResult)
         lastSyncResult = combined
         syncLedger.save(to: defaults)
+        if scope == nil { conflictDetailsLastCheckedAt = Date() }
     }
 
     private func syncCoachingSessions(in context: ModelContext) async {
@@ -194,6 +198,7 @@ final class SupabaseCloud: ObservableObject {
             var conflicts = 0
             let skipped = 0
             var cloudOnly = 0
+            var reportedIDs: Set<UUID> = []
 
             for local in localSessions {
                 let ledgerKey = SupabaseSyncLedger.key(for: local.syncID)
@@ -258,6 +263,9 @@ final class SupabaseCloud: ObservableObject {
                         nextLedger[ledgerKey] = cloud.updatedAt
                     } else {
                         conflicts += 1
+                        reportedIDs.insert(local.syncID)
+                        publishConflict(coachingConflict(local: local, cloud: cloud,
+                                                        cloudStudentIDs: cloudStudentIDs, studentsByID: studentByID))
                         nextLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
@@ -299,6 +307,15 @@ final class SupabaseCloud: ObservableObject {
                 if let baseline = syncLedger.coachingSessions[ledgerKey] {
                     if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
                         conflicts += 1
+                        reportedIDs.insert(cloud.id)
+                        publishConflict(deletionConflict(
+                            table: "coaching_sessions", id: cloud.id, entityName: "Coaching session",
+                            title: sessionConflictTitle(
+                                start: cloud.weekStart.map { cloud.startTime.applyingSyncWeek($0, dayOfWeek: cloud.dayOfWeek) } ?? cloud.startTime,
+                                venue: cloud.venue
+                            ),
+                            cloudUpdatedAt: cloud.updatedAt, baseline: baseline
+                        ))
                         cloudOnly += 1
                         nextLedger[ledgerKey] = baseline
                     } else {
@@ -332,6 +349,9 @@ final class SupabaseCloud: ObservableObject {
             try saveSyncChanges(in: context)
             syncLedger.coachingSessions = nextLedger
             syncLedger.save(to: defaults)
+            finishConflictChecks(table: "coaching_sessions",
+                                 checkedIDs: Set(localSessions.map(\.syncID)).union(cloudSessions.map(\.id)),
+                                 reportedIDs: reportedIDs, requestedIDs: activeScope?.coachingSessions)
             lastSyncResult = SyncRunResult(
                 pushed: pushed,
                 pulled: pulled,
@@ -370,6 +390,8 @@ final class SupabaseCloud: ObservableObject {
             let hiddenWeeksByStudent = Dictionary(grouping: cloudHiddenWeeks, by: \.studentID)
             var nextStudentLedger = unscopedLedger(syncLedger.students, ids: activeScope?.students)
             var nextOutsiderLedger = unscopedLedger(syncLedger.outsiders, ids: activeScope?.outsiders)
+            var reportedStudentIDs: Set<UUID> = []
+            var reportedOutsiderIDs: Set<UUID> = []
             var pushed = 0
             var pulled = 0
             var conflicts = 0
@@ -447,6 +469,9 @@ final class SupabaseCloud: ObservableObject {
                         nextStudentLedger[ledgerKey] = cloud.updatedAt
                     } else {
                         conflicts += 1
+                        reportedStudentIDs.insert(student.syncID)
+                        publishConflict(studentConflict(local: student, cloud: cloud,
+                                                       localHiddenWeeks: localHiddenWeekKeys, cloudHiddenWeeks: cloudHiddenWeekKeys))
                         nextStudentLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
@@ -490,6 +515,9 @@ final class SupabaseCloud: ObservableObject {
                 if let baseline = syncLedger.students[ledgerKey] {
                     if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
                         conflicts += 1
+                        reportedStudentIDs.insert(cloud.id)
+                        publishConflict(deletionConflict(table: "students", id: cloud.id, entityName: "Student",
+                                                        title: cloud.name, cloudUpdatedAt: cloud.updatedAt, baseline: baseline))
                         cloudOnly += 1
                         nextStudentLedger[ledgerKey] = baseline
                     } else {
@@ -571,6 +599,8 @@ final class SupabaseCloud: ObservableObject {
                         nextOutsiderLedger[ledgerKey] = cloud.updatedAt
                     } else {
                         conflicts += 1
+                        reportedOutsiderIDs.insert(outsider.syncID)
+                        publishConflict(outsiderConflict(local: outsider, cloud: cloud))
                         nextOutsiderLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
@@ -597,6 +627,9 @@ final class SupabaseCloud: ObservableObject {
                 if let baseline = syncLedger.outsiders[ledgerKey] {
                     if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
                         conflicts += 1
+                        reportedOutsiderIDs.insert(cloud.id)
+                        publishConflict(deletionConflict(table: "outsiders", id: cloud.id, entityName: "Outsider",
+                                                        title: cloud.name, cloudUpdatedAt: cloud.updatedAt, baseline: baseline))
                         cloudOnly += 1
                         nextOutsiderLedger[ledgerKey] = baseline
                     } else {
@@ -623,6 +656,12 @@ final class SupabaseCloud: ObservableObject {
             syncLedger.students = nextStudentLedger
             syncLedger.outsiders = nextOutsiderLedger
             syncLedger.save(to: defaults)
+            finishConflictChecks(table: "students",
+                                 checkedIDs: Set(localStudents.map(\.syncID)).union(cloudStudents.map(\.id)),
+                                 reportedIDs: reportedStudentIDs, requestedIDs: activeScope?.students)
+            finishConflictChecks(table: "outsiders",
+                                 checkedIDs: Set(localOutsiders.map(\.syncID)).union(cloudOutsiders.map(\.id)),
+                                 reportedIDs: reportedOutsiderIDs, requestedIDs: activeScope?.outsiders)
             lastSyncResult = SyncRunResult(
                 pushed: pushed,
                 pulled: pulled,
@@ -658,6 +697,7 @@ final class SupabaseCloud: ObservableObject {
         let cloudBookings = try await fetchCourtRecords(token: token)
         var remainingCloud = Dictionary(uniqueKeysWithValues: cloudBookings.map { ($0.id, $0) })
         var nextLedger = unscopedLedger(syncLedger.courtBookings, ids: activeScope?.courtBookings)
+        var reportedIDs: Set<UUID> = []
         var pushed = 0
         var pulled = 0
         var conflicts = 0
@@ -717,6 +757,8 @@ final class SupabaseCloud: ObservableObject {
                     nextLedger[ledgerKey] = cloud.updatedAt
                 } else {
                     conflicts += 1
+                    reportedIDs.insert(booking.syncID)
+                    publishConflict(courtConflict(local: booking, cloud: cloud))
                     nextLedger[ledgerKey] = baseline
                 }
             } else if localChanged {
@@ -746,6 +788,15 @@ final class SupabaseCloud: ObservableObject {
             if let baseline = syncLedger.courtBookings[ledgerKey] {
                 if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
                     conflicts += 1
+                    reportedIDs.insert(cloud.id)
+                    publishConflict(deletionConflict(
+                        table: "court_bookings", id: cloud.id, entityName: "Court booking",
+                        title: sessionConflictTitle(
+                            start: cloud.weekStart.map { cloud.startTime.applyingSyncWeek($0, dayOfWeek: cloud.dayOfWeek) } ?? cloud.startTime,
+                            venue: cloud.venue
+                        ),
+                        cloudUpdatedAt: cloud.updatedAt, baseline: baseline
+                    ))
                     cloudOnly += 1
                     nextLedger[ledgerKey] = baseline
                 } else {
@@ -769,6 +820,9 @@ final class SupabaseCloud: ObservableObject {
         try saveSyncChanges(in: context)
         syncLedger.courtBookings = nextLedger
         syncLedger.save(to: defaults)
+        finishConflictChecks(table: "court_bookings",
+                             checkedIDs: Set(localBookings.map(\.syncID)).union(cloudBookings.map(\.id)),
+                             reportedIDs: reportedIDs, requestedIDs: activeScope?.courtBookings)
         return SyncRunResult(
             pushed: pushed,
             pulled: pulled,
@@ -825,6 +879,7 @@ final class SupabaseCloud: ObservableObject {
         let attendancesBySocial = Dictionary(grouping: cloudAttendances, by: \.socialSessionID)
         var remainingCloud = Dictionary(uniqueKeysWithValues: cloudSocials.map { ($0.id, $0) })
         var nextLedger = unscopedLedger(syncLedger.socialSessions, ids: activeScope?.socialSessions)
+        var reportedIDs: Set<UUID> = []
         var pushed = 0
         var pulled = 0
         var conflicts = 0
@@ -910,6 +965,12 @@ final class SupabaseCloud: ObservableObject {
                     nextLedger[ledgerKey] = cloud.updatedAt
                 } else {
                     conflicts += 1
+                    reportedIDs.insert(social.syncID)
+                    publishConflict(socialConflict(
+                        local: social, cloud: cloud, cloudStudentIDs: cloudStudentIDs,
+                        cloudHiddenPeople: cloudHidden, cloudAttendances: cloudAttendance,
+                        studentsByID: studentsByID, outsidersByID: outsidersByID
+                    ))
                     nextLedger[ledgerKey] = baseline
                 }
             } else if localChanged {
@@ -961,6 +1022,15 @@ final class SupabaseCloud: ObservableObject {
             if let baseline = syncLedger.socialSessions[ledgerKey] {
                 if cloud.updatedAt > baseline.addingTimeInterval(0.001) {
                     conflicts += 1
+                    reportedIDs.insert(cloud.id)
+                    publishConflict(deletionConflict(
+                        table: "social_sessions", id: cloud.id, entityName: "Social session",
+                        title: socialConflictTitle(
+                            title: cloud.title, start: cloud.startTime.applyingSyncWeek(cloud.weekStart, dayOfWeek: cloud.dayOfWeek),
+                            venue: cloud.venue
+                        ),
+                        cloudUpdatedAt: cloud.updatedAt, baseline: baseline
+                    ))
                     cloudOnly += 1
                     nextLedger[ledgerKey] = baseline
                 } else {
@@ -1002,6 +1072,9 @@ final class SupabaseCloud: ObservableObject {
         try saveSyncChanges(in: context)
         syncLedger.socialSessions = nextLedger
         syncLedger.save(to: defaults)
+        finishConflictChecks(table: "social_sessions",
+                             checkedIDs: Set(localSocials.map(\.syncID)).union(cloudSocials.map(\.id)),
+                             reportedIDs: reportedIDs, requestedIDs: activeScope?.socialSessions)
         return SyncRunResult(
             pushed: pushed,
             pulled: pulled,
@@ -1016,6 +1089,300 @@ final class SupabaseCloud: ObservableObject {
         SyncTimestamping.isApplyingRemoteChange = true
         defer { SyncTimestamping.isApplyingRemoteChange = false }
         try context.save()
+    }
+
+    // Reports describe existing reconciliation decisions; they never choose a
+    // winner, write a record, or change conflict detection.
+    private func clearConflictReports() {
+        conflicts = []
+        conflictDetailsLastCheckedAt = nil
+    }
+
+    private func publishConflict(_ report: SyncConflict) {
+        var updated = conflicts.filter { $0.id != report.id }
+        updated.append(report)
+        conflicts = updated.sorted {
+            if $0.entityName != $1.entityName { return $0.entityName < $1.entityName }
+            if $0.title != $1.title { return $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            return $0.id < $1.id
+        }
+    }
+
+    private func finishConflictChecks(
+        table: String, checkedIDs: Set<UUID>, reportedIDs: Set<UUID>, requestedIDs: Set<UUID>?
+    ) {
+        // Only called after this stage saved successfully. A failed fetch,
+        // write, or save leaves its previous reports intact.
+        var completedIDs = checkedIDs
+        if let requestedIDs {
+            completedIDs.formUnion(requestedIDs)
+        } else {
+            // A complete table download also checks reports for rows which no
+            // longer exist on either side.
+            completedIDs.formUnion(conflicts.filter { $0.table == table }.map(\.recordID))
+        }
+        let deferredIDs: Set<UUID>
+        switch table {
+        case "students": deferredIDs = deferredChanges.students
+        case "outsiders": deferredIDs = deferredChanges.outsiders
+        case "court_bookings": deferredIDs = deferredChanges.courtBookings
+        case "coaching_sessions": deferredIDs = deferredChanges.coachingSessions
+        case "social_sessions": deferredIDs = deferredChanges.socialSessions
+        default: return
+        }
+        completedIDs.subtract(deferredIDs)
+        conflicts.removeAll {
+            $0.table == table && completedIDs.contains($0.recordID) && !reportedIDs.contains($0.recordID)
+        }
+    }
+
+    private func conflictReport(
+        table: String, id: UUID, entityName: String, title: String,
+        localUpdatedAt: Date?, cloudUpdatedAt: Date?,
+        reason: String = "The sync check could not safely choose between the local and cloud versions.",
+        differences: [SyncConflictDifference]
+    ) -> SyncConflict {
+        SyncConflict(
+            id: "\(table):\(id.uuidString.lowercased())", table: table, recordID: id,
+            entityName: entityName, title: title.isEmpty ? "\(entityName) \(id.uuidString)" : title,
+            detectedAt: Date(), localUpdatedAt: localUpdatedAt, cloudUpdatedAt: cloudUpdatedAt,
+            reason: reason, differences: differences
+        )
+    }
+
+    private func deletionConflict(
+        table: String, id: UUID, entityName: String, title: String, cloudUpdatedAt: Date, baseline: Date
+    ) -> SyncConflict {
+        conflictReport(
+            table: table, id: id, entityName: entityName, title: title,
+            localUpdatedAt: nil, cloudUpdatedAt: cloudUpdatedAt,
+            reason: baseline == .distantPast
+                ? "A cloud copy exists after an upload whose result was not confirmed. This device no longer has the record, so sync needs a review."
+                : "This device no longer has the record, but the cloud copy changed after its last synced version. Automatic deletion was stopped.",
+            differences: [SyncConflictDifference(id: "presence", label: "Record availability",
+                                                localValue: "Not present on this device", cloudValue: "Present in the cloud")]
+        )
+    }
+
+    private func conflictField(_ id: String, _ label: String, _ local: String, _ cloud: String) -> SyncConflictDifference? {
+        guard local != cloud else { return nil }
+        return SyncConflictDifference(id: id, label: label, localValue: local, cloudValue: cloud)
+    }
+
+    private func conflictText(_ value: String?) -> String {
+        guard let value else { return "Not set" }
+        guard !value.isEmpty else { return "Empty" }
+        // Keep literal text distinct from the placeholders, including values
+        // already beginning with the quotes used for that distinction.
+        if value == "Not set" || value == "Empty" || value.hasPrefix("\"") {
+            return String(reflecting: value)
+        }
+        return value
+    }
+
+    private func conflictDate(_ date: Date?) -> String {
+        date?.formatted(date: .abbreviated, time: .omitted) ?? "Not set"
+    }
+
+    private func conflictTime(_ date: Date) -> String {
+        date.formatted(date: .omitted, time: .shortened)
+    }
+
+    private func conflictWeekday(_ day: Int) -> String {
+        Weekday(rawValue: day)?.name ?? String(day)
+    }
+
+    private func conflictAmount(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...6)))
+    }
+
+    private func sessionConflictTitle(start: Date, venue: String) -> String {
+        "\(start.formatted(date: .abbreviated, time: .shortened)) · \(venue)"
+    }
+
+    private func socialConflictTitle(title: String, start: Date, venue: String) -> String {
+        let session = sessionConflictTitle(start: start, venue: venue)
+        return title.isEmpty ? session : "\(title) · \(session)"
+    }
+
+    private func studentConflict(
+        local: Student, cloud: CloudStudentRecord, localHiddenWeeks: Set<String>, cloudHiddenWeeks: Set<String>
+    ) -> SyncConflict {
+        var differences = [
+            conflictField("name", "Name", conflictText(local.name), conflictText(cloud.name)),
+            conflictField("gender", "Gender", conflictText(local.gender), conflictText(cloud.gender)),
+            conflictField("contact_preference", "Contact preference", conflictText(local.contactPreference), conflictText(cloud.contactPreference)),
+            conflictField("contact_detail", "Contact details", conflictText(local.contactDetail), conflictText(cloud.contactDetail)),
+            conflictField("sessions_demand", "Weekly sessions", String(local.sessionsDemand), String(cloud.sessionsDemand)),
+            conflictField("is_hidden", "Roster visibility", local.isHidden ? "Hidden" : "Visible", cloud.isHidden ? "Hidden" : "Visible")
+        ].compactMap { $0 }
+        for week in localHiddenWeeks.symmetricDifference(cloudHiddenWeeks).sorted() {
+            let label = Self.dateOnlyFormatter.date(from: week).map { conflictDate($0) } ?? week
+            differences.append(SyncConflictDifference(
+                id: "hidden_week:\(week)", label: "Week of \(label)",
+                localValue: localHiddenWeeks.contains(week) ? "Hidden" : "Visible",
+                cloudValue: cloudHiddenWeeks.contains(week) ? "Hidden" : "Visible"
+            ))
+        }
+        return conflictReport(table: "students", id: local.syncID, entityName: "Student",
+                              title: local.name.isEmpty ? cloud.name : local.name,
+                              localUpdatedAt: local.updatedAt, cloudUpdatedAt: cloud.updatedAt, differences: differences)
+    }
+
+    private func outsiderConflict(local: Outsider, cloud: CloudOutsiderRecord) -> SyncConflict {
+        conflictReport(table: "outsiders", id: local.syncID, entityName: "Outsider",
+                       title: local.name.isEmpty ? cloud.name : local.name,
+                       localUpdatedAt: local.updatedAt, cloudUpdatedAt: cloud.updatedAt,
+                       differences: [
+                        conflictField("name", "Name", conflictText(local.name), conflictText(cloud.name)),
+                        conflictField("gender", "Gender", conflictText(local.gender), conflictText(cloud.gender)),
+                        conflictField("contact_preference", "Contact preference", conflictText(local.contactPreference), conflictText(cloud.contactPreference)),
+                        conflictField("contact_detail", "Contact details", conflictText(local.contactDetail), conflictText(cloud.contactDetail))
+                       ].compactMap { $0 })
+    }
+
+    private func coachingConflict(
+        local: CoachingSession, cloud: CloudSessionRecord, cloudStudentIDs: Set<UUID>, studentsByID: [UUID: Student]
+    ) -> SyncConflict {
+        var differences = [
+            conflictField("week_start", "Week starting", conflictDate(local.weekStart), conflictDate(cloud.weekStart)),
+            conflictField("day_of_week", "Day", conflictWeekday(local.dayOfWeek), conflictWeekday(cloud.dayOfWeek)),
+            conflictField("start_time", "Start time", conflictTime(local.startTime), conflictTime(cloud.startTime)),
+            conflictField("end_time", "End time", conflictTime(local.endTime), conflictTime(cloud.endTime)),
+            conflictField("venue", "Venue", conflictText(local.venue), conflictText(cloud.venue)),
+            conflictField("status", "Session status", conflictText(local.status), conflictText(cloud.status)),
+            conflictField("court_number", "Court", conflictText(local.courtNumber), conflictText(cloud.courtNumber)),
+            abs(local.sessionFee - cloud.sessionFee) < 0.005 ? nil
+                : conflictField("session_fee", "Session fee", conflictAmount(local.sessionFee), conflictAmount(cloud.sessionFee)),
+            conflictField("session_description", "Description", conflictText(local.sessionDescription), conflictText(cloud.sessionDescription))
+        ].compactMap { $0 }
+        differences += participantDifferences(
+            local: Set(local.studentList.map { SocialPersonSyncKey.student($0.syncID) }),
+            cloud: Set(cloudStudentIDs.map(SocialPersonSyncKey.student)), label: "Participant", field: "participant",
+            localPresent: "Included", cloudPresent: "Included", absent: "Not included",
+            studentsByID: studentsByID, outsidersByID: [:]
+        )
+        return conflictReport(table: "coaching_sessions", id: local.syncID, entityName: "Coaching session",
+                              title: sessionConflictTitle(start: local.effectiveStartTime, venue: local.venue),
+                              localUpdatedAt: local.updatedAt, cloudUpdatedAt: cloud.updatedAt, differences: differences)
+    }
+
+    private func courtConflict(local: CourtBooking, cloud: CloudCourtRecord) -> SyncConflict {
+        conflictReport(table: "court_bookings", id: local.syncID, entityName: "Court booking",
+                       title: sessionConflictTitle(start: local.effectiveStartTime, venue: local.venue),
+                       localUpdatedAt: local.updatedAt, cloudUpdatedAt: cloud.updatedAt,
+                       differences: [
+                        conflictField("week_start", "Week starting", conflictDate(local.weekStart), conflictDate(cloud.weekStart)),
+                        conflictField("day_of_week", "Day", conflictWeekday(local.dayOfWeek), conflictWeekday(cloud.dayOfWeek)),
+                        conflictField("start_time", "Start time", conflictTime(local.startTime), conflictTime(cloud.startTime)),
+                        conflictField("end_time", "End time", conflictTime(local.endTime), conflictTime(cloud.endTime)),
+                        conflictField("venue", "Venue", conflictText(local.venue), conflictText(cloud.venue)),
+                        conflictField("court_number", "Court", conflictText(local.courtNumber), conflictText(cloud.courtNumber))
+                       ].compactMap { $0 })
+    }
+
+    private func socialConflict(
+        local: SocialSession, cloud: CloudSocialRecord, cloudStudentIDs: Set<UUID>,
+        cloudHiddenPeople: [CloudHiddenPersonRecord], cloudAttendances: [CloudAttendanceRecord],
+        studentsByID: [UUID: Student], outsidersByID: [UUID: Outsider]
+    ) -> SyncConflict {
+        var differences = [
+            conflictField("title", "Title", conflictText(local.title), conflictText(cloud.title)),
+            conflictField("week_start", "Week starting", conflictDate(local.weekStart), conflictDate(cloud.weekStart)),
+            conflictField("day_of_week", "Day", conflictWeekday(local.dayOfWeek), conflictWeekday(cloud.dayOfWeek)),
+            conflictField("start_time", "Start time", conflictTime(local.startTime), conflictTime(cloud.startTime)),
+            conflictField("end_time", "End time", conflictTime(local.endTime), conflictTime(cloud.endTime)),
+            conflictField("venue", "Venue", conflictText(local.venue), conflictText(cloud.venue)),
+            conflictField("status", "Session status", conflictText(local.status), conflictText(cloud.status)),
+            conflictField("are_courts_booked", "Courts booked", local.areCourtsBooked ? "Yes" : "No", cloud.areCourtsBooked ? "Yes" : "No"),
+            conflictField("court_numbers", "Courts", conflictText(local.courtNumbers), conflictText(cloud.courtNumbers)),
+            abs(local.shuttlecockCost - cloud.shuttlecockCost) < 0.005 ? nil
+                : conflictField("shuttlecock_cost", "Shuttlecock cost", conflictAmount(local.shuttlecockCost), conflictAmount(cloud.shuttlecockCost)),
+            abs(local.courtCost - cloud.courtCost) < 0.005 ? nil
+                : conflictField("court_cost", "Court cost", conflictAmount(local.courtCost), conflictAmount(cloud.courtCost))
+        ].compactMap { $0 }
+        differences += participantDifferences(
+            local: Set(local.studentList.map { SocialPersonSyncKey.student($0.syncID) }),
+            cloud: Set(cloudStudentIDs.map(SocialPersonSyncKey.student)), label: "Participant", field: "participant",
+            localPresent: "Included", cloudPresent: "Included", absent: "Not included",
+            studentsByID: studentsByID, outsidersByID: outsidersByID
+        )
+        differences += participantDifferences(
+            local: Set(local.hiddenPersonList.compactMap(\.syncParticipantKey)),
+            cloud: Set(cloudHiddenPeople.compactMap(\.participantKey)), label: "Visibility", field: "hidden",
+            localPresent: "Hidden", cloudPresent: "Hidden", absent: "Visible",
+            studentsByID: studentsByID, outsidersByID: outsidersByID
+        )
+        if let count = conflictField("hidden_count", "Hidden entries", String(local.hiddenPersonList.count), String(cloudHiddenPeople.count)) {
+            differences.append(count)
+        }
+        let localAttendance = Dictionary(grouping: local.attendanceList.compactMap(\.syncValue), by: \.participant)
+        let cloudAttendance = Dictionary(grouping: cloudAttendances.compactMap(\.syncValue), by: \.participant)
+        let people = Set(localAttendance.keys).union(cloudAttendance.keys).sorted { participantID($0) < participantID($1) }
+        for person in people {
+            let localValues = localAttendance[person] ?? []
+            let cloudValues = cloudAttendance[person] ?? []
+            let name = participantName(person, studentsByID: studentsByID, outsidersByID: outsidersByID)
+            let id = participantID(person)
+            let localStatus = localValues.isEmpty ? "Not attending" : localValues.map(\.status).sorted().joined(separator: ", ")
+            let cloudStatus = cloudValues.isEmpty ? "Not attending" : cloudValues.map(\.status).sorted().joined(separator: ", ")
+            let localPayment = localValues.isEmpty ? "Not attending" : localValues.map(\.paymentStatus).sorted().joined(separator: ", ")
+            let cloudPayment = cloudValues.isEmpty ? "Not attending" : cloudValues.map(\.paymentStatus).sorted().joined(separator: ", ")
+            if let status = conflictField("attendance:\(id)", "\(name) · Attendance", localStatus, cloudStatus) {
+                differences.append(status)
+            }
+            if let payment = conflictField("payment:\(id)", "\(name) · Payment", localPayment, cloudPayment) {
+                differences.append(payment)
+            }
+            if localValues.count > 1 || cloudValues.count > 1 {
+                // Preserve which payment belongs to which attendance status.
+                // Separate sorted columns can hide swapped duplicate entries.
+                let localPairs = localValues.map { "\($0.status) · \($0.paymentStatus)" }.sorted().joined(separator: "; ")
+                let cloudPairs = cloudValues.map { "\($0.status) · \($0.paymentStatus)" }.sorted().joined(separator: "; ")
+                if let pairs = conflictField("attendance_pairs:\(id)", "\(name) · Attendance and payment", localPairs, cloudPairs) {
+                    differences.append(pairs)
+                }
+            }
+        }
+        if let count = conflictField("attendance_count", "Attendance entries", String(local.attendanceList.count), String(cloudAttendances.count)) {
+            differences.append(count)
+        }
+        return conflictReport(table: "social_sessions", id: local.syncID, entityName: "Social session",
+                              title: socialConflictTitle(title: local.title, start: local.effectiveStartTime, venue: local.venue),
+                              localUpdatedAt: local.updatedAt, cloudUpdatedAt: cloud.updatedAt, differences: differences)
+    }
+
+    private func participantID(_ person: SocialPersonSyncKey) -> String {
+        switch person {
+        case .student(let id): return "student:\(id.uuidString.lowercased())"
+        case .outsider(let id): return "outsider:\(id.uuidString.lowercased())"
+        }
+    }
+
+    private func participantName(_ person: SocialPersonSyncKey, studentsByID: [UUID: Student], outsidersByID: [UUID: Outsider]) -> String {
+        switch person {
+        case .student(let id):
+            if let name = studentsByID[id]?.name, !name.isEmpty { return name }
+            return "Student \(id.uuidString)"
+        case .outsider(let id):
+            if let name = outsidersByID[id]?.name, !name.isEmpty { return name }
+            return "Outsider \(id.uuidString)"
+        }
+    }
+
+    private func participantDifferences(
+        local: Set<SocialPersonSyncKey>, cloud: Set<SocialPersonSyncKey>, label: String, field: String,
+        localPresent: String, cloudPresent: String, absent: String,
+        studentsByID: [UUID: Student], outsidersByID: [UUID: Outsider]
+    ) -> [SyncConflictDifference] {
+        local.symmetricDifference(cloud).sorted { participantID($0) < participantID($1) }.map { person in
+            SyncConflictDifference(
+                id: "\(field):\(participantID(person))",
+                label: "\(participantName(person, studentsByID: studentsByID, outsidersByID: outsidersByID)) · \(label)",
+                localValue: local.contains(person) ? localPresent : absent,
+                cloudValue: cloud.contains(person) ? cloudPresent : absent
+            )
+        }
     }
 
     private func renewAccessToken() async throws {

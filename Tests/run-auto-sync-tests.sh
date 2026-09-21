@@ -27,6 +27,7 @@ xcrun swiftc -parse-as-library -swift-version 5 \
     "$repo_root/CoachPlanner/Models/CoachingSession.swift" \
     "$repo_root/CoachPlanner/Models/SocialSession.swift" \
     "$repo_root/CoachPlanner/Services/CloudSyncScope.swift" \
+    "$repo_root/CoachPlanner/Services/SyncConflict.swift" \
     "$repo_root/CoachPlanner/Services/SupabaseRealtimeClient.swift" \
     "$test_directory/AutoSyncTests.swift" -o "$test_directory/auto-sync-tests"
 TZ=Australia/Perth "$test_directory/auto-sync-tests"
