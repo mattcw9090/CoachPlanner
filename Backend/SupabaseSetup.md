@@ -37,9 +37,9 @@ Never put the `service_role` key in the iPhone app, repository, migration bundle
 5. Run `import_bundle.py --dry-run` first, then perform the real upload.
 6. Compare row counts before changing the app to read from the API.
 
-## App connection and manual sync
+## App connection and automatic sync
 
-CoachPlanner connects to Supabase from Settings. It uses the project's publishable key, signs in through Supabase Auth, and stores only the returned session token in the device Keychain. SwiftData remains the offline local cache while the explicit sync action reconciles timestamped records with Supabase.
+CoachPlanner connects to Supabase from Settings. It uses the project's publishable key, signs in through Supabase Auth, and stores only the returned session tokens in the device Keychain. SwiftData remains the offline local cache. Automatic sync uploads committed edits and listens for authenticated, workspace-filtered Realtime notifications while open.
 
 1. Build and run CoachPlanner on the iPhone or Mac Catalyst target.
 2. Open **Settings → Supabase Cloud**.
@@ -50,4 +50,6 @@ Before installing the create/delete and relationship-sync build over an existing
 
 The manual sync now creates, updates, downloads, and soft-deletes students, outsiders, coaching sessions, court bookings, and social sessions. It also reconciles coaching/social student lists, student hidden weeks, social hidden people, and social attendance. The first successful run establishes a local deletion baseline; later missing records can then be distinguished from records newly created on another device.
 
-Supabase is the shared cross-device store. Sync before starting work on a device and after finishing changes; the app does not synchronize in the background.
+Then run [`migrations/2026-09-21_realtime.sql`](./migrations/2026-09-21_realtime.sql) in the SQL Editor. It idempotently adds only the five parent tables to the existing `supabase_realtime` publication, preserving other publications and row-level security. Relationship changes notify via the parent-version triggers above.
+
+Keep **Automatic sync** enabled for routine use. The app saves edits locally, queues uploads durably, refreshes affected records on live events, and performs full recovery on startup/reconnect. Failed uploads retry with backoff. The status indicator distinguishes pending work, offline mode, errors, and a disconnected live channel. iOS background suspension pauses live updates; reopening resumes and catches up. **Sync cloud data** still requests a full reconciliation.

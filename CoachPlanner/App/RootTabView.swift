@@ -3,23 +3,32 @@ import SwiftUI
 
 struct RootTabView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var automaticSync = SupabaseAutoSync.shared
     @State private var selectedSection: AppSection = .sessions
     @State private var socialsWeekStart = SocialSessionListView.monday(of: .now)
 
     var body: some View {
         rootContent
-            .onReceive(NotificationCenter.default.publisher(for: ModelContext.willSave, object: modelContext)) { _ in
-                if modelContext.hasChanges {
-                    for model in modelContext.changedModelsArray {
-                        if !SyncTimestamping.isApplyingRemoteChange,
-                           let timestamped = model as? SyncTimestamped {
-                            timestamped.updatedAt = .now
-                        }
-                    }
+            .onAppear {
+                automaticSync.attach(to: modelContext, active: scenePhase == .active)
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                automaticSync.setActive(newPhase == .active)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                HStack(spacing: 6) {
+                    Image(systemName: automaticSync.needsAttention ? "exclamationmark.icloud" : "icloud")
+                    Text(automaticSync.status)
                 }
+                .font(.caption)
+                .foregroundStyle(automaticSync.needsAttention ? Color.orange : Color.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                .background(.bar)
+                .accessibilityElement(children: .combine)
             }
     }
-
 
     @ViewBuilder
     private var rootContent: some View {

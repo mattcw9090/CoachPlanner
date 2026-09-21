@@ -730,8 +730,9 @@ def build_planning_snapshot(
         "workspace_id": config.workspace_id,
         "cloud_freshness": {
             "latest_relevant_change_at": _latest_timestamp(all_relevant_records),
-            "manual_device_sync_required": True,
-            "note": "Changes made in the iPhone or Mac app appear here only after Sync cloud data is tapped on that device.",
+            "manual_device_sync_required": False,
+            "device_sync_required": True,
+            "note": "Device edits appear only after successful sync. Current apps sync saved edits automatically while open and connected; offline or pending edits may be absent. Older builds or devices with automatic sync disabled require Sync cloud data.",
         },
         "target_week": week_payload(target_week, target_end),
         "baseline_week": week_payload(baseline_week, baseline_end),

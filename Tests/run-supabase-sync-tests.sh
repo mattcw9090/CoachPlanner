@@ -18,5 +18,6 @@ xcrun swiftc -parse-as-library -swift-version 5 \
     "$repo_root/CoachPlanner/Models/Student.swift" \
     "$repo_root/CoachPlanner/Models/CoachingSession.swift" \
     "$repo_root/CoachPlanner/Models/SocialSession.swift" \
+    "$repo_root/CoachPlanner/Services/CloudSyncScope.swift" \
     "$test_directory/SyncTests.swift" -o "$test_directory/sync-tests"
 TZ=Australia/Perth "$test_directory/sync-tests"

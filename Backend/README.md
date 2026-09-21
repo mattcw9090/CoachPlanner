@@ -14,6 +14,7 @@ This directory defines the first cloud-backed storage contract. It is provider-n
 
 - `schema.sql` — PostgreSQL tables, indexes, and updated-timestamp trigger.
 - `migrations/2026-09-08_relationship_versions.sql` — idempotent parent-version triggers for relationship sync on an existing project.
+- `migrations/2026-09-21_realtime.sql` — idempotently publishes the five parent tables for authenticated live notifications.
 - `openapi.yaml` — the minimum API contract for storage migration and synchronization.
 - `export_swiftdata_store.py` — read-only exporter for the existing Mac SwiftData store.
 - `import_bundle.py` — authenticated, idempotent uploader for an exported bundle.
@@ -41,7 +42,7 @@ Tools/coachplanner-cloud snapshot --week next
 
 Use `--week current` or an explicit Monday such as `--week 2026-09-14` when needed. Add `--output /private/tmp/coachplanner-snapshot.json` to keep the full JSON in an owner-readable file instead of standard output.
 
-The output includes the prior-week baseline, target-week sessions, court bookings, student demand, week-specific hiding, and calculated underallocation. It also states that app changes remain absent until **Sync cloud data** is tapped on the device where those changes were made.
+The output includes the prior-week baseline, target-week sessions, court bookings, student demand, week-specific hiding, and calculated underallocation. App changes appear only after a successful device sync. Current builds upload saved changes automatically while open and connected; older builds or devices with automatic sync disabled need **Sync cloud data**. Offline edits are not yet visible to planning.
 
 ## Export the existing Mac store
 
@@ -69,4 +70,4 @@ python3 Backend/import_bundle.py \
 
 For the real upload, set the task-specific `COACHPLANNER_API_TOKEN` environment variable and omit `--dry-run`. The client sends an idempotency key derived from the bundle, so a retry is safe if the network times out.
 
-The app uses this contract through an explicit **Sync cloud data** action while SwiftData remains its offline cache. Supabase is the shared cross-device store; synchronization is intentionally manual.
+The app uses this contract for automatic saved-edit uploads, live updates, and full recovery through **Sync cloud data** while SwiftData remains its offline cache. Live notifications are hints to fetch authoritative records, not a replacement for reconciliation, conflict checks, or the deletion ledger.

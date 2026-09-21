@@ -18,6 +18,7 @@ final class SupabaseCloud: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var lastSyncResult: SyncRunResult?
     @Published private(set) var isSyncing = false
+    private(set) var deferredChanges = CloudSyncScope()
 
     private let keychain = SupabaseKeychain()
     private let urlSession: URLSession
@@ -25,6 +26,11 @@ final class SupabaseCloud: ObservableObject {
     private var accessToken: String?
     private var syncLedger: SupabaseSyncLedger
     private var requestCount = 0
+    private var activeScope: CloudSyncScope?
+    private var needsDependencyRecovery = false
+    private var tokenRefreshTask: Task<String, Error>?
+    private var authGeneration = 0
+    private var syncingAuthGeneration: Int?
     private static let logger = Logger(subsystem: "com.matthewchew.CoachPlanner", category: "SupabaseSync")
 
     private init(urlSession: URLSession = .shared, defaults: UserDefaults = .standard, restoreSession: Bool = true) {
@@ -53,6 +59,9 @@ final class SupabaseCloud: ObservableObject {
     }
 
     func signOut() {
+        authGeneration += 1
+        tokenRefreshTask?.cancel()
+        tokenRefreshTask = nil
         accessToken = nil
         isSignedIn = false
         lastError = nil
@@ -62,8 +71,21 @@ final class SupabaseCloud: ObservableObject {
     }
 
     func syncAll(in context: ModelContext) async {
+        await sync(scope: nil, in: context)
+    }
+
+    func syncChanges(_ scope: CloudSyncScope, in context: ModelContext) async {
+        guard !scope.isEmpty else { return }
+        await sync(scope: scope, in: context)
+    }
+
+    private func sync(scope: CloudSyncScope?, in context: ModelContext) async {
         guard !isSyncing else { return }
         isSyncing = true
+        syncingAuthGeneration = authGeneration
+        activeScope = scope
+        deferredChanges = CloudSyncScope()
+        needsDependencyRecovery = false
         requestCount = 0
         let startedAt = Date()
         lastSyncResult = nil
@@ -72,41 +94,68 @@ final class SupabaseCloud: ObservableObject {
         defer {
             context.autosaveEnabled = autosaveWasEnabled
             isSyncing = false
+            syncingAuthGeneration = nil
+            activeScope = nil
             Self.logger.info("Sync finished in \(Date().timeIntervalSince(startedAt), privacy: .public)s; requests: \(self.requestCount, privacy: .public); succeeded: \(self.lastError == nil, privacy: .public)")
         }
 
         lastError = nil
         do {
-            try await renewAccessToken()
-            guard let accessToken else { throw SupabaseCloudError.notSignedIn }
-            try await verifyWorkspaceAccess(token: accessToken)
+            if let scope {
+                activeScope = try includingUnsyncedDependencies(scope, in: context)
+            }
+            let token = try await realtimeAccessToken()
+            // RLS can hide records after membership is revoked. Verify access
+            // before treating any absent row as a deletion, even in scoped runs.
+            try await verifyWorkspaceAccess(token: token)
         } catch {
             lastError = error.localizedDescription
             return
         }
 
-        let startingLedger = syncLedger
         var combined = SyncRunResult.zero
 
         await syncStudentsAndOutsiders(in: context)
         guard lastError == nil, let peopleResult = lastSyncResult else {
-            syncLedger = startingLedger
             lastSyncResult = nil
             return
         }
         combined = combined.adding(peopleResult)
 
         await syncCourtsSocialsAndAttendance(in: context)
+        if needsDependencyRecovery {
+            if let partialResult = lastSyncResult { combined = combined.adding(partialResult) }
+            // A notification can arrive before the related person's notification.
+            // Reconcile dependencies using complete downloads before retrying parents.
+            activeScope = nil
+            needsDependencyRecovery = false
+            await syncStudentsAndOutsiders(in: context)
+            guard lastError == nil, let dependenciesResult = lastSyncResult else {
+                lastSyncResult = nil
+                return
+            }
+            combined = combined.adding(dependenciesResult)
+            await syncCourtsSocialsAndAttendance(in: context)
+        }
         guard lastError == nil, let socialResult = lastSyncResult else {
-            syncLedger = startingLedger
             lastSyncResult = nil
             return
         }
         combined = combined.adding(socialResult)
 
         await syncCoachingSessions(in: context)
+        if needsDependencyRecovery {
+            activeScope = nil
+            needsDependencyRecovery = false
+            await syncStudentsAndOutsiders(in: context)
+            guard lastError == nil, let dependenciesResult = lastSyncResult else {
+                lastSyncResult = nil
+                return
+            }
+            combined = combined.adding(dependenciesResult)
+            await syncCoachingSessions(in: context)
+        }
         guard lastError == nil, let sessionResult = lastSyncResult else {
-            syncLedger = startingLedger
             lastSyncResult = nil
             return
         }
@@ -120,11 +169,17 @@ final class SupabaseCloud: ObservableObject {
         do {
             guard let accessToken else { throw SupabaseCloudError.notSignedIn }
             let localSessions = try context.fetch(FetchDescriptor<CoachingSession>())
-            let localStudents = try context.fetch(FetchDescriptor<Student>())
+                .filter { activeScope?.coachingSessions.contains($0.syncID) ?? true }
+            let initialRevisions = Dictionary(uniqueKeysWithValues: localSessions.map { ($0.syncID, revision(of: $0)) })
             async let sessionsRequest = fetchSessionRecords(token: accessToken)
             async let linksRequest = fetchCoachingSessionStudentLinks(token: accessToken)
             let (cloudSessions, cloudLinks) = try await (sessionsRequest, linksRequest)
+            let localStudents = try context.fetch(FetchDescriptor<Student>()).filter { !$0.isDeleted }
             let studentByID = localStudents.reduce(into: [UUID: Student]()) { $0[$1.syncID] = $1 }
+            guard cloudLinks.allSatisfy({ studentByID[$0.studentID] != nil }) else {
+                needsDependencyRecovery = activeScope != nil
+                throw SupabaseCloudError.invalidResponse
+            }
             let cloudStudentIDsBySession = Dictionary(grouping: cloudLinks, by: \.sessionID)
                 .mapValues { Set($0.map(\.studentID)) }
             var remainingCloud = Dictionary(uniqueKeysWithValues: cloudSessions.map { ($0.id, $0) })
@@ -133,7 +188,7 @@ final class SupabaseCloud: ObservableObject {
                 ids: Set(cloudSessions.filter { $0.deletedAt != nil }.map(\.id))
                     .intersection(cloudLinks.map(\.sessionID)), token: accessToken
             )
-            var nextLedger: [String: Date] = [:]
+            var nextLedger = unscopedLedger(syncLedger.coachingSessions, ids: activeScope?.coachingSessions)
             var pushed = 0
             var pulled = 0
             var conflicts = 0
@@ -142,15 +197,25 @@ final class SupabaseCloud: ObservableObject {
 
             for local in localSessions {
                 let ledgerKey = SupabaseSyncLedger.key(for: local.syncID)
+                guard !local.isDeleted, local.modelContext != nil,
+                      initialRevisions[local.syncID] == revision(of: local) else {
+                    deferLocalEdit(local, table: "coaching_sessions", id: local.syncID)
+                    nextLedger[ledgerKey] = syncLedger.coachingSessions[ledgerKey]
+                    remainingCloud.removeValue(forKey: local.syncID)
+                    continue
+                }
                 guard let cloud = remainingCloud.removeValue(forKey: local.syncID) else {
                     if local.lastSyncedAt == nil || syncLedger.coachingSessions[ledgerKey] == nil {
+                        let sentRevision = revision(of: local)
+                        let studentRows = coachingStudentRows(for: local)
                         var created = try await insertCloudSession(local, token: accessToken)
-                        if !local.studentList.isEmpty {
-                            try await replaceCloudStudents(for: local, token: accessToken)
+                        recordAcknowledgement(table: "coaching_sessions", id: local.syncID, timestamp: created.updatedAt)
+                        if !studentRows.isEmpty {
+                            try await replaceCloudStudents(for: local, rows: studentRows, token: accessToken)
                             created = try await fetchCurrentSession(id: local.syncID, token: accessToken)
                         }
-                        local.updatedAt = created.updatedAt
-                        local.lastSyncedAt = created.updatedAt
+                        acknowledge(local, table: "coaching_sessions", id: local.syncID,
+                                    sent: sentRevision, current: revision(of: local), serverTimestamp: created.updatedAt)
                         nextLedger[ledgerKey] = created.updatedAt
                         pushed += 1
                     } else {
@@ -171,11 +236,13 @@ final class SupabaseCloud: ObservableObject {
                     continue
                 }
 
-                let baseline = local.lastSyncedAt ?? cloud.updatedAt
+                let knownVersion = syncLedger.coachingSessions[ledgerKey]
+                let baseline = local.lastSyncedAt ?? knownVersion ?? cloud.updatedAt
+                var localChanged = local.updatedAt > baseline || (local.lastSyncedAt == nil && knownVersion != nil)
                 if local.lastSyncedAt == nil {
                     local.lastSyncedAt = baseline
+                    if knownVersion != nil { local.updatedAt = max(local.updatedAt, baseline.addingTimeInterval(0.002)) }
                 }
-                var localChanged = local.updatedAt > baseline
                 let cloudChanged = cloud.updatedAt > baseline
                 let localStudentIDs = Set(local.studentList.map(\.syncID))
                 let cloudStudentIDs = cloudStudentIDsBySession[local.syncID] ?? []
@@ -194,19 +261,30 @@ final class SupabaseCloud: ObservableObject {
                         nextLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
+                    let sentRevision = revision(of: local)
+                    let studentRows = coachingStudentRows(for: local)
                     var updated = try await updateCloudSession(local, expectedUpdatedAt: baseline, token: accessToken)
+                    recordAcknowledgement(table: "coaching_sessions", id: local.syncID, timestamp: updated.updatedAt)
                     if localStudentIDs != cloudStudentIDs {
-                        try await replaceCloudStudents(for: local, token: accessToken)
+                        try await replaceCloudStudents(for: local, rows: studentRows, token: accessToken)
                         updated = try await fetchCurrentSession(id: local.syncID, token: accessToken)
                     }
-                    local.updatedAt = updated.updatedAt
-                    local.lastSyncedAt = updated.updatedAt
+                    acknowledge(local, table: "coaching_sessions", id: local.syncID,
+                                sent: sentRevision, current: revision(of: local), serverTimestamp: updated.updatedAt)
                     nextLedger[ledgerKey] = updated.updatedAt
                     pushed += 1
                 } else if cloudChanged {
+                    let students = cloudStudentIDs.compactMap { id -> Student? in
+                        guard let student = studentByID[id], !student.isDeleted, student.modelContext != nil else { return nil }
+                        return student
+                    }
+                    guard students.count == cloudStudentIDs.count else {
+                        needsDependencyRecovery = activeScope != nil
+                        throw SupabaseCloudError.invalidResponse
+                    }
                     SyncTimestamping.isApplyingRemoteChange = true
                     apply(cloud, to: local)
-                    local.studentList = cloudStudentIDs.compactMap { studentByID[$0] }
+                    local.studentList = students
                     SyncTimestamping.isApplyingRemoteChange = false
                     nextLedger[ledgerKey] = cloud.updatedAt
                     pulled += 1
@@ -235,8 +313,12 @@ final class SupabaseCloud: ObservableObject {
                     }
                 } else {
                     let studentIDs = cloudStudentIDsBySession[cloud.id] ?? []
-                    let students = studentIDs.compactMap { studentByID[$0] }
+                    let students = studentIDs.compactMap { id -> Student? in
+                        guard let student = studentByID[id], !student.isDeleted, student.modelContext != nil else { return nil }
+                        return student
+                    }
                     guard students.count == studentIDs.count else {
+                        needsDependencyRecovery = activeScope != nil
                         throw SupabaseCloudError.invalidResponse
                     }
                     SyncTimestamping.isApplyingRemoteChange = true
@@ -249,6 +331,7 @@ final class SupabaseCloud: ObservableObject {
 
             try saveSyncChanges(in: context)
             syncLedger.coachingSessions = nextLedger
+            syncLedger.save(to: defaults)
             lastSyncResult = SyncRunResult(
                 pushed: pushed,
                 pulled: pulled,
@@ -267,7 +350,11 @@ final class SupabaseCloud: ObservableObject {
         do {
             guard let accessToken else { throw SupabaseCloudError.notSignedIn }
             let localStudents = try context.fetch(FetchDescriptor<Student>())
+                .filter { activeScope?.students.contains($0.syncID) ?? true }
             let localOutsiders = try context.fetch(FetchDescriptor<Outsider>())
+                .filter { activeScope?.outsiders.contains($0.syncID) ?? true }
+            let initialStudentRevisions = Dictionary(uniqueKeysWithValues: localStudents.map { ($0.syncID, revision(of: $0)) })
+            let initialOutsiderRevisions = Dictionary(uniqueKeysWithValues: localOutsiders.map { ($0.syncID, revision(of: $0)) })
             async let studentsRequest = fetchStudentRecords(token: accessToken)
             async let outsidersRequest = fetchOutsiderRecords(token: accessToken)
             async let hiddenWeeksRequest = fetchHiddenWeekRecords(token: accessToken)
@@ -281,8 +368,8 @@ final class SupabaseCloud: ObservableObject {
             var remainingCloudStudents = Dictionary(uniqueKeysWithValues: cloudStudents.map { ($0.id, $0) })
             var remainingCloudOutsiders = Dictionary(uniqueKeysWithValues: cloudOutsiders.map { ($0.id, $0) })
             let hiddenWeeksByStudent = Dictionary(grouping: cloudHiddenWeeks, by: \.studentID)
-            var nextStudentLedger: [String: Date] = [:]
-            var nextOutsiderLedger: [String: Date] = [:]
+            var nextStudentLedger = unscopedLedger(syncLedger.students, ids: activeScope?.students)
+            var nextOutsiderLedger = unscopedLedger(syncLedger.outsiders, ids: activeScope?.outsiders)
             var pushed = 0
             var pulled = 0
             var conflicts = 0
@@ -291,18 +378,29 @@ final class SupabaseCloud: ObservableObject {
 
             for student in localStudents {
                 let ledgerKey = SupabaseSyncLedger.key(for: student.syncID)
+                guard !student.isDeleted, student.modelContext != nil,
+                      initialStudentRevisions[student.syncID] == revision(of: student) else {
+                    deferLocalEdit(student, table: "students", id: student.syncID)
+                    nextStudentLedger[ledgerKey] = syncLedger.students[ledgerKey]
+                    remainingCloudStudents.removeValue(forKey: student.syncID)
+                    continue
+                }
                 guard let cloud = remainingCloudStudents.removeValue(forKey: student.syncID) else {
                     if student.lastSyncedAt == nil || syncLedger.students[ledgerKey] == nil {
+                        let sentRevision = revision(of: student)
+                        let hiddenRows = hiddenWeekRows(for: student)
                         var created = try await insertCloudStudent(student, token: accessToken)
-                        if !(student.hiddenWeeks ?? []).isEmpty {
-                            try await replaceCloudHiddenWeeks(for: student, token: accessToken)
+                        recordAcknowledgement(table: "students", id: student.syncID, timestamp: created.updatedAt)
+                        if !hiddenRows.isEmpty {
+                            try await replaceCloudHiddenWeeks(for: student, rows: hiddenRows, token: accessToken)
                             created = try await fetchCurrentStudent(id: student.syncID, token: accessToken)
                         }
-                        student.updatedAt = created.updatedAt
-                        student.lastSyncedAt = created.updatedAt
-                        for hiddenWeek in student.hiddenWeeks ?? [] {
-                            hiddenWeek.updatedAt = created.updatedAt
-                            hiddenWeek.lastSyncedAt = created.updatedAt
+                        if acknowledge(student, table: "students", id: student.syncID,
+                                       sent: sentRevision, current: revision(of: student), serverTimestamp: created.updatedAt) {
+                            for hiddenWeek in student.hiddenWeeks ?? [] {
+                                hiddenWeek.updatedAt = created.updatedAt
+                                hiddenWeek.lastSyncedAt = created.updatedAt
+                            }
                         }
                         nextStudentLedger[ledgerKey] = created.updatedAt
                         pushed += 1
@@ -323,11 +421,13 @@ final class SupabaseCloud: ObservableObject {
                     continue
                 }
 
-                let baseline = student.lastSyncedAt ?? cloud.updatedAt
+                let knownVersion = syncLedger.students[ledgerKey]
+                let baseline = student.lastSyncedAt ?? knownVersion ?? cloud.updatedAt
+                var localChanged = student.updatedAt > baseline || (student.lastSyncedAt == nil && knownVersion != nil)
                 if student.lastSyncedAt == nil {
                     student.lastSyncedAt = baseline
+                    if knownVersion != nil { student.updatedAt = max(student.updatedAt, baseline.addingTimeInterval(0.002)) }
                 }
-                var localChanged = student.updatedAt > baseline
                 let cloudChanged = cloud.updatedAt > baseline
                 let localHiddenWeekKeys = Set((student.hiddenWeeks ?? []).map { Self.dateOnlyFormatter.string(from: $0.weekStart) })
                 let cloudHiddenWeekKeys = Set((hiddenWeeksByStudent[student.syncID] ?? []).map { Self.dateOnlyFormatter.string(from: $0.weekStart) })
@@ -350,16 +450,20 @@ final class SupabaseCloud: ObservableObject {
                         nextStudentLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
+                    let sentRevision = revision(of: student)
+                    let hiddenRows = hiddenWeekRows(for: student)
                     var updated = try await updateCloudStudent(student, expectedUpdatedAt: baseline, token: accessToken)
+                    recordAcknowledgement(table: "students", id: student.syncID, timestamp: updated.updatedAt)
                     if localHiddenWeekKeys != cloudHiddenWeekKeys {
-                        try await replaceCloudHiddenWeeks(for: student, token: accessToken)
+                        try await replaceCloudHiddenWeeks(for: student, rows: hiddenRows, token: accessToken)
                         updated = try await fetchCurrentStudent(id: student.syncID, token: accessToken)
                     }
-                    student.updatedAt = updated.updatedAt
-                    student.lastSyncedAt = updated.updatedAt
-                    for hiddenWeek in student.hiddenWeeks ?? [] {
-                        hiddenWeek.updatedAt = updated.updatedAt
-                        hiddenWeek.lastSyncedAt = updated.updatedAt
+                    if acknowledge(student, table: "students", id: student.syncID,
+                                   sent: sentRevision, current: revision(of: student), serverTimestamp: updated.updatedAt) {
+                        for hiddenWeek in student.hiddenWeeks ?? [] {
+                            hiddenWeek.updatedAt = updated.updatedAt
+                            hiddenWeek.lastSyncedAt = updated.updatedAt
+                        }
                     }
                     nextStudentLedger[ledgerKey] = updated.updatedAt
                     pushed += 1
@@ -416,11 +520,19 @@ final class SupabaseCloud: ObservableObject {
 
             for outsider in localOutsiders {
                 let ledgerKey = SupabaseSyncLedger.key(for: outsider.syncID)
+                guard !outsider.isDeleted, outsider.modelContext != nil,
+                      initialOutsiderRevisions[outsider.syncID] == revision(of: outsider) else {
+                    deferLocalEdit(outsider, table: "outsiders", id: outsider.syncID)
+                    nextOutsiderLedger[ledgerKey] = syncLedger.outsiders[ledgerKey]
+                    remainingCloudOutsiders.removeValue(forKey: outsider.syncID)
+                    continue
+                }
                 guard let cloud = remainingCloudOutsiders.removeValue(forKey: outsider.syncID) else {
                     if outsider.lastSyncedAt == nil || syncLedger.outsiders[ledgerKey] == nil {
+                        let sentRevision = revision(of: outsider)
                         let created = try await insertCloudOutsider(outsider, token: accessToken)
-                        outsider.updatedAt = created.updatedAt
-                        outsider.lastSyncedAt = created.updatedAt
+                        acknowledge(outsider, table: "outsiders", id: outsider.syncID,
+                                    sent: sentRevision, current: revision(of: outsider), serverTimestamp: created.updatedAt)
                         nextOutsiderLedger[ledgerKey] = created.updatedAt
                         pushed += 1
                     } else {
@@ -440,11 +552,13 @@ final class SupabaseCloud: ObservableObject {
                     continue
                 }
 
-                let baseline = outsider.lastSyncedAt ?? cloud.updatedAt
+                let knownVersion = syncLedger.outsiders[ledgerKey]
+                let baseline = outsider.lastSyncedAt ?? knownVersion ?? cloud.updatedAt
+                var localChanged = outsider.updatedAt > baseline || (outsider.lastSyncedAt == nil && knownVersion != nil)
                 if outsider.lastSyncedAt == nil {
                     outsider.lastSyncedAt = baseline
+                    if knownVersion != nil { outsider.updatedAt = max(outsider.updatedAt, baseline.addingTimeInterval(0.002)) }
                 }
-                var localChanged = outsider.updatedAt > baseline
                 let cloudChanged = cloud.updatedAt > baseline
                 let payloadsMatch = cloud.matchesPayload(of: outsider)
                 if !localChanged && !cloudChanged && !payloadsMatch {
@@ -460,9 +574,10 @@ final class SupabaseCloud: ObservableObject {
                         nextOutsiderLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
+                    let sentRevision = revision(of: outsider)
                     let updated = try await updateCloudOutsider(outsider, expectedUpdatedAt: baseline, token: accessToken)
-                    outsider.updatedAt = updated.updatedAt
-                    outsider.lastSyncedAt = updated.updatedAt
+                    acknowledge(outsider, table: "outsiders", id: outsider.syncID,
+                                sent: sentRevision, current: revision(of: outsider), serverTimestamp: updated.updatedAt)
                     nextOutsiderLedger[ledgerKey] = updated.updatedAt
                     pushed += 1
                 } else if cloudChanged {
@@ -507,6 +622,7 @@ final class SupabaseCloud: ObservableObject {
             try saveSyncChanges(in: context)
             syncLedger.students = nextStudentLedger
             syncLedger.outsiders = nextOutsiderLedger
+            syncLedger.save(to: defaults)
             lastSyncResult = SyncRunResult(
                 pushed: pushed,
                 pulled: pulled,
@@ -522,9 +638,11 @@ final class SupabaseCloud: ObservableObject {
 
     private func syncCourtsSocialsAndAttendance(in context: ModelContext) async {
         lastError = nil
+        lastSyncResult = nil
         do {
             guard let accessToken else { throw SupabaseCloudError.notSignedIn }
             let courtResult = try await syncCourtBookings(in: context, token: accessToken)
+            lastSyncResult = courtResult
             let socialResult = try await syncSocialSessions(in: context, token: accessToken)
             lastSyncResult = courtResult.adding(socialResult)
         } catch {
@@ -535,9 +653,11 @@ final class SupabaseCloud: ObservableObject {
 
     private func syncCourtBookings(in context: ModelContext, token: String) async throws -> SyncRunResult {
         let localBookings = try context.fetch(FetchDescriptor<CourtBooking>())
+            .filter { activeScope?.courtBookings.contains($0.syncID) ?? true }
+        let initialRevisions = Dictionary(uniqueKeysWithValues: localBookings.map { ($0.syncID, revision(of: $0)) })
         let cloudBookings = try await fetchCourtRecords(token: token)
         var remainingCloud = Dictionary(uniqueKeysWithValues: cloudBookings.map { ($0.id, $0) })
-        var nextLedger: [String: Date] = [:]
+        var nextLedger = unscopedLedger(syncLedger.courtBookings, ids: activeScope?.courtBookings)
         var pushed = 0
         var pulled = 0
         var conflicts = 0
@@ -545,11 +665,19 @@ final class SupabaseCloud: ObservableObject {
 
         for booking in localBookings {
             let ledgerKey = SupabaseSyncLedger.key(for: booking.syncID)
+            guard !booking.isDeleted, booking.modelContext != nil,
+                  initialRevisions[booking.syncID] == revision(of: booking) else {
+                deferLocalEdit(booking, table: "court_bookings", id: booking.syncID)
+                nextLedger[ledgerKey] = syncLedger.courtBookings[ledgerKey]
+                remainingCloud.removeValue(forKey: booking.syncID)
+                continue
+            }
             guard let cloud = remainingCloud.removeValue(forKey: booking.syncID) else {
                 if booking.lastSyncedAt == nil || syncLedger.courtBookings[ledgerKey] == nil {
+                    let sentRevision = revision(of: booking)
                     let created = try await insertCloudCourtBooking(booking, token: token)
-                    booking.updatedAt = created.updatedAt
-                    booking.lastSyncedAt = created.updatedAt
+                    acknowledge(booking, table: "court_bookings", id: booking.syncID,
+                                sent: sentRevision, current: revision(of: booking), serverTimestamp: created.updatedAt)
                     nextLedger[ledgerKey] = created.updatedAt
                     pushed += 1
                 } else {
@@ -569,9 +697,13 @@ final class SupabaseCloud: ObservableObject {
                 continue
             }
 
-            let baseline = booking.lastSyncedAt ?? cloud.updatedAt
-            if booking.lastSyncedAt == nil { booking.lastSyncedAt = baseline }
-            var localChanged = booking.updatedAt > baseline
+            let knownVersion = syncLedger.courtBookings[ledgerKey]
+            let baseline = booking.lastSyncedAt ?? knownVersion ?? cloud.updatedAt
+            var localChanged = booking.updatedAt > baseline || (booking.lastSyncedAt == nil && knownVersion != nil)
+            if booking.lastSyncedAt == nil {
+                booking.lastSyncedAt = baseline
+                if knownVersion != nil { booking.updatedAt = max(booking.updatedAt, baseline.addingTimeInterval(0.002)) }
+            }
             let cloudChanged = cloud.updatedAt > baseline
             let payloadsMatch = cloud.matchesPayload(of: booking)
             if !localChanged && !cloudChanged && !payloadsMatch {
@@ -588,13 +720,14 @@ final class SupabaseCloud: ObservableObject {
                     nextLedger[ledgerKey] = baseline
                 }
             } else if localChanged {
+                let sentRevision = revision(of: booking)
                 let updated = try await updateCloudCourtBooking(
                     booking,
                     expectedUpdatedAt: baseline,
                     token: token
                 )
-                booking.updatedAt = updated.updatedAt
-                booking.lastSyncedAt = updated.updatedAt
+                acknowledge(booking, table: "court_bookings", id: booking.syncID,
+                            sent: sentRevision, current: revision(of: booking), serverTimestamp: updated.updatedAt)
                 nextLedger[ledgerKey] = updated.updatedAt
                 pushed += 1
             } else if cloudChanged {
@@ -635,6 +768,7 @@ final class SupabaseCloud: ObservableObject {
 
         try saveSyncChanges(in: context)
         syncLedger.courtBookings = nextLedger
+        syncLedger.save(to: defaults)
         return SyncRunResult(
             pushed: pushed,
             pulled: pulled,
@@ -645,10 +779,10 @@ final class SupabaseCloud: ObservableObject {
     }
 
     private func syncSocialSessions(in context: ModelContext, token: String) async throws -> SyncRunResult {
-        try removeOrphanedSocialChildren(in: context)
+        if activeScope == nil { try removeOrphanedSocialChildren(in: context) }
         let localSocials = try context.fetch(FetchDescriptor<SocialSession>())
-        let localStudents = try context.fetch(FetchDescriptor<Student>())
-        let localOutsiders = try context.fetch(FetchDescriptor<Outsider>())
+            .filter { activeScope?.socialSessions.contains($0.syncID) ?? true }
+        let initialRevisions = Dictionary(uniqueKeysWithValues: localSocials.map { ($0.syncID, revision(of: $0)) })
         async let socialsRequest = fetchSocialRecords(token: token)
         async let linksRequest = fetchSocialSessionStudentLinks(token: token)
         async let hiddenPeopleRequest = fetchHiddenPersonRecords(token: token)
@@ -656,6 +790,19 @@ final class SupabaseCloud: ObservableObject {
         let (cloudSocials, cloudStudentLinks, cloudHiddenPeople, cloudAttendances) = try await (
             socialsRequest, linksRequest, hiddenPeopleRequest, attendancesRequest
         )
+        let localStudents = try context.fetch(FetchDescriptor<Student>()).filter { !$0.isDeleted }
+        let localOutsiders = try context.fetch(FetchDescriptor<Outsider>()).filter { !$0.isDeleted }
+        let knownStudents = Set(localStudents.map(\.syncID))
+        let knownOutsiders = Set(localOutsiders.map(\.syncID))
+        let relationshipStudents = Set(cloudStudentLinks.map(\.studentID))
+            .union(cloudHiddenPeople.compactMap(\.studentID))
+            .union(cloudAttendances.compactMap(\.studentID))
+        let relationshipOutsiders = Set(cloudHiddenPeople.compactMap(\.outsiderID))
+            .union(cloudAttendances.compactMap(\.outsiderID))
+        guard relationshipStudents.isSubset(of: knownStudents), relationshipOutsiders.isSubset(of: knownOutsiders) else {
+            needsDependencyRecovery = activeScope != nil
+            throw SupabaseCloudError.invalidResponse
+        }
         let deletedSocialIDs = Set(cloudSocials.filter { $0.deletedAt != nil }.map(\.id))
         try await deleteCloudRows(
             table: "social_session_students", column: "session_id",
@@ -677,7 +824,7 @@ final class SupabaseCloud: ObservableObject {
         let hiddenPeopleBySocial = Dictionary(grouping: cloudHiddenPeople, by: \.socialSessionID)
         let attendancesBySocial = Dictionary(grouping: cloudAttendances, by: \.socialSessionID)
         var remainingCloud = Dictionary(uniqueKeysWithValues: cloudSocials.map { ($0.id, $0) })
-        var nextLedger: [String: Date] = [:]
+        var nextLedger = unscopedLedger(syncLedger.socialSessions, ids: activeScope?.socialSessions)
         var pushed = 0
         var pulled = 0
         var conflicts = 0
@@ -685,20 +832,31 @@ final class SupabaseCloud: ObservableObject {
 
         for social in localSocials {
             let ledgerKey = SupabaseSyncLedger.key(for: social.syncID)
+            guard !social.isDeleted, social.modelContext != nil,
+                  initialRevisions[social.syncID] == revision(of: social) else {
+                deferLocalEdit(social, table: "social_sessions", id: social.syncID)
+                nextLedger[ledgerKey] = syncLedger.socialSessions[ledgerKey]
+                remainingCloud.removeValue(forKey: social.syncID)
+                continue
+            }
             guard let cloud = remainingCloud.removeValue(forKey: social.syncID) else {
                 if social.lastSyncedAt == nil || syncLedger.socialSessions[ledgerKey] == nil {
+                    let sentRevision = revision(of: social)
+                    let relationships = socialRelationshipRows(for: social)
                     var created = try await insertCloudSocialSession(social, token: token)
-                    if !social.studentList.isEmpty || !social.hiddenPersonList.isEmpty || !social.attendanceList.isEmpty {
+                    recordAcknowledgement(table: "social_sessions", id: social.syncID, timestamp: created.updatedAt)
+                    if !relationships.students.isEmpty || !relationships.hiddenPeople.isEmpty || !relationships.attendances.isEmpty {
                         try await replaceCloudRelationships(
-                            for: social, studentsChanged: !social.studentList.isEmpty,
-                            hiddenPeopleChanged: !social.hiddenPersonList.isEmpty,
-                            attendanceChanged: !social.attendanceList.isEmpty, token: token
+                            for: social, rows: relationships, studentsChanged: !relationships.students.isEmpty,
+                            hiddenPeopleChanged: !relationships.hiddenPeople.isEmpty,
+                            attendanceChanged: !relationships.attendances.isEmpty, token: token
                         )
                         created = try await fetchCurrentSocial(id: social.syncID, token: token)
                     }
-                    social.updatedAt = created.updatedAt
-                    social.lastSyncedAt = created.updatedAt
-                    stampSocialChildren(social, parentTimestamp: created.updatedAt)
+                    if acknowledge(social, table: "social_sessions", id: social.syncID,
+                                   sent: sentRevision, current: revision(of: social), serverTimestamp: created.updatedAt) {
+                        stampSocialChildren(social, parentTimestamp: created.updatedAt)
+                    }
                     nextLedger[ledgerKey] = created.updatedAt
                     pushed += 1
                 } else {
@@ -718,9 +876,13 @@ final class SupabaseCloud: ObservableObject {
                 continue
             }
 
-            let baseline = social.lastSyncedAt ?? cloud.updatedAt
-            if social.lastSyncedAt == nil { social.lastSyncedAt = baseline }
-            var localChanged = social.updatedAt > baseline
+            let knownVersion = syncLedger.socialSessions[ledgerKey]
+            let baseline = social.lastSyncedAt ?? knownVersion ?? cloud.updatedAt
+            var localChanged = social.updatedAt > baseline || (social.lastSyncedAt == nil && knownVersion != nil)
+            if social.lastSyncedAt == nil {
+                social.lastSyncedAt = baseline
+                if knownVersion != nil { social.updatedAt = max(social.updatedAt, baseline.addingTimeInterval(0.002)) }
+            }
             let cloudChanged = cloud.updatedAt > baseline
             let cloudStudentIDs = studentIDsBySocial[social.syncID] ?? []
             let cloudHidden = hiddenPeopleBySocial[social.syncID] ?? []
@@ -751,26 +913,29 @@ final class SupabaseCloud: ObservableObject {
                     nextLedger[ledgerKey] = baseline
                 }
             } else if localChanged {
+                let sentRevision = revision(of: social)
+                let relationships = socialRelationshipRows(for: social)
                 var updated = try await updateCloudSocialSession(
                     social,
                     expectedUpdatedAt: baseline,
                     token: token
                 )
+                recordAcknowledgement(table: "social_sessions", id: social.syncID, timestamp: updated.updatedAt)
                 if !relationshipsMatch {
                     try await replaceCloudRelationships(
-                        for: social, studentsChanged: studentsChanged, hiddenPeopleChanged: hiddenPeopleChanged,
+                        for: social, rows: relationships, studentsChanged: studentsChanged, hiddenPeopleChanged: hiddenPeopleChanged,
                         attendanceChanged: attendanceChanged, token: token
                     )
                     updated = try await fetchCurrentSocial(id: social.syncID, token: token)
                 }
-                social.updatedAt = updated.updatedAt
-                social.lastSyncedAt = updated.updatedAt
-                stampSocialChildren(social, parentTimestamp: updated.updatedAt)
+                if acknowledge(social, table: "social_sessions", id: social.syncID,
+                               sent: sentRevision, current: revision(of: social), serverTimestamp: updated.updatedAt) {
+                    stampSocialChildren(social, parentTimestamp: updated.updatedAt)
+                }
                 nextLedger[ledgerKey] = updated.updatedAt
                 pushed += 1
             } else if cloudChanged {
                 SyncTimestamping.isApplyingRemoteChange = true
-                apply(cloud, to: social)
                 try applyCloudRelationships(
                     to: social,
                     studentIDs: cloudStudentIDs,
@@ -781,6 +946,7 @@ final class SupabaseCloud: ObservableObject {
                     in: context,
                     parentTimestamp: cloud.updatedAt
                 )
+                apply(cloud, to: social)
                 SyncTimestamping.isApplyingRemoteChange = false
                 nextLedger[ledgerKey] = cloud.updatedAt
                 pulled += 1
@@ -809,10 +975,11 @@ final class SupabaseCloud: ObservableObject {
                 }
             } else {
                 let studentIDs = studentIDsBySocial[cloud.id] ?? []
-                let students = studentIDs.compactMap { studentsByID[$0] }
-                guard students.count == studentIDs.count else {
-                    throw SupabaseCloudError.invalidResponse
-                }
+                let students = try validateSocialDependencies(
+                    studentIDs: studentIDs, hiddenPeople: hiddenPeopleBySocial[cloud.id] ?? [],
+                    attendances: attendancesBySocial[cloud.id] ?? [],
+                    studentsByID: studentsByID, outsidersByID: outsidersByID
+                )
                 SyncTimestamping.isApplyingRemoteChange = true
                 let social = makeLocalSocialSession(from: cloud, students: students)
                 context.insert(social)
@@ -834,6 +1001,7 @@ final class SupabaseCloud: ObservableObject {
 
         try saveSyncChanges(in: context)
         syncLedger.socialSessions = nextLedger
+        syncLedger.save(to: defaults)
         return SyncRunResult(
             pushed: pushed,
             pulled: pulled,
@@ -860,12 +1028,40 @@ final class SupabaseCloud: ObservableObject {
             .appending(queryItems: [URLQueryItem(name: "grant_type", value: "refresh_token")])
         let body = try JSONEncoder().encode(["refresh_token": refreshToken])
         let session = try await authenticateSession(url: url, body: body)
+        try Task.checkCancellation()
         accessToken = session.accessToken
         keychain.write(session.accessToken, key: "access_token")
         if let rotatedRefreshToken = session.refreshToken {
             keychain.write(rotatedRefreshToken, key: "refresh_token")
         }
         isSignedIn = true
+    }
+
+    /// Shared by REST and Realtime so concurrent reconnects do not rotate the
+    /// refresh token twice. Tokens close to expiry are renewed before use.
+    func realtimeAccessToken() async throws -> String {
+        if let accessToken, Self.tokenIsUsable(accessToken) { return accessToken }
+        if let tokenRefreshTask { return try await tokenRefreshTask.value }
+        let task = Task { @MainActor in
+            try await self.renewAccessToken()
+            guard let token = self.accessToken else { throw SupabaseCloudError.notSignedIn }
+            return token
+        }
+        tokenRefreshTask = task
+        defer { tokenRefreshTask = nil }
+        return try await task.value
+    }
+
+    private static func tokenIsUsable(_ token: String) -> Bool {
+        let parts = token.split(separator: ".")
+        guard parts.count == 3 else { return false }
+        var payload = String(parts[1]).replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+        guard let data = Data(base64Encoded: payload),
+              let fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let expiry = fields["exp"] as? Double else { return false }
+        return expiry > Date().timeIntervalSince1970 + 60
     }
 
     private func authenticate(email: String, password: String) async throws -> AuthSession {
@@ -1123,6 +1319,9 @@ final class SupabaseCloud: ObservableObject {
         body: [String: Any],
         token: String
     ) async throws -> Record {
+        if let text = body["id"] as? String, let id = UUID(uuidString: text) {
+            recordCreationIntent(table: table, id: id)
+        }
         let data = try await send(
             url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/\(table)"),
             method: "POST",
@@ -1289,8 +1488,25 @@ final class SupabaseCloud: ObservableObject {
 
     private func fetchCloudRecords<Record: Decodable>(
         table: String, select: String, order: String,
-        filters: [URLQueryItem] = [], token: String
+        filters: [URLQueryItem] = [], token: String,
+        applyScope: Bool = true
     ) async throws -> [Record] {
+        if applyScope, let (column, ids) = scopedIDs(for: table) {
+            // Validate pagination independently for every bounded ID query. A
+            // complete scoped result says nothing about records outside it.
+            let sortedIDs = ids.map(\.uuidString).sorted()
+            var scopedRecords: [Record] = []
+            for start in stride(from: 0, to: sortedIDs.count, by: 100) {
+                let batch = sortedIDs[start..<min(start + 100, sortedIDs.count)].joined(separator: ",")
+                let page: [Record] = try await fetchCloudRecords(
+                    table: table, select: select, order: order,
+                    filters: filters + [URLQueryItem(name: column, value: "in.(\(batch))")],
+                    token: token, applyScope: false
+                )
+                scopedRecords.append(contentsOf: page)
+            }
+            return scopedRecords
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .supabaseTimestamp
         var records: [Record] = []
@@ -1325,8 +1541,168 @@ final class SupabaseCloud: ObservableObject {
         }
     }
 
+    private func scopedIDs(for table: String) -> (String, Set<UUID>)? {
+        guard let activeScope else { return nil }
+        switch table {
+        case "students": return ("id", activeScope.students)
+        case "outsiders": return ("id", activeScope.outsiders)
+        case "court_bookings": return ("id", activeScope.courtBookings)
+        case "coaching_sessions": return ("id", activeScope.coachingSessions)
+        case "social_sessions": return ("id", activeScope.socialSessions)
+        case "student_hidden_weeks": return ("student_id", activeScope.students)
+        case "coaching_session_students": return ("session_id", activeScope.coachingSessions)
+        case "social_session_students": return ("session_id", activeScope.socialSessions)
+        case "social_hidden_people", "social_attendance": return ("social_session_id", activeScope.socialSessions)
+        default: return nil
+        }
+    }
+
+    private func includingUnsyncedDependencies(_ scope: CloudSyncScope, in context: ModelContext) throws -> CloudSyncScope {
+        var expanded = scope
+        for session in try context.fetch(FetchDescriptor<CoachingSession>())
+        where scope.coachingSessions.contains(session.syncID) {
+            expanded.students.formUnion(session.studentList.filter { $0.lastSyncedAt == nil }.map(\.syncID))
+        }
+        for social in try context.fetch(FetchDescriptor<SocialSession>())
+        where scope.socialSessions.contains(social.syncID) {
+            let students = social.studentList + social.hiddenPersonList.compactMap(\.student) + social.attendanceList.compactMap(\.student)
+            let outsiders = social.hiddenPersonList.compactMap(\.outsider) + social.attendanceList.compactMap(\.outsider)
+            expanded.students.formUnion(students.filter { $0.lastSyncedAt == nil }.map(\.syncID))
+            expanded.outsiders.formUnion(outsiders.filter { $0.lastSyncedAt == nil }.map(\.syncID))
+        }
+        return expanded
+    }
+
+    private func unscopedLedger(_ ledger: [String: Date], ids: Set<UUID>?) -> [String: Date] {
+        guard let ids else { return [:] }
+        let keys = Set(ids.map(SupabaseSyncLedger.key(for:)))
+        return ledger.filter { !keys.contains($0.key) }
+    }
+
+    private func deferChange(table: String, id: UUID) {
+        deferredChanges.insert(table: table, id: id)
+    }
+
+    private func deferLocalEdit<Model: PersistentModel & SyncTimestamped>(_ model: Model, table: String, id: UUID) {
+        deferChange(table: table, id: id)
+        guard !model.isDeleted, model.modelContext != nil, let baseline = model.lastSyncedAt else { return }
+        // Keep an explicit dirty revision even when the device clock is behind
+        // the server or an editor has not advanced its save timestamp yet.
+        // Otherwise a subsequent remote edit could hide this pending local edit.
+        model.updatedAt = max(model.updatedAt, baseline.addingTimeInterval(0.002))
+    }
+
+    @discardableResult
+    private func acknowledge<Model: PersistentModel & SyncTimestamped>(
+        _ model: Model, table: String, id: UUID,
+        sent: LocalRevision, current: LocalRevision, serverTimestamp: Date
+    ) -> Bool {
+        recordAcknowledgement(table: table, id: id, timestamp: serverTimestamp)
+        guard !model.isDeleted, model.modelContext != nil else {
+            // The upload completed after the user deleted the local record.
+            // Retain the acknowledged ledger version so the next pass deletes it.
+            deferChange(table: table, id: id)
+            return false
+        }
+        model.lastSyncedAt = serverTimestamp
+        guard sent == current else {
+            deferLocalEdit(model, table: table, id: id)
+            return false
+        }
+        model.updatedAt = serverTimestamp
+        return true
+    }
+
+    private func recordAcknowledgement(table: String, id: UUID, timestamp: Date) {
+        // A later request may fail after this parent is already on the server.
+        // Persist ownership now so deleting it locally cannot reimport it later.
+        let key = SupabaseSyncLedger.key(for: id)
+        switch table {
+        case "students": syncLedger.students[key] = timestamp
+        case "outsiders": syncLedger.outsiders[key] = timestamp
+        case "court_bookings": syncLedger.courtBookings[key] = timestamp
+        case "coaching_sessions": syncLedger.coachingSessions[key] = timestamp
+        case "social_sessions": syncLedger.socialSessions[key] = timestamp
+        default: return
+        }
+        syncLedger.save(to: defaults)
+    }
+
+    private func recordCreationIntent(table: String, id: UUID) {
+        let key = SupabaseSyncLedger.key(for: id)
+        let existing: Date?
+        switch table {
+        case "students": existing = syncLedger.students[key]
+        case "outsiders": existing = syncLedger.outsiders[key]
+        case "court_bookings": existing = syncLedger.courtBookings[key]
+        case "coaching_sessions": existing = syncLedger.coachingSessions[key]
+        case "social_sessions": existing = syncLedger.socialSessions[key]
+        default: return
+        }
+        guard existing == nil else { return }
+        // A POST may reach the server even if its response is lost. If the user
+        // deletes the local row before retrying, this sentinel preserves that
+        // intent: an unacknowledged cloud version becomes a visible conflict,
+        // never a silently reimported record or an unconditional deletion.
+        recordAcknowledgement(table: table, id: id, timestamp: .distantPast)
+    }
+
+    private struct LocalRevision: Equatable {
+        let updatedAt: Date
+        let payload: [String]
+    }
+
+    // Compare values as well as timestamps: an editor may have changed a model
+    // before SwiftData's save observer advances its timestamp.
+    private func revision(of student: Student) -> LocalRevision {
+        LocalRevision(updatedAt: student.updatedAt, payload: [
+            student.name, student.gender, student.contactPreference, student.contactDetail,
+            String(student.sessionsDemand), String(student.isHidden)
+        ] + (student.hiddenWeeks ?? []).map { Self.dateOnlyFormatter.string(from: $0.weekStart) }.sorted())
+    }
+
+    private func revision(of outsider: Outsider) -> LocalRevision {
+        LocalRevision(updatedAt: outsider.updatedAt, payload: [
+            outsider.name, outsider.gender, outsider.contactPreference, outsider.contactDetail
+        ])
+    }
+
+    private func revision(of session: CoachingSession) -> LocalRevision {
+        LocalRevision(updatedAt: session.updatedAt, payload: [
+            String(describing: session.weekStart), String(session.dayOfWeek),
+            String(session.startTime.timeIntervalSince1970), String(session.endTime.timeIntervalSince1970),
+            session.venue, session.status, session.courtNumber, String(session.sessionFee),
+            String(describing: session.sessionDescription)
+        ] + session.studentList.map { $0.syncID.uuidString }.sorted())
+    }
+
+    private func revision(of booking: CourtBooking) -> LocalRevision {
+        LocalRevision(updatedAt: booking.updatedAt, payload: [
+            String(describing: booking.weekStart), String(booking.dayOfWeek),
+            String(booking.startTime.timeIntervalSince1970), String(booking.endTime.timeIntervalSince1970),
+            booking.venue, booking.courtNumber
+        ])
+    }
+
+    private func revision(of social: SocialSession) -> LocalRevision {
+        let hidden = social.hiddenPersonList.map {
+            [$0.syncID.uuidString, $0.student?.syncID.uuidString ?? "", $0.outsider?.syncID.uuidString ?? ""].joined(separator: ":")
+        }.sorted()
+        let attendance = social.attendanceList.map {
+            [$0.syncID.uuidString, $0.student?.syncID.uuidString ?? "", $0.outsider?.syncID.uuidString ?? "",
+             $0.status, $0.paymentStatus].joined(separator: ":")
+        }.sorted()
+        return LocalRevision(updatedAt: social.updatedAt, payload: [
+            social.title, String(describing: social.weekStart), String(social.dayOfWeek),
+            String(social.startTime.timeIntervalSince1970), String(social.endTime.timeIntervalSince1970),
+            social.venue, social.status, String(social.areCourtsBooked), social.courtNumbers,
+            String(social.shuttlecockCost), String(social.courtCost)
+        ] + social.studentList.map { $0.syncID.uuidString }.sorted() + hidden + attendance)
+    }
+
     private func replaceCloudHiddenWeeks(
         for student: Student,
+        rows: [[String: String]],
         token: String
     ) async throws {
         try await deleteCloudRows(
@@ -1334,29 +1710,35 @@ final class SupabaseCloud: ObservableObject {
             filters: [URLQueryItem(name: "student_id", value: "eq.\(student.syncID.uuidString)")],
             token: token
         )
-        let rows = (student.hiddenWeeks ?? []).map { hiddenWeek in
+        try await insertCloudRows(table: "student_hidden_weeks", rows: rows, token: token)
+    }
+
+    private func hiddenWeekRows(for student: Student) -> [[String: String]] {
+        (student.hiddenWeeks ?? []).map { hiddenWeek in
             [
                 "student_id": student.syncID.uuidString,
                 "week_start": Self.dateOnlyFormatter.string(from: hiddenWeek.weekStart),
                 "created_at": Self.isoFormatter.string(from: hiddenWeek.createdAt)
             ]
         }
-        try await insertCloudRows(table: "student_hidden_weeks", rows: rows, token: token)
     }
 
-    private func replaceCloudStudents(for session: CoachingSession, token: String) async throws {
+    private func replaceCloudStudents(for session: CoachingSession, rows: [[String: String]], token: String) async throws {
         try await deleteCloudRows(
             table: "coaching_session_students",
             filters: [URLQueryItem(name: "session_id", value: "eq.\(session.syncID.uuidString)")],
             token: token
         )
-        let rows = session.studentList.map { student in
+        try await insertCloudRows(table: "coaching_session_students", rows: rows, token: token)
+    }
+
+    private func coachingStudentRows(for session: CoachingSession) -> [[String: String]] {
+        session.studentList.map { student in
             [
                 "session_id": session.syncID.uuidString,
                 "student_id": student.syncID.uuidString
             ]
         }
-        try await insertCloudRows(table: "coaching_session_students", rows: rows, token: token)
     }
 
     private func apply(_ cloud: CloudSessionRecord, to session: CoachingSession) {
@@ -1480,6 +1862,7 @@ final class SupabaseCloud: ObservableObject {
 
     private func replaceCloudRelationships(
         for social: SocialSession,
+        rows: SocialRelationshipRows,
         studentsChanged: Bool,
         hiddenPeopleChanged: Bool,
         attendanceChanged: Bool,
@@ -1489,60 +1872,63 @@ final class SupabaseCloud: ObservableObject {
             try await deleteCloudRows(
                 table: "social_session_students", column: "session_id", ids: [social.syncID], token: token
             )
-            let studentRows = social.studentList.map { student in
-                [
-                    "session_id": social.syncID.uuidString,
-                    "student_id": student.syncID.uuidString
-                ]
-            }
-            try await insertCloudRows(table: "social_session_students", rows: studentRows, token: token)
+            try await insertCloudRows(table: "social_session_students", rows: rows.students, token: token)
         }
 
         if hiddenPeopleChanged {
             try await deleteCloudRows(
                 table: "social_hidden_people", column: "social_session_id", ids: [social.syncID], token: token
             )
-            let hiddenRows = social.hiddenPersonList.compactMap { person -> [String: Any]? in
-                var row: [String: Any] = [
-                    "id": person.syncID.uuidString,
-                    "social_session_id": social.syncID.uuidString,
-                    "created_at": Self.isoFormatter.string(from: person.createdAt)
-                ]
-                if let student = person.student {
-                    row["student_id"] = student.syncID.uuidString
-                } else if let outsider = person.outsider {
-                    row["outsider_id"] = outsider.syncID.uuidString
-                } else {
-                    return nil
-                }
-                return row
-            }
-            try await insertCloudRows(table: "social_hidden_people", rows: hiddenRows, token: token)
+            try await insertCloudRows(table: "social_hidden_people", rows: rows.hiddenPeople, token: token)
         }
 
         if attendanceChanged {
             try await deleteCloudRows(
                 table: "social_attendance", column: "social_session_id", ids: [social.syncID], token: token
             )
-            let attendanceRows = social.attendanceList.compactMap { attendance -> [String: Any]? in
-                var row: [String: Any] = [
-                    "id": attendance.syncID.uuidString,
-                    "social_session_id": social.syncID.uuidString,
-                    "status": attendance.status,
-                    "payment_status": attendance.paymentStatus,
-                    "created_at": Self.isoFormatter.string(from: attendance.createdAt)
-                ]
-                if let student = attendance.student {
-                    row["student_id"] = student.syncID.uuidString
-                } else if let outsider = attendance.outsider {
-                    row["outsider_id"] = outsider.syncID.uuidString
-                } else {
-                    return nil
-                }
-                return row
-            }
-            try await insertCloudRows(table: "social_attendance", rows: attendanceRows, token: token)
+            try await insertCloudRows(table: "social_attendance", rows: rows.attendances, token: token)
         }
+    }
+
+    private struct SocialRelationshipRows {
+        let students: [[String: String]]
+        let hiddenPeople: [[String: Any]]
+        let attendances: [[String: Any]]
+    }
+
+    private func socialRelationshipRows(for social: SocialSession) -> SocialRelationshipRows {
+        let studentRows = social.studentList.map {
+            ["session_id": social.syncID.uuidString, "student_id": $0.syncID.uuidString]
+        }
+        let hiddenRows = social.hiddenPersonList.compactMap { person -> [String: Any]? in
+            var row: [String: Any] = [
+                "id": person.syncID.uuidString,
+                "social_session_id": social.syncID.uuidString,
+                "created_at": Self.isoFormatter.string(from: person.createdAt)
+            ]
+            if let student = person.student {
+                row["student_id"] = student.syncID.uuidString
+            } else if let outsider = person.outsider {
+                row["outsider_id"] = outsider.syncID.uuidString
+            } else { return nil }
+            return row
+        }
+        let attendanceRows = social.attendanceList.compactMap { attendance -> [String: Any]? in
+            var row: [String: Any] = [
+                "id": attendance.syncID.uuidString,
+                "social_session_id": social.syncID.uuidString,
+                "status": attendance.status,
+                "payment_status": attendance.paymentStatus,
+                "created_at": Self.isoFormatter.string(from: attendance.createdAt)
+            ]
+            if let student = attendance.student {
+                row["student_id"] = student.syncID.uuidString
+            } else if let outsider = attendance.outsider {
+                row["outsider_id"] = outsider.syncID.uuidString
+            } else { return nil }
+            return row
+        }
+        return SocialRelationshipRows(students: studentRows, hiddenPeople: hiddenRows, attendances: attendanceRows)
     }
 
     private func stampSocialChildren(_ social: SocialSession, parentTimestamp: Date) {
@@ -1566,8 +1952,10 @@ final class SupabaseCloud: ObservableObject {
         in context: ModelContext,
         parentTimestamp: Date
     ) throws {
-        let students = studentIDs.compactMap { studentsByID[$0] }
-        guard students.count == studentIDs.count else { throw SupabaseCloudError.invalidResponse }
+        let students = try validateSocialDependencies(
+            studentIDs: studentIDs, hiddenPeople: hiddenPeople, attendances: attendances,
+            studentsByID: studentsByID, outsidersByID: outsidersByID
+        )
 
         for hiddenPerson in social.hiddenPersonList {
             context.delete(hiddenPerson)
@@ -1605,9 +1993,6 @@ final class SupabaseCloud: ObservableObject {
         for record in attendances {
             let student = record.studentID.flatMap { studentsByID[$0] }
             let outsider = record.outsiderID.flatMap { outsidersByID[$0] }
-            guard (student != nil) != (outsider != nil) else {
-                throw SupabaseCloudError.invalidResponse
-            }
             let attendance = SocialAttendance(
                 student: student,
                 outsider: outsider,
@@ -1630,6 +2015,27 @@ final class SupabaseCloud: ObservableObject {
         social.legacyHiddenOutsiderList = []
         social.hiddenPersonList = localHiddenPeople
         social.attendanceList = localAttendances
+    }
+
+    private func validateSocialDependencies(
+        studentIDs: Set<UUID>, hiddenPeople: [CloudHiddenPersonRecord], attendances: [CloudAttendanceRecord],
+        studentsByID: [UUID: Student], outsidersByID: [UUID: Outsider]
+    ) throws -> [Student] {
+        let availableStudents = studentsByID.filter { !$0.value.isDeleted && $0.value.modelContext != nil }
+        let availableOutsiders = outsidersByID.filter { !$0.value.isDeleted && $0.value.modelContext != nil }
+        let students = studentIDs.compactMap { availableStudents[$0] }
+        let requiredStudents = Set(hiddenPeople.compactMap(\.studentID)).union(attendances.compactMap(\.studentID))
+        let requiredOutsiders = Set(hiddenPeople.compactMap(\.outsiderID)).union(attendances.compactMap(\.outsiderID))
+        guard students.count == studentIDs.count,
+              requiredStudents.isSubset(of: Set(availableStudents.keys)),
+              requiredOutsiders.isSubset(of: Set(availableOutsiders.keys)),
+              hiddenPeople.allSatisfy({ ($0.studentID != nil) != ($0.outsiderID != nil) }),
+              attendances.allSatisfy({ ($0.studentID != nil) != ($0.outsiderID != nil) }) else {
+            needsDependencyRecovery = activeScope != nil
+            throw SupabaseCloudError.invalidResponse
+        }
+
+        return students
     }
 
     private func fetchCurrentSocial(id: UUID, token: String) async throws -> CloudSocialRecord {
@@ -1890,6 +2296,7 @@ final class SupabaseCloud: ObservableObject {
         token: String? = nil,
         prefer: String? = nil
     ) async throws -> (Data, HTTPURLResponse) {
+        try validateSyncAuthentication(authenticated: authenticated)
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue(SupabaseConfiguration.publishableKey, forHTTPHeaderField: "apikey")
@@ -1906,6 +2313,7 @@ final class SupabaseCloud: ObservableObject {
 
         requestCount += 1
         let (data, response) = try await urlSession.data(for: request)
+        try validateSyncAuthentication(authenticated: authenticated)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw SupabaseCloudError.invalidResponse
         }
@@ -1914,6 +2322,14 @@ final class SupabaseCloud: ObservableObject {
             throw SupabaseCloudError.requestFailed(message)
         }
         return (data, httpResponse)
+    }
+
+    private func validateSyncAuthentication(authenticated: Bool) throws {
+        guard isSyncing else { return }
+        guard syncingAuthGeneration == authGeneration,
+              !authenticated || accessToken != nil else {
+            throw SupabaseCloudError.notSignedIn
+        }
     }
 }
 

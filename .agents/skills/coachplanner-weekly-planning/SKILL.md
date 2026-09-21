@@ -38,7 +38,7 @@ Work from the CoachPlanner repository root.
 
 - Require `schema_version: 1` and `read_only: true`. Stop with a clear compatibility warning if either differs.
 - Confirm `target_week.start` and `target_week.end` match the week being planned.
-- Report `cloud_freshness.latest_relevant_change_at`. The apps sync explicitly, so disclose that device edits made after the last manual **Sync cloud data** action may be absent.
+- Report `cloud_freshness.latest_relevant_change_at`. Current apps sync saved edits automatically while open and connected; offline, pending, or failed device uploads may still be absent. Older builds or devices with automatic sync disabled need **Sync cloud data**. A cloud timestamp does not prove every device has uploaded its latest edits.
 - Surface every item in `warnings` before recommending changes.
 - Treat existing `target_week.sessions` as the current draft. Never copy or duplicate the baseline merely because `baseline_week.sessions` exists.
 - Use `underallocated` for unmet demand. It already excludes students hidden globally or for the target week; use `students` when the hidden state or allocation count needs explanation.

@@ -32,11 +32,13 @@ On Mac, use Command-1 for Students, Command-2 for Sessions, Command-3 for Social
 
 ## Storage and sync
 
-SwiftData keeps an offline local cache on each device. Supabase is the shared cloud database, and cross-device synchronization runs only when **Settings → Sync cloud data** is tapped.
+SwiftData keeps an offline local cache on each device. Supabase is the shared cloud database. **Settings → Automatic sync** uploads saved edits and receives live changes while the app is open. The existing automatic-sync preference is preserved when upgrading. **Sync cloud data** remains available for a full manual reconciliation.
 
 The local store paths and SwiftData schema remain unchanged from the earlier builds, so installing this version over an existing installation keeps the device's current records. The app no longer requests iCloud or remote-notification capabilities.
 
-For routine use, sync before starting work on a device and again after finishing changes. Resolve any reported conflict before editing the same record on another device.
+Changes are saved locally first, then queued durably and grouped briefly before uploading. Supabase Realtime notifications request only affected parent records and their relationships. Startup, reconnect, and occasional foreground recovery perform a complete reconciliation to catch missed notifications. iOS may suspend a background app; reopening it catches up. Offline edits remain queued. Resolve any reported conflict before editing the same record on another device.
+
+For an existing Supabase project, apply `Backend/migrations/2026-09-21_realtime.sql` after the relationship-version migration. This adds the five parent tables to the Realtime publication while retaining existing row-level security. Without it, uploads and foreground recovery still work, but live notifications cannot connect.
 
 Sync overlaps independent downloads within each stage, batches cleanup for deleted records, and only replaces relationships that changed. Downloads are paginated so the server's row limit cannot silently truncate the cache. The `SupabaseSync` log category records each run's duration and request count without logging record contents or credentials.
 
@@ -44,10 +46,12 @@ Run the isolated SwiftData/Supabase regression checks on a Mac with Xcode instal
 
 ```sh
 bash Tests/run-supabase-sync-tests.sh
+bash Tests/run-realtime-tests.sh
+bash Tests/run-auto-sync-tests.sh
 python3 -m unittest discover -s Backend/tests -v
 ```
 
-The sync tests intercept every network request and use an in-memory store and isolated preferences. They cover uploads, downloads, deletions, conflicts, relationship edits, pagination failures, and request counts without using the installed app's data or Keychain session.
+The sync tests intercept every network request and use an in-memory store and isolated preferences. They cover uploads, downloads, deletions, conflicts, relationship edits, scoped reconciliation, edits during network requests, pagination failures, and request counts without using the installed app's data or Keychain session. Separate tests exercise the live protocol, durable queue, and save notifications.
 
 Local scheduled planning can read a privacy-limited, read-only Supabase snapshot without opening the app through `Tools/coachplanner-cloud snapshot --week next`. One-time Keychain-backed setup is documented in `Backend/README.md`.
 

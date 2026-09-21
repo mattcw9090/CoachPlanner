@@ -4,6 +4,7 @@ import SwiftUI
 struct AppSettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @AppStorage(AppStorageKey.trsBookingContactPhone) private var trsBookingContactPhone = ""
+    @StateObject private var automaticSync = SupabaseAutoSync.shared
     @StateObject private var cloud = SupabaseCloud.shared
     @State private var cloudEmail = ""
     @State private var cloudPassword = ""
@@ -154,7 +155,7 @@ struct AppSettingsView: View {
             }
 
             Button {
-                Task { await cloud.syncAll(in: modelContext) }
+                automaticSync.syncNow()
             } label: {
                 HStack(spacing: 8) {
                     if cloud.isSyncing {
@@ -172,7 +173,9 @@ struct AppSettingsView: View {
             .controlSize(.large)
             .disabled(cloud.isSyncing)
 
-            Text("Sync before starting on this device and again when you finish.")
+            Text(automaticSync.isEnabled
+                 ? "Saved changes sync automatically while the app is open. Use this button to check all cloud data now."
+                 : "Upload this device's saved changes and download updates from the cloud.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
@@ -184,6 +187,25 @@ struct AppSettingsView: View {
                 .font(.footnote.weight(.medium))
                 .foregroundStyle(result.needsAttention ? Color.orange : Color.green)
                 .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Toggle("Automatic sync", isOn: $automaticSync.isEnabled)
+                .tint(.blue)
+
+            if automaticSync.isEnabled {
+                Text("Uploads saved edits and receives live updates from your other devices. Offline changes upload when connected; reopening the app catches up on missed updates.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Auto sync is off. Use manual sync from Settings.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let error = automaticSync.localSaveError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
             }
 
             Divider()
