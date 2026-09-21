@@ -16,7 +16,7 @@ struct RootTabView: View {
             .onChange(of: scenePhase) { _, newPhase in
                 automaticSync.setActive(newPhase == .active)
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
+            .safeAreaInset(edge: syncStatusEdge, spacing: 0) {
                 HStack(spacing: 6) {
                     Image(systemName: automaticSync.needsAttention ? "exclamationmark.icloud" : "icloud")
                     Text(automaticSync.status)
@@ -27,7 +27,17 @@ struct RootTabView: View {
                 .padding(.vertical, 4)
                 .background(.bar)
                 .accessibilityElement(children: .combine)
+                .allowsHitTesting(false)
             }
+    }
+
+    private var syncStatusEdge: VerticalEdge {
+#if targetEnvironment(macCatalyst)
+        .bottom
+#else
+        // Leave the native tab bar's bottom safe area entirely to TabView.
+        .top
+#endif
     }
 
     @ViewBuilder
