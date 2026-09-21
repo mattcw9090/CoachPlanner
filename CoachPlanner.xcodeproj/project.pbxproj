@@ -14,12 +14,6 @@
 		A10000000000000000000006 /* AppStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* AppStyle.swift */; };
 		A10000000000000000000007 /* SocialSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* SocialSession.swift */; };
 		A10000000000000000000008 /* SocialSessionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* SocialSessionListView.swift */; };
-		FB3A86F02FED3C2800F18F03 /* AppIcon.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FB3A86EF2FED3C2800F18F03 /* AppIcon.xcassets */; };
-		FB8726722FEE5792005C59E9 /* FinanceBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB8726712FEE5792005C59E9 /* FinanceBridge.swift */; };
-		FB9F74242FEC56CC0039EE52 /* SessionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74232FEC56CC0039EE52 /* SessionListView.swift */; };
-		FB9F74252FEC56CC0039EE52 /* SessionEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */; };
-		FB9F74262FEC56CC0039EE52 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74212FEC56CC0039EE52 /* RootTabView.swift */; };
-		FB9F74272FEC56CC0039EE52 /* CoachingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */; };
 		C0A000000000000000000003 /* SupabaseCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000004 /* SupabaseCloud.swift */; };
 		C0A000000000000000000005 /* AppSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000006 /* AppSettingsView.swift */; };
 		C0A000000000000000000007 /* CloudSyncScope.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000008 /* CloudSyncScope.swift */; };
@@ -27,6 +21,12 @@
 		C0A000000000000000000011 /* SupabaseRealtimeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000012 /* SupabaseRealtimeClient.swift */; };
 		C0A000000000000000000013 /* SyncConflict.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000014 /* SyncConflict.swift */; };
 		C0A000000000000000000015 /* SyncConflictReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000016 /* SyncConflictReviewView.swift */; };
+		FB3A86F02FED3C2800F18F03 /* AppIcon.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FB3A86EF2FED3C2800F18F03 /* AppIcon.xcassets */; };
+		FB8726722FEE5792005C59E9 /* FinanceBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB8726712FEE5792005C59E9 /* FinanceBridge.swift */; };
+		FB9F74242FEC56CC0039EE52 /* SessionListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74232FEC56CC0039EE52 /* SessionListView.swift */; };
+		FB9F74252FEC56CC0039EE52 /* SessionEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */; };
+		FB9F74262FEC56CC0039EE52 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74212FEC56CC0039EE52 /* RootTabView.swift */; };
+		FB9F74272FEC56CC0039EE52 /* CoachingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,12 +38,6 @@
 		A20000000000000000000006 /* AppStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStyle.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* SocialSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocialSession.swift; sourceTree = "<group>"; };
 		A20000000000000000000008 /* SocialSessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocialSessionListView.swift; sourceTree = "<group>"; };
-		FB3A86EF2FED3C2800F18F03 /* AppIcon.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = AppIcon.xcassets; sourceTree = "<group>"; };
-		FB8726712FEE5792005C59E9 /* FinanceBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinanceBridge.swift; sourceTree = "<group>"; };
-		FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachingSession.swift; sourceTree = "<group>"; };
-		FB9F74212FEC56CC0039EE52 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
-		FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionEditorView.swift; sourceTree = "<group>"; };
-		FB9F74232FEC56CC0039EE52 /* SessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListView.swift; sourceTree = "<group>"; };
 		C0A000000000000000000004 /* SupabaseCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseCloud.swift; sourceTree = "<group>"; };
 		C0A000000000000000000006 /* AppSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsView.swift; sourceTree = "<group>"; };
 		C0A000000000000000000008 /* CloudSyncScope.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSyncScope.swift; sourceTree = "<group>"; };
@@ -51,6 +45,12 @@
 		C0A000000000000000000012 /* SupabaseRealtimeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseRealtimeClient.swift; sourceTree = "<group>"; };
 		C0A000000000000000000014 /* SyncConflict.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncConflict.swift; sourceTree = "<group>"; };
 		C0A000000000000000000016 /* SyncConflictReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncConflictReviewView.swift; sourceTree = "<group>"; };
+		FB3A86EF2FED3C2800F18F03 /* AppIcon.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = AppIcon.xcassets; sourceTree = "<group>"; };
+		FB8726712FEE5792005C59E9 /* FinanceBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinanceBridge.swift; sourceTree = "<group>"; };
+		FB9F74202FEC56CC0039EE52 /* CoachingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoachingSession.swift; sourceTree = "<group>"; };
+		FB9F74212FEC56CC0039EE52 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		FB9F74222FEC56CC0039EE52 /* SessionEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionEditorView.swift; sourceTree = "<group>"; };
+		FB9F74232FEC56CC0039EE52 /* SessionListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionListView.swift; sourceTree = "<group>"; };
 		FBD32EA42FED7386008E8EA4 /* CoachPlanner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = CoachPlanner.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -83,6 +83,14 @@
 				C0B000000000000000000005 /* Resources */,
 			);
 			path = CoachPlanner;
+			sourceTree = "<group>";
+		};
+		A40000000000000000000003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A20000000000000000000005 /* CoachPlanner.app */,
+			);
+			name = Products;
 			sourceTree = "<group>";
 		};
 		C0B000000000000000000001 /* App */ = {
@@ -173,14 +181,6 @@
 			path = Settings;
 			sourceTree = "<group>";
 		};
-		A40000000000000000000003 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				A20000000000000000000005 /* CoachPlanner.app */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -209,7 +209,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1600;
-				LastUpgradeCheck = 2660;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					A50000000000000000000001 = {
 						CreatedOnToolsVersion = 16.0;
@@ -403,6 +403,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.matthewchew.CoachPlanner;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -432,6 +433,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.matthewchew.CoachPlanner;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SUPPORTS_MACCATALYST = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
