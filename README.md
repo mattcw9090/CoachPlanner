@@ -30,6 +30,8 @@ Both versions use the same models and feature code. The Mac app adds sidebar nav
 
 On Mac, use Command-1 for Students, Command-2 for Sessions, Command-3 for Socials, and Command-comma for Settings. Editors support Command-S to save and Escape to cancel.
 
+The Mac Sessions screen keeps Share, Book Courts, and Move to Next Week in an adaptive action row above the timetable. This avoids a Catalyst native-toolbar layout crash; iPhone/iPad retain their native toolbar. When checking this UI, launch on Mac, switch sections, open/dismiss Share, enter/cancel bulk selection, and open/cancel an editor at both normal and minimum window width. Do not confirm a booking, export, message, move, or save as part of this smoke test.
+
 ## Storage and sync
 
 SwiftData keeps an offline local cache on each device. Supabase is the shared cloud database. **Settings → Automatic sync** uploads saved edits and receives live changes while the app is open. The existing automatic-sync preference is preserved when upgrading. **Sync cloud data** remains available for a full manual reconciliation.

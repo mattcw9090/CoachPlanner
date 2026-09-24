@@ -361,6 +361,9 @@ struct SessionListView: View {
 
         NavigationStack {
             VStack(spacing: 0) {
+#if targetEnvironment(macCatalyst)
+                desktopSessionActions(summary)
+#endif
                 weekSummaryStrip(summary)
                     .padding(.horizontal, calendarHorizontalPadding)
                     .padding(.top, 8)
@@ -377,73 +380,21 @@ struct SessionListView: View {
             }
             .animation(.snappy(duration: 0.24), value: isBulkSelectionModeEnabled)
             .navigationTitle("Sessions")
+#if !targetEnvironment(macCatalyst)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            messageTRSCourtBookingContact()
-                        } label: {
-                            Label("Request TRS Courts", systemImage: "message.fill")
-                        }
-
-                        Button {
-                            if let url = prepareICSFile() {
-                                fileExport = FileExportItem(url: url)
-                            } else {
-                                sessionNotice = SessionNotice(
-                                    title: "Nothing to Export",
-                                    message: "This week has no events to include in the calendar file."
-                                )
-                            }
-                        } label: {
-                            Label("Export Calendar", systemImage: "calendar")
-                        }
-                        .disabled(
-                            (sessionsForWeek.isEmpty &&
-                                courtBookingsForWeek.isEmpty &&
-                                summary.socialSessionsByDay.values.allSatisfy(\.isEmpty))
-                        )
-
-                        Button {
-                            sendToFinanceTracker()
-                        } label: {
-                            Label("Send to Finance Tracker", systemImage: "dollarsign.circle")
-                        }
-                        .disabled(sessionsForWeek.isEmpty)
-                    } label: {
-                        Label("Share", systemImage: "square.and.arrow.up")
-                    }
-                    .disabled(isBulkSelectionModeEnabled)
+                    sessionShareMenu(summary)
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
-                    if isBulkSelectionModeEnabled {
-                        Button {
-                            cancelBulkSelection()
-                        } label: {
-                            Label("Cancel Bulk Selection", systemImage: "xmark.circle")
-                        }
-                        .tint(.blue)
-                    } else {
-                        Button {
-                            beginBulkCourtSelection()
-                        } label: {
-                            Label("Book Courts", systemImage: "sportscourt")
-                        }
-                        .disabled(unbookedSessionsForWeek.isEmpty)
-                    }
+                    bulkCourtSelectionButton
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button(role: .destructive) {
-                        isResetConfirmationPresented = true
-                    } label: {
-                        Label("Move to Next Week", systemImage: "arrow.forward")
-                    }
-                    .disabled(sessionsForWeek.isEmpty || isBulkSelectionModeEnabled)
+                    moveToNextWeekButton
                 }
-
             }
+#endif
             .confirmationDialog(
                 "Move this week's sessions to next week?",
                 isPresented: $isResetConfirmationPresented,
@@ -488,6 +439,97 @@ struct SessionListView: View {
                 assignVisibleWeekToUnscopedRecordsIfNeeded()
             }
         }
+    }
+
+#if targetEnvironment(macCatalyst)
+    private func desktopSessionActions(_ summary: ScheduleSummary) -> some View {
+        // Keep these changing actions out of Catalyst's native toolbar grouping:
+        // AppKit can otherwise create constraints across detached toolbar views.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                sessionShareMenu(summary)
+                bulkCourtSelectionButton
+                moveToNextWeekButton
+            }
+            VStack(alignment: .trailing, spacing: 8) {
+                sessionShareMenu(summary)
+                bulkCourtSelectionButton
+                moveToNextWeekButton
+            }
+        }
+        .labelStyle(.titleAndIcon)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .padding(.horizontal, calendarHorizontalPadding)
+        .padding(.top, 8)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+#endif
+
+    private func sessionShareMenu(_ summary: ScheduleSummary) -> some View {
+        Menu {
+            Button {
+                messageTRSCourtBookingContact()
+            } label: {
+                Label("Request TRS Courts", systemImage: "message.fill")
+            }
+
+            Button {
+                if let url = prepareICSFile() {
+                    fileExport = FileExportItem(url: url)
+                } else {
+                    sessionNotice = SessionNotice(
+                        title: "Nothing to Export",
+                        message: "This week has no events to include in the calendar file."
+                    )
+                }
+            } label: {
+                Label("Export Calendar", systemImage: "calendar")
+            }
+            .disabled(
+                sessionsForWeek.isEmpty &&
+                    courtBookingsForWeek.isEmpty &&
+                    summary.socialSessionsByDay.values.allSatisfy(\.isEmpty)
+            )
+
+            Button {
+                sendToFinanceTracker()
+            } label: {
+                Label("Send to Finance Tracker", systemImage: "dollarsign.circle")
+            }
+            .disabled(sessionsForWeek.isEmpty)
+        } label: {
+            Label("Share", systemImage: "square.and.arrow.up")
+        }
+        .disabled(isBulkSelectionModeEnabled)
+    }
+
+    @ViewBuilder
+    private var bulkCourtSelectionButton: some View {
+        if isBulkSelectionModeEnabled {
+            Button {
+                cancelBulkSelection()
+            } label: {
+                Label("Cancel Bulk Selection", systemImage: "xmark.circle")
+            }
+            .tint(.blue)
+        } else {
+            Button {
+                beginBulkCourtSelection()
+            } label: {
+                Label("Book Courts", systemImage: "sportscourt")
+            }
+            .disabled(unbookedSessionsForWeek.isEmpty)
+        }
+    }
+
+    private var moveToNextWeekButton: some View {
+        Button(role: .destructive) {
+            isResetConfirmationPresented = true
+        } label: {
+            Label("Move to Next Week", systemImage: "arrow.forward")
+        }
+        .disabled(sessionsForWeek.isEmpty || isBulkSelectionModeEnabled)
     }
 
     private func weekPager(_ summary: ScheduleSummary) -> some View {
