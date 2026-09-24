@@ -81,7 +81,7 @@ struct SessionEditorView: View {
             initialValue: !existingCourtNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         )
         _courtNumber = State(initialValue: existingCourtNumber)
-        _sessionFeeText = State(initialValue: Self.feeText(for: editor.session?.sessionFee ?? 0))
+        _sessionFeeText = State(initialValue: Self.feeText(for: editor.session?.sessionFee ?? 80))
         _sessionDescription = State(initialValue: editor.session?.sessionDescription ?? "")
         _selectedStudentIDs = State(
             initialValue: Set(editor.session?.studentList.map(\.persistentModelID) ?? [])
