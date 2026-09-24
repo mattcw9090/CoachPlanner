@@ -16,6 +16,7 @@ This directory defines the first cloud-backed storage contract. It is provider-n
 - `migrations/2026-09-08_relationship_versions.sql` — idempotent parent-version triggers for relationship sync on an existing project.
 - `migrations/2026-09-21_realtime.sql` — idempotently publishes the five parent tables for authenticated live notifications.
 - `migrations/2026-09-21_conflict_resolution.sql` — atomic, explicitly reviewed conflict choices; apply after the schema and owner-scoped policies. Required before the app can apply a conflict choice.
+- `migrations/2026-09-24_atomic_social_sync.sql` — coherent social snapshots and atomic normal social create/update/delete; apply after the conflict-resolution migration.
 - `openapi.yaml` — the minimum API contract for storage migration and synchronization.
 - `export_swiftdata_store.py` — read-only exporter for the existing Mac SwiftData store.
 - `import_bundle.py` — authenticated, idempotent uploader for an exported bundle.
@@ -86,3 +87,19 @@ bash Backend/tests/run-conflict-resolution-tests.sh
 ```
 
 The runner creates its own temporary PostgreSQL cluster, with mock authentication and owner-scoped RLS. Set `COACHPLANNER_TEST_PG_BIN` only if the PostgreSQL binaries are elsewhere. No cloud credentials or database URL are accepted.
+
+## Atomic social sync
+
+Deploy `migrations/2026-09-24_atomic_social_sync.sql` after the conflict-resolution migration. Both new functions are `SECURITY INVOKER`, retain owner-scoped RLS, and explicitly revoke execution from `PUBLIC` and `anon`. Deployment creates functions only; it does not edit existing app records.
+
+- `coachplanner_social_snapshots(p_workspace_id)` returns one row per social, including tombstones: `{id, record, relationships}`. Its single stable SQL query reads the parent and all participant, hidden-person, and attendance rows from one database snapshot. The three child arrays are complete, even when a social has more than 500 children. PostgREST filters (`id`), ordering, limits, and offsets paginate **parent rows**, not child rows. Clients must request `Prefer: count=exact` and validate `Content-Range` for every parent page before inferring an absent record; a failed or truncated page aborts reconciliation.
+- `sync_coachplanner_social(p_workspace_id, p_record_id, p_expected, p_replacement, p_created_at)` returns `{record, relationships}` after one committed transaction. Existing writes compare the exact captured snapshot under locks; an outdated snapshot returns `CP_CONFLICT_STALE`. The complete replacement contains mutable parent fields and all three child arrays. Unchanged collections keep their existing rows and timestamps. A null replacement soft-deletes an existing expected social and cleans its children; it cannot implicitly create or resurrect a tombstone.
+- A null expected snapshot is **create only** and preserves `p_created_at` when supplied. It never upserts an existing ID. If the server committed but its response was lost, the client must fetch a new coherent snapshot: matching payload confirms success, while a divergent payload requires conflict review. Blindly retrying the original create is rejected and never overwrites later device changes.
+
+Old clients using separate parent/child REST requests must be upgraded; these functions cannot make an old client's multi-request upload atomic. Do not fall back to those writes if either RPC is unavailable.
+
+```sh
+bash Backend/tests/run-atomic-social-sync-tests.sh
+```
+
+This isolated SQL suite also runs the existing conflict-resolution checks. It verifies atomic creation, update, deletion, stale snapshots, permissions, late-child rollback, unchanged-child preservation, and complete large-child snapshots without accessing Supabase or installed app data.

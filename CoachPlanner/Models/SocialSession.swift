@@ -201,3 +201,114 @@ final class SocialAttendance: SyncTimestamped {
         SocialPaymentStatus(rawValue: paymentStatus) ?? .unpaid
     }
 }
+
+/// Transient editor values; these do not add persisted fields to the schema.
+enum SocialEditorPerson {
+    case student(Student)
+    case outsider(Outsider)
+
+    var student: Student? { if case .student(let value) = self { return value }; return nil }
+    var outsider: Outsider? { if case .outsider(let value) = self { return value }; return nil }
+    var key: String {
+        switch self {
+        case .student(let value): return "student:\(value.syncID.uuidString)"
+        case .outsider(let value): return "outsider:\(value.syncID.uuidString)"
+        }
+    }
+}
+
+struct SocialAttendanceEdit {
+    let person: SocialEditorPerson
+    let status: SessionStatus
+    let paymentStatus: SocialPaymentStatus
+}
+
+extension SocialSession {
+    /// Keep existing child identities and timestamps. A payment-only edit must
+    /// not become deletion/recreation of every attendee and hidden person.
+    func applyEditorRelationships(attendance edits: [SocialAttendanceEdit], hidden people: [SocialEditorPerson], in context: ModelContext) {
+        var remainingAttendance = attendanceList
+        var resultAttendance: [SocialAttendance] = []
+        for edit in edits {
+            let record: SocialAttendance
+            if let index = remainingAttendance.firstIndex(where: {
+                SocialSessionEditorSnapshot.personKey(student: $0.student, outsider: $0.outsider) == edit.person.key
+            }) {
+                record = remainingAttendance.remove(at: index)
+                if record.status != edit.status.rawValue { record.status = edit.status.rawValue }
+                if record.paymentStatus != edit.paymentStatus.rawValue { record.paymentStatus = edit.paymentStatus.rawValue }
+            } else {
+                record = SocialAttendance(student: edit.person.student, outsider: edit.person.outsider,
+                                          status: edit.status, paymentStatus: edit.paymentStatus)
+                context.insert(record)
+                record.session = self
+            }
+            resultAttendance.append(record)
+        }
+        for removed in remainingAttendance { context.delete(removed) }
+        if Set(attendanceList.map(\.persistentModelID)) != Set(resultAttendance.map(\.persistentModelID)) {
+            attendanceList = resultAttendance
+        }
+
+        var remainingHidden = hiddenPersonList
+        var resultHidden: [SocialHiddenPerson] = []
+        for person in people {
+            let record: SocialHiddenPerson
+            if let index = remainingHidden.firstIndex(where: {
+                SocialSessionEditorSnapshot.personKey(student: $0.student, outsider: $0.outsider) == person.key
+            }) {
+                record = remainingHidden.remove(at: index)
+            } else {
+                switch person {
+                case .student(let student): record = SocialHiddenPerson(student: student)
+                case .outsider(let outsider): record = SocialHiddenPerson(outsider: outsider)
+                }
+                context.insert(record)
+                record.session = self
+            }
+            resultHidden.append(record)
+        }
+        for removed in remainingHidden { context.delete(removed) }
+        if Set(hiddenPersonList.map(\.persistentModelID)) != Set(resultHidden.map(\.persistentModelID)) {
+            hiddenPersonList = resultHidden
+        }
+    }
+}
+
+/// Compare meaningful editor inputs, not sync acknowledgements or replacement
+/// child UUIDs. This prevents an open draft from overwriting a later cloud pull.
+struct SocialSessionEditorSnapshot: Equatable {
+    private let fields: [String]
+    private let students: [String]
+    private let hiddenPeople: [String]
+    private let attendances: [[String]]
+
+    init(_ session: SocialSession) {
+        fields = [session.syncID.uuidString, session.title, String(session.weekStart.timeIntervalSince1970),
+                  String(session.dayOfWeek), String(session.startTime.timeIntervalSince1970),
+                  String(session.endTime.timeIntervalSince1970), session.venue, session.status,
+                  String(session.areCourtsBooked), session.courtNumbers, String(session.shuttlecockCost), String(session.courtCost)]
+        students = session.studentList.map { $0.syncID.uuidString }.sorted()
+        hiddenPeople = (session.hiddenPersonList.compactMap { Self.personKey(student: $0.student, outsider: $0.outsider) }
+            + session.legacyHiddenStudentList.map { SocialEditorPerson.student($0).key }
+            + session.legacyHiddenOutsiderList.map { SocialEditorPerson.outsider($0).key }).sorted()
+        attendances = session.attendanceList.compactMap { record in
+            Self.personKey(student: record.student, outsider: record.outsider).map { [$0, record.status, record.paymentStatus] }
+        }.sorted { $0.lexicographicallyPrecedes($1) }
+    }
+
+    func matches(_ session: SocialSession, ignoringDeletedOutsiders ids: Set<UUID> = []) -> Bool {
+        guard !session.isDeleted, session.modelContext != nil else { return false }
+        let current = Self(session)
+        let ignored = Set(ids.map { "outsider:\($0.uuidString)" })
+        return fields == current.fields && students == current.students &&
+            hiddenPeople.filter { !ignored.contains($0) } == current.hiddenPeople.filter { !ignored.contains($0) } &&
+            attendances.filter { !ignored.contains($0[0]) } == current.attendances.filter { !ignored.contains($0[0]) }
+    }
+
+    fileprivate static func personKey(student: Student?, outsider: Outsider?) -> String? {
+        if let student { return SocialEditorPerson.student(student).key }
+        if let outsider { return SocialEditorPerson.outsider(outsider).key }
+        return nil
+    }
+}

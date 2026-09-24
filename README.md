@@ -46,7 +46,11 @@ Conflict details update through normal sync, stay visible across unrelated updat
 
 For an existing Supabase project, apply `Backend/migrations/2026-09-21_realtime.sql` after the relationship-version migration. This adds the five parent tables to the Realtime publication while retaining existing row-level security. Without it, uploads and foreground recovery still work, but live notifications cannot connect.
 
-Sync overlaps independent downloads within each stage, batches cleanup for deleted records, and only replaces relationships that changed. Downloads are paginated so the server's row limit cannot silently truncate the cache. The `SupabaseSync` log category records each run's duration and request count without logging record contents or credentials.
+Normal social sync requires `Backend/migrations/2026-09-24_atomic_social_sync.sql` after the conflict-resolution migration. It downloads each social and all its participants, hidden people, and attendance from one consistent database snapshot. Creates, edits, and deletions commit as one server transaction with exact stale-version checks; a failed attendance write cannot leave a half-uploaded social. Missing server support stops social sync without falling back to multipart writes. Install the updated app on every device to retire the older upload path.
+
+The social editor preserves existing attendance and hidden-person identities, updating only changed values. If the underlying social changes while an editor is open, saving the stale draft is blocked; cancel and reopen to review the current version. An unexplained mismatch with an unchanged sync timestamp is held for review, never automatically uploaded as if it were a local edit.
+
+Other independent downloads still overlap within each sync stage. Downloads are paginated and counts validated so the server's row limit cannot silently truncate the cache; social child arrays are aggregated inside each parent snapshot, not separately capped REST lists. The `SupabaseSync` log category records each run's duration and request count without logging record contents or credentials.
 
 Run the isolated SwiftData/Supabase regression checks on a Mac with Xcode installed:
 
@@ -54,8 +58,10 @@ Run the isolated SwiftData/Supabase regression checks on a Mac with Xcode instal
 bash Tests/run-supabase-sync-tests.sh
 bash Tests/run-realtime-tests.sh
 bash Tests/run-auto-sync-tests.sh
+bash Tests/run-social-editing-tests.sh
 python3 -m unittest discover -s Backend/tests -v
 bash Backend/tests/run-conflict-resolution-tests.sh
+bash Backend/tests/run-atomic-social-sync-tests.sh
 ```
 
 The sync tests intercept every network request and use an in-memory store and isolated preferences. They cover uploads, downloads, deletions, conflicts, relationship edits, scoped reconciliation, edits during network requests, pagination failures, and request counts without using the installed app's data or Keychain session. Separate tests exercise the live protocol, durable queue, and save notifications.

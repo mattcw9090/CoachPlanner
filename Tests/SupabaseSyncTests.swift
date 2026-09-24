@@ -6,6 +6,10 @@ private final class SyncMockServer: @unchecked Sendable {
     var requests: [(method: String, table: String)] = []
     var requestURLs: [URL] = []
     var resolutionRequests: [[String: Any]] = []
+    var socialSyncRequests: [[String: Any]] = []
+    var failSocialChildWrite = false
+    var failLegacySocialReads = false
+    var socialReadOverride: [[String: Any]]?
     var afterResponse: (@MainActor @Sendable (URLRequest) -> Void)?
     var pageLimit = 500
     var failLaterPage = false
@@ -26,6 +30,16 @@ private final class SyncMockServer: @unchecked Sendable {
     }
 
     func rows(_ table: String) -> [[String: Any]] { lock.withLock { tables[table] ?? [] } }
+    func socialSnapshots() -> [[String: Any]] {
+        lock.withLock {
+            (tables["social_sessions"] ?? []).map { row in
+                let id = row["id"] as! String
+                var snapshot = conflictSnapshot(table: "social_sessions", id: id)
+                snapshot["id"] = id
+                return snapshot
+            }
+        }
+    }
     func clearRequests() { lock.withLock { requests = []; requestURLs = []; peakRequests = 0 } }
     var writes: [(method: String, table: String)] { lock.withLock { requests.filter { $0.method != "GET" } } }
 
@@ -47,6 +61,10 @@ private final class SyncMockServer: @unchecked Sendable {
             requests.append((method, table))
             requestURLs.append(request.url!)
             if failTable == table { return (503, Data("{}".utf8), [:]) }
+            if failLegacySocialReads && method == "GET" &&
+                ["social_sessions", "social_session_students", "social_hidden_people", "social_attendance"].contains(table) {
+                return (503, Data("{}".utf8), [:])
+            }
             if method == "POST", let countdown = failPOSTCountdown {
                 failPOSTCountdown = countdown > 1 ? countdown - 1 : nil
                 if countdown == 1 { return (503, Data("{}".utf8), [:]) }
@@ -74,6 +92,15 @@ private final class SyncMockServer: @unchecked Sendable {
             var headers: [String: String] = [:]
             switch method {
             case "GET":
+                if table == "coachplanner_social_snapshots" {
+                    rows = (tables["social_sessions"] ?? []).map { row in
+                        let id = row["id"] as! String
+                        var snapshot = conflictSnapshot(table: "social_sessions", id: id)
+                        snapshot["id"] = id
+                        return snapshot
+                    }
+                    if let old = socialReadOverride { rows = old; socialReadOverride = nil }
+                }
                 result = hiddenReadTables.contains(table) ? [] : rows.filter(matches)
                 if let order = query.first(where: { $0.name == "order" })?.value {
                     let keys = order.split(separator: ",").map { String($0.split(separator: ".")[0]) }
@@ -104,6 +131,9 @@ private final class SyncMockServer: @unchecked Sendable {
                 let body = try JSONSerialization.jsonObject(with: data)
                 if table == "resolve_coachplanner_conflict" {
                     return try resolveConflict(body as! [String: Any])
+                }
+                if table == "sync_coachplanner_social" {
+                    return try syncSocial(body as! [String: Any])
                 }
                 if method == "POST" {
                     result = (body as? [[String: Any]]) ?? [body as! [String: Any]]
@@ -230,6 +260,50 @@ private final class SyncMockServer: @unchecked Sendable {
             tables[table]![index]["updated_at"] = timestamp()
         }
         return (200, try JSONSerialization.data(withJSONObject: conflictSnapshot(table: table, id: id, incoming: incoming)), [:])
+    }
+
+    private func syncSocial(_ body: [String: Any]) throws -> (Int, Data, [String: String]) {
+        socialSyncRequests.append(body)
+        let id = body["p_record_id"] as! String
+        let existing = tables["social_sessions"]?.first { ($0["id"] as? String)?.lowercased() == id.lowercased() }
+        if let expected = body["p_expected"] as? [String: Any] {
+            guard existing != nil, try canonical(expected) == canonical(conflictSnapshot(table: "social_sessions", id: id)) else {
+                return (409, Data(#"{"code":"40001","message":"CP_SOCIAL_STALE"}"#.utf8), [:])
+            }
+        } else if existing != nil {
+            return (409, Data(#"{"code":"40001","message":"CP_SOCIAL_STALE"}"#.utf8), [:])
+        }
+        // Model the RPC transaction: stage parent/children together, including
+        // the failure point after old child rows are removed, then commit once.
+        var staged = tables
+        var record = existing ?? ["id": id, "created_at": body["p_created_at"] ?? timestamp()]
+        if let replacement = body["p_replacement"] as? [String: Any] {
+            record.merge(replacement["record"] as! [String: Any]) { _, new in new }
+            record["deleted_at"] = NSNull()
+            let relationships = replacement["relationships"] as! [String: Any]
+            for (child, column, _) in relationshipTables(for: "social_sessions") {
+                staged[child, default: []].removeAll { ($0[column] as? String)?.lowercased() == id.lowercased() }
+                if failSocialChildWrite && child == "social_attendance" {
+                    failSocialChildWrite = false
+                    return (503, Data(#"{"message":"Injected child write failure; transaction rolled back"}"#.utf8), [:])
+                }
+                staged[child, default: []].append(contentsOf: (relationships[child] as? [[String: Any]] ?? []).map { row in
+                    var saved = row
+                    if child == "social_attendance" { saved["updated_at"] = timestamp() }
+                    return saved
+                })
+            }
+        } else {
+            record["deleted_at"] = timestamp()
+            for (child, column, _) in relationshipTables(for: "social_sessions") {
+                staged[child, default: []].removeAll { ($0[column] as? String)?.lowercased() == id.lowercased() }
+            }
+        }
+        record["updated_at"] = timestamp()
+        staged["social_sessions", default: []].removeAll { ($0["id"] as? String)?.lowercased() == id.lowercased() }
+        staged["social_sessions", default: []].append(record)
+        tables = staged
+        return (200, try JSONSerialization.data(withJSONObject: conflictSnapshot(table: "social_sessions", id: id)), [:])
     }
 
     private func touchParent(_ table: String, row: [String: Any]) {
@@ -365,14 +439,17 @@ private extension SupabaseCloud {
         _ = try await cloud.syncSocialSessions(in: context, token: "fixture-token")
         check(server.writes.count == 1 && server.rows("social_attendance").count == 1,
               "scalar social edit leaves all relationships intact")
-        check(server.peakRequests >= 4, "four independent social downloads overlap")
+        check(server.requests.filter { $0.method == "GET" }.count == 1 &&
+              server.requests.first?.table == "coachplanner_social_snapshots",
+              "social parent and relationships download together in one coherent snapshot request")
 
         server.clearRequests()
         attendance.paymentStatus = SocialPaymentStatus.paid.rawValue
         social.updatedAt = social.lastSyncedAt!.addingTimeInterval(10)
         _ = try await cloud.syncSocialSessions(in: context, token: "fixture-token")
-        check(server.writes.filter { $0.table == "social_session_students" || $0.table == "social_hidden_people" }.isEmpty,
-              "payment edit only replaces attendance")
+        check(server.writes.count == 1 && server.writes[0].table == "sync_coachplanner_social" &&
+              server.rows("social_session_students").count == 1 && server.rows("social_hidden_people").count == 1,
+              "payment edit commits atomically while preserving students and hidden people")
         check(server.rows("social_attendance")[0]["payment_status"] as? String == "Paid", "payment edit reaches cloud")
         check(social.lastSyncedAt == isoFormatter.date(from: server.rows("social_sessions")[0]["updated_at"] as! String),
               "attendance trigger timestamp is retained")
@@ -471,6 +548,7 @@ private extension SupabaseCloud {
         try await runConflictReportTests(session: session)
         try await runConflictResolutionTests(session: session)
         try await runPersonRestorationTests(session: session)
+        try await runAtomicSocialTests(session: session)
         print("All Supabase sync regression checks passed. No live cloud or app data used.")
     }
 
@@ -737,7 +815,7 @@ private extension SupabaseCloud {
         try context.save()
         server.lock.withLock {
             server.afterResponse = { @MainActor request in
-                guard request.httpMethod == "PATCH", request.url?.lastPathComponent == "social_sessions" else { return }
+                guard request.httpMethod == "POST", request.url?.lastPathComponent == "sync_coachplanner_social" else { return }
                 context.delete(social)
                 try! context.save()
             }
@@ -1367,11 +1445,16 @@ private extension SupabaseCloud {
                 try context.save()
                 server.edit("social_sessions", id: social.syncID, fields: ["title": "Valid cloud version"])
                 await cloud.syncChanges(CloudSyncScope(socialSessions: [social.syncID]), in: context)
+                // SwiftData may finish the orphan's inverse removal during the
+                // first request, which correctly defers comparison for a pass.
+                if cloud.deferredChanges.socialSessions.contains(social.syncID) {
+                    await cloud.syncChanges(CloudSyncScope(socialSessions: [social.syncID]), in: context)
+                }
                 let orphanReport = cloud.conflicts.first { $0.recordID == social.syncID }!
                 _ = try await cloud.resolveConflict(orphanReport, choice: .cloud, in: context)
                 check(social.title == "Valid cloud version" && social.attendanceList.count == 2 &&
                       social.attendanceList.allSatisfy { $0.student != nil || $0.outsider != nil } && cloud.conflicts.isEmpty,
-                      "cloud choice repairs orphan local attendance without requiring a valid local upload replacement")
+                      "scoped orphan cleanup and cloud choice restore valid attendance without uploading malformed rows")
             } else {
                 let restored = try context.fetch(FetchDescriptor<Outsider>()).first { $0.syncID == caseyID }!
                 context.delete(restored); social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30)
@@ -1397,5 +1480,177 @@ private extension SupabaseCloud {
                       "a related session edit during person restoration is preserved and prevents stale link restoration")
             }
         }
+    }
+
+    static func runAtomicSocialTests(session: URLSession) async throws {
+        func check(_ condition: @autoclosure () -> Bool, _ message: String) {
+            precondition(condition(), message)
+            print("PASS: \(message)")
+        }
+        let server = SyncMockProtocol.server
+        let suite = "CoachPlanner.AtomicSocialTests.\(UUID().uuidString)"
+        let prefsA = UserDefaults(suiteName: suite + ".a")!, prefsB = UserDefaults(suiteName: suite + ".b")!
+        defer { prefsA.removePersistentDomain(forName: suite + ".a"); prefsB.removePersistentDomain(forName: suite + ".b") }
+        func makeContext() throws -> ModelContext {
+            let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
+                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+            let context = ModelContext(try ModelContainer(for: schema, configurations: [configuration]))
+            context.autosaveEnabled = false
+            return context
+        }
+        let contextA = try makeContext(), contextB = try makeContext()
+        let cloudA = SupabaseCloud(urlSession: session, defaults: prefsA, restoreSession: false)
+        let cloudB = SupabaseCloud(urlSession: session, defaults: prefsB, restoreSession: false)
+        cloudA.accessToken = "e30.eyJleHAiOjQxMDI0NDQ4MDB9.fixture"
+        cloudB.accessToken = "e30.eyJleHAiOjQxMDI0NDQ4MDB9.fixture"
+        server.lock.withLock {
+            server.tables = ["workspaces": [["id": SupabaseConfiguration.workspaceID.uuidString]]]
+            server.failTable = nil; server.failPOSTCountdown = nil; server.failLaterPage = false; server.pageLimit = 500
+            server.failSocialChildWrite = false; server.failLegacySocialReads = true
+            server.socialReadOverride = nil; server.afterResponse = nil; server.loseNextPOSTResponse = false
+        }
+        defer { server.lock.withLock { server.failLegacySocialReads = false; server.socialReadOverride = nil; server.afterResponse = nil } }
+        let week = dateOnlyFormatter.date(from: "2026-09-14")!
+        let start = week.addingTimeInterval(36000), end = start.addingTimeInterval(3600)
+        let alice = Student(name: "Atomic Alice", gender: "", contactPreference: .sms, contactDetail: "")
+        let outsider = Outsider(name: "Atomic Guest", gender: "", contactPreference: .sms, contactDetail: "")
+        let attendance = SocialAttendance(student: alice, status: .confirmed)
+        let social = SocialSession(title: "Atomic Social", weekStart: week, dayOfWeek: .friday, startTime: start, endTime: end,
+                                   venue: .apex, students: [alice], hiddenPeople: [SocialHiddenPerson(outsider: outsider)], attendances: [attendance])
+        contextA.insert(alice); contextA.insert(outsider); contextA.insert(social); try contextA.save()
+        await cloudA.syncAll(in: contextA)
+        await cloudB.syncAll(in: contextB)
+        check(cloudA.lastError == nil && cloudB.lastError == nil,
+              "atomic socials create and hydrate while every legacy social read route is unavailable")
+        let originalSnapshot = server.socialSnapshots()
+        let scope = CloudSyncScope(socialSessions: [social.syncID])
+        let beforeFailure = try JSONSerialization.data(withJSONObject: server.lock.withLock { server.tables }, options: .sortedKeys)
+        attendance.paymentStatus = "Paid"; social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30)
+        try contextA.save()
+        let oldBaseline = social.lastSyncedAt
+        server.lock.withLock { server.failSocialChildWrite = true }
+        await cloudA.syncChanges(scope, in: contextA)
+        let afterFailure = try JSONSerialization.data(withJSONObject: server.lock.withLock { server.tables }, options: .sortedKeys)
+        check(cloudA.lastError != nil && beforeFailure == afterFailure && attendance.paymentStatus == "Paid" && social.lastSyncedAt == oldBaseline,
+              "a child write failure rolls back the whole social transaction and keeps the local edit pending")
+        await cloudA.syncChanges(scope, in: contextA)
+        check(cloudA.lastError == nil && cloudA.conflicts.isEmpty && server.rows("social_attendance")[0]["payment_status"] as? String == "Paid",
+              "retry after an atomic child failure succeeds without manufacturing a conflict")
+
+        attendance.status = "Pending"; social.title = "Committed despite lost response"
+        social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30); try contextA.save()
+        server.lock.withLock { server.loseNextPOSTResponse = true }
+        await cloudA.syncChanges(scope, in: contextA)
+        check(cloudA.lastError != nil && server.rows("social_attendance")[0]["status"] as? String == "Pending" &&
+              server.rows("social_sessions")[0]["title"] as? String == social.title,
+              "a lost social response leaves a complete committed parent and attendance version")
+        server.clearRequests()
+        await cloudA.syncChanges(scope, in: contextA)
+        check(cloudA.lastError == nil && cloudA.conflicts.isEmpty && server.writes.isEmpty && social.updatedAt == social.lastSyncedAt,
+              "retry acknowledges a lost social response without duplicate writes or a false conflict")
+
+        server.lock.withLock { server.socialReadOverride = originalSnapshot }
+        await cloudB.syncChanges(scope, in: contextB)
+        let receivingSocial = try contextB.fetch(FetchDescriptor<SocialSession>()).first!
+        check(cloudB.lastError == nil && receivingSocial.attendanceList[0].paymentStatus == "Unpaid" && receivingSocial.updatedAt == receivingSocial.lastSyncedAt,
+              "a delayed coherent snapshot never mixes newer parent metadata with older attendance")
+        server.clearRequests()
+        await cloudB.syncChanges(scope, in: contextB)
+        check(cloudB.lastError == nil && receivingSocial.attendanceList[0].paymentStatus == "Paid" &&
+              receivingSocial.attendanceList[0].status == "Pending" && server.writes.isEmpty && cloudB.conflicts.isEmpty,
+              "an unedited second device pulls the latest complete attendance without an upload echo")
+        receivingSocial.attendanceList[0].paymentStatus = "Unpaid"
+        // Simulate a cache written by the former torn-read path: stale payload,
+        // but timestamps claim the current cloud version and no user edit.
+        receivingSocial.updatedAt = receivingSocial.lastSyncedAt!
+        try contextB.save()
+        server.clearRequests()
+        await cloudB.syncChanges(scope, in: contextB)
+        check(cloudB.lastError == nil && cloudB.lastSyncResult?.conflicts == 1 && server.writes.isEmpty &&
+              server.rows("social_attendance")[0]["payment_status"] as? String == "Paid" &&
+              receivingSocial.attendanceList[0].paymentStatus == "Unpaid",
+              "an ambiguous clean-baseline attendance mismatch needs review and never uploads stale cached values")
+
+        attendance.status = "Confirmed"; social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30)
+        try contextA.save()
+        server.lock.withLock {
+            server.afterResponse = { @MainActor request in
+                guard request.url?.lastPathComponent == "sync_coachplanner_social" else { return }
+                attendance.status = "Pending"
+                social.title = "Saved during atomic upload"
+                social.updatedAt = social.updatedAt.addingTimeInterval(30)
+                try! contextA.save()
+            }
+        }
+        await cloudA.syncChanges(scope, in: contextA)
+        server.lock.withLock { server.afterResponse = nil }
+        check(cloudA.lastError == nil && cloudA.deferredChanges.socialSessions.contains(social.syncID) &&
+              social.title == "Saved during atomic upload" && attendance.status == "Pending" &&
+              server.rows("social_attendance")[0]["status"] as? String == "Confirmed",
+              "atomic social acknowledgement preserves a newer saved parent and attendance edit")
+        await cloudA.syncChanges(scope, in: contextA)
+        check(cloudA.lastError == nil && cloudA.conflicts.isEmpty &&
+              server.rows("social_sessions")[0]["title"] as? String == "Saved during atomic upload" &&
+              server.rows("social_attendance")[0]["status"] as? String == "Pending",
+              "a follow-up atomic pass uploads the parent and attendance saved during the previous request")
+
+        let added = SocialSession(title: "Lost atomic create", weekStart: week, dayOfWeek: .saturday,
+                                  startTime: start, endTime: end, venue: .apex, students: [alice],
+                                  hiddenPeople: [SocialHiddenPerson(outsider: outsider)],
+                                  attendances: [SocialAttendance(student: alice, status: .confirmed, paymentStatus: .paid)])
+        contextA.insert(added); try contextA.save()
+        server.lock.withLock { server.loseNextPOSTResponse = true }
+        await cloudA.syncChanges(CloudSyncScope(socialSessions: [added.syncID]), in: contextA)
+        check(cloudA.lastError != nil && server.rows("social_sessions").filter { $0["id"] as? String == added.syncID.uuidString }.count == 1 &&
+              server.rows("social_attendance").contains { $0["social_session_id"] as? String == added.syncID.uuidString },
+              "a lost atomic-create response leaves one complete social with its attendance")
+        server.clearRequests()
+        await cloudA.syncChanges(CloudSyncScope(socialSessions: [added.syncID]), in: contextA)
+        check(cloudA.lastError == nil && cloudA.conflicts.isEmpty && added.lastSyncedAt != nil && server.writes.isEmpty,
+              "a lost social creation response can be acknowledged without another create or conflict")
+
+        // More child rows than the configured page size must travel inside each
+        // parent snapshot, while the parent collection itself remains paginated.
+        social.attendanceList.append(SocialAttendance(student: nil, outsider: outsider, status: .pending))
+        social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30); try contextA.save()
+        await cloudA.syncChanges(scope, in: contextA)
+        server.lock.withLock { server.pageLimit = 1 }
+        server.clearRequests()
+        await cloudA.syncAll(in: contextA)
+        let snapshotURLs = server.lock.withLock { server.requestURLs.filter { $0.lastPathComponent == "coachplanner_social_snapshots" } }
+        check(cloudA.lastError == nil && snapshotURLs.count == 2 &&
+              server.rows("social_attendance").filter { $0["social_session_id"] as? String == social.syncID.uuidString }.count == 2 &&
+              snapshotURLs.allSatisfy { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems?.contains { $0.name == "select" && $0.value == "id,record,relationships" } == true },
+              "coherent social snapshots paginate parent records without truncating their nested attendance")
+        let scopedOrphan = SocialAttendance(student: nil, status: .pending)
+        let unscopedOrphan = SocialAttendance(student: nil, status: .pending)
+        social.attendanceList.append(scopedOrphan)
+        added.attendanceList.append(unscopedOrphan)
+        social.updatedAt = social.lastSyncedAt!.addingTimeInterval(30)
+        added.updatedAt = added.lastSyncedAt!.addingTimeInterval(30)
+        try contextA.save()
+        let unscopedBaseline = added.lastSyncedAt
+        server.clearRequests()
+        await cloudA.syncChanges(scope, in: contextA)
+        if cloudA.deferredChanges.socialSessions.contains(social.syncID) {
+            await cloudA.syncChanges(scope, in: contextA)
+        }
+        check(cloudA.lastError == nil && social.attendanceList.allSatisfy { $0.student != nil || $0.outsider != nil } &&
+              added.attendanceList.contains { $0.syncID == unscopedOrphan.syncID } && added.lastSyncedAt == unscopedBaseline,
+              "scoped social sync removes cascade-created orphan attendance only from the requested social")
+        let addedID = added.syncID
+        contextA.delete(added); try contextA.save()
+        server.lock.withLock { server.failLaterPage = true }
+        server.clearRequests()
+        await cloudA.syncChanges(CloudSyncScope(socialSessions: [social.syncID, addedID]), in: contextA)
+        check(cloudA.lastError != nil && server.writes.isEmpty &&
+              server.rows("social_sessions").first { $0["id"] as? String == addedID.uuidString }?["deleted_at"] is NSNull,
+              "an incomplete social snapshot page cannot turn a local deletion into a cloud tombstone")
+        server.lock.withLock { server.failLaterPage = false; server.pageLimit = 500 }
+        await cloudA.syncChanges(CloudSyncScope(socialSessions: [addedID]), in: contextA)
+        check(cloudA.lastError == nil && server.rows("social_sessions").first { $0["id"] as? String == addedID.uuidString }?["deleted_at"] is String &&
+              !server.rows("social_attendance").contains { $0["social_session_id"] as? String == addedID.uuidString },
+              "a confirmed social deletion commits its tombstone and child cleanup together")
     }
 }

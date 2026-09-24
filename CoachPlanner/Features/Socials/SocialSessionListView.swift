@@ -610,6 +610,8 @@ struct SocialSessionEditorView: View {
     @State private var paymentStatusByOutsiderID: [PersistentIdentifier: SocialPaymentStatus]
     @State private var hiddenStudentIDs: Set<PersistentIdentifier>
     @State private var hiddenOutsiderIDs: Set<PersistentIdentifier>
+    @State private var originalSessionSnapshot: SocialSessionEditorSnapshot?
+    @State private var locallyDeletedOutsiderIDs: Set<UUID> = []
     @State private var addPeoplePage: SocialPeoplePage = .students
     @State private var isShowingHiddenStudents = false
     @State private var isShowingHiddenOutsiders = false
@@ -652,6 +654,7 @@ struct SocialSessionEditorView: View {
         _paymentStatusByOutsiderID = State(initialValue: Self.initialOutsiderPaymentStatuses(for: editor.session))
         _hiddenStudentIDs = State(initialValue: Self.initialHiddenStudentIDs(for: editor.session))
         _hiddenOutsiderIDs = State(initialValue: Self.initialHiddenOutsiderIDs(for: editor.session))
+        _originalSessionSnapshot = State(initialValue: editor.session.map(SocialSessionEditorSnapshot.init))
     }
 
     private var selectedStudents: [Student] {
@@ -1463,6 +1466,14 @@ struct SocialSessionEditorView: View {
     }
 
     private func save() {
+        if let session = editor.session,
+           originalSessionSnapshot?.matches(session, ignoringDeletedOutsiders: locallyDeletedOutsiderIDs) != true {
+            contactNotice = SocialContactNotice(
+                title: "Social Changed While Editing",
+                message: "This social session changed while the editor was open. Your draft hasn't been saved. Cancel and reopen it to review the latest version before saving."
+            )
+            return
+        }
         let selected = students.filter { selectedStatusByStudentID[$0.persistentModelID] != nil }
         let selectedOutsiders = outsiders.filter { selectedStatusByOutsiderID[$0.persistentModelID] != nil }
         let excludedStudents = students.filter {
@@ -1473,33 +1484,30 @@ struct SocialSessionEditorView: View {
             selectedStatusByOutsiderID[$0.persistentModelID] == nil &&
                 hiddenOutsiderIDs.contains($0.persistentModelID)
         }
-        let attendances = attendanceModels(for: selected, outsiders: selectedOutsiders)
-        let hiddenPeople = hiddenPersonModels(for: excludedStudents, outsiders: excludedOutsiders)
+        let attendanceEdits = attendanceEdits(for: selected, outsiders: selectedOutsiders)
+        let hiddenPeople = excludedStudents.map(SocialEditorPerson.student) + excludedOutsiders.map(SocialEditorPerson.outsider)
 
         if let session = editor.session {
-            for attendance in session.attendanceList {
-                modelContext.delete(attendance)
+            if session.title != trimmedTitle { session.title = trimmedTitle }
+            if session.weekStart != editor.weekStart { session.weekStart = editor.weekStart }
+            if session.dayOfWeek != dayOfWeek.rawValue { session.dayOfWeek = dayOfWeek.rawValue }
+            if session.startTime != startTime { session.startTime = startTime }
+            if session.endTime != endTime { session.endTime = endTime }
+            if session.venue != venue.rawValue { session.venue = venue.rawValue }
+            if session.status != sessionStatus.rawValue { session.status = sessionStatus.rawValue }
+            if session.areCourtsBooked != areCourtsBooked { session.areCourtsBooked = areCourtsBooked }
+            let savedCourtNumbers = areCourtsBooked ? trimmedCourtNumbers : ""
+            let savedShuttlecockCost = sessionStatus == .finished ? shuttlecockCost : 0
+            let savedCourtCost = sessionStatus == .finished ? courtCost : 0
+            if session.courtNumbers != savedCourtNumbers { session.courtNumbers = savedCourtNumbers }
+            if session.shuttlecockCost != savedShuttlecockCost { session.shuttlecockCost = savedShuttlecockCost }
+            if session.courtCost != savedCourtCost { session.courtCost = savedCourtCost }
+            if Set(session.studentList.map(\.syncID)) != Set(selected.map(\.syncID)) || session.studentList.count != selected.count {
+                session.studentList = selected
             }
-            for hiddenPerson in session.hiddenPersonList {
-                modelContext.delete(hiddenPerson)
-            }
-
-            session.title = trimmedTitle
-            session.weekStart = editor.weekStart
-            session.dayOfWeek = dayOfWeek.rawValue
-            session.startTime = startTime
-            session.endTime = endTime
-            session.venue = venue.rawValue
-            session.status = sessionStatus.rawValue
-            session.areCourtsBooked = areCourtsBooked
-            session.courtNumbers = areCourtsBooked ? trimmedCourtNumbers : ""
-            session.shuttlecockCost = sessionStatus == .finished ? shuttlecockCost : 0
-            session.courtCost = sessionStatus == .finished ? courtCost : 0
-            session.studentList = selected
-            session.legacyHiddenStudentList = []
-            session.legacyHiddenOutsiderList = []
-            session.hiddenPersonList = hiddenPeople
-            session.attendanceList = attendances
+            if !session.legacyHiddenStudentList.isEmpty { session.legacyHiddenStudentList = [] }
+            if !session.legacyHiddenOutsiderList.isEmpty { session.legacyHiddenOutsiderList = [] }
+            session.applyEditorRelationships(attendance: attendanceEdits, hidden: hiddenPeople, in: modelContext)
         } else {
             let session = SocialSession(
                 title: trimmedTitle,
@@ -1513,11 +1521,10 @@ struct SocialSessionEditorView: View {
                 courtNumbers: areCourtsBooked ? trimmedCourtNumbers : "",
                 shuttlecockCost: sessionStatus == .finished ? shuttlecockCost : 0,
                 courtCost: sessionStatus == .finished ? courtCost : 0,
-                students: selected,
-                hiddenPeople: hiddenPeople,
-                attendances: attendances
+                students: selected
             )
             modelContext.insert(session)
+            session.applyEditorRelationships(attendance: attendanceEdits, hidden: hiddenPeople, in: modelContext)
             consumeCourtBookingIfNeeded()
         }
 
@@ -1543,6 +1550,7 @@ struct SocialSessionEditorView: View {
     }
 
     private func deleteOutsider(_ outsider: Outsider) {
+        locallyDeletedOutsiderIDs.insert(outsider.syncID)
         selectedStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
         paymentStatusByOutsiderID.removeValue(forKey: outsider.persistentModelID)
         hiddenOutsiderIDs.remove(outsider.persistentModelID)
@@ -1795,43 +1803,24 @@ struct SocialSessionEditorView: View {
         paymentStatusByOutsiderID[outsider.persistentModelID] ?? .unpaid
     }
 
-    private func attendanceModels(for selectedStudents: [Student], outsiders selectedOutsiders: [Outsider]) -> [SocialAttendance] {
+    private func attendanceEdits(for selectedStudents: [Student], outsiders selectedOutsiders: [Outsider]) -> [SocialAttendanceEdit] {
         let studentAttendances = selectedStudents.map { student in
-            let attendance = SocialAttendance(
-                student: student,
+            SocialAttendanceEdit(
+                person: .student(student),
                 status: sessionStatus == .finished ? .confirmed : selectedStatusByStudentID[student.persistentModelID] ?? .unscheduled,
                 paymentStatus: paymentStatusByStudentID[student.persistentModelID] ?? .unpaid
             )
-            modelContext.insert(attendance)
-            return attendance
         }
 
         let outsiderAttendances = selectedOutsiders.map { outsider in
-            let attendance = SocialAttendance(
-                student: nil,
-                outsider: outsider,
+            SocialAttendanceEdit(
+                person: .outsider(outsider),
                 status: sessionStatus == .finished ? .confirmed : selectedStatusByOutsiderID[outsider.persistentModelID] ?? .unscheduled,
                 paymentStatus: paymentStatusByOutsiderID[outsider.persistentModelID] ?? .unpaid
             )
-            modelContext.insert(attendance)
-            return attendance
         }
 
         return studentAttendances + outsiderAttendances
-    }
-
-    private func hiddenPersonModels(for hiddenStudents: [Student], outsiders hiddenOutsiders: [Outsider]) -> [SocialHiddenPerson] {
-        let studentRecords = hiddenStudents.map { student in
-            let record = SocialHiddenPerson(student: student)
-            modelContext.insert(record)
-            return record
-        }
-        let outsiderRecords = hiddenOutsiders.map { outsider in
-            let record = SocialHiddenPerson(outsider: outsider)
-            modelContext.insert(record)
-            return record
-        }
-        return studentRecords + outsiderRecords
     }
 
     private static func initialHiddenStudentIDs(for session: SocialSession?) -> Set<PersistentIdentifier> {

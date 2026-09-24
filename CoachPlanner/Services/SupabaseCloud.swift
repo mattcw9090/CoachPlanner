@@ -845,17 +845,17 @@ final class SupabaseCloud: ObservableObject {
     }
 
     private func syncSocialSessions(in context: ModelContext, token: String) async throws -> SyncRunResult {
-        if activeScope == nil { try removeOrphanedSocialChildren(in: context) }
+        try removeOrphanedSocialChildren(in: context, socialIDs: activeScope?.socialSessions)
         let localSocials = try context.fetch(FetchDescriptor<SocialSession>())
             .filter { activeScope?.socialSessions.contains($0.syncID) ?? true }
         let initialRevisions = Dictionary(uniqueKeysWithValues: localSocials.map { ($0.syncID, revision(of: $0)) })
-        async let socialsRequest = fetchSocialRecords(token: token)
-        async let linksRequest = fetchSocialSessionStudentLinks(token: token)
-        async let hiddenPeopleRequest = fetchHiddenPersonRecords(token: token)
-        async let attendancesRequest = fetchAttendanceRecords(token: token)
-        let (cloudSocials, cloudStudentLinks, cloudHiddenPeople, cloudAttendances) = try await (
-            socialsRequest, linksRequest, hiddenPeopleRequest, attendancesRequest
-        )
+        // Each parent and all its children come from one database snapshot.
+        // Independent REST reads can pair a new parent version with old attendance.
+        let snapshots = try await fetchSocialSnapshots(token: token)
+        let cloudSocials = snapshots.map(\.record)
+        let cloudStudentLinks = snapshots.flatMap { $0.relationships.students }
+        let cloudHiddenPeople = snapshots.flatMap { $0.relationships.hiddenPeople }
+        let cloudAttendances = snapshots.flatMap { $0.relationships.attendances }
         let localStudents = try context.fetch(FetchDescriptor<Student>()).filter { !$0.isDeleted }
         let localOutsiders = try context.fetch(FetchDescriptor<Outsider>()).filter { !$0.isDeleted }
         let knownStudents = Set(localStudents.map(\.syncID))
@@ -869,19 +869,14 @@ final class SupabaseCloud: ObservableObject {
             needsDependencyRecovery = activeScope != nil
             throw SupabaseCloudError.invalidResponse
         }
-        let deletedSocialIDs = Set(cloudSocials.filter { $0.deletedAt != nil }.map(\.id))
-        try await deleteCloudRows(
-            table: "social_session_students", column: "session_id",
-            ids: deletedSocialIDs.intersection(cloudStudentLinks.map(\.sessionID)), token: token
-        )
-        try await deleteCloudRows(
-            table: "social_hidden_people", column: "social_session_id",
-            ids: deletedSocialIDs.intersection(cloudHiddenPeople.map(\.socialSessionID)), token: token
-        )
-        try await deleteCloudRows(
-            table: "social_attendance", column: "social_session_id",
-            ids: deletedSocialIDs.intersection(cloudAttendances.map(\.socialSessionID)), token: token
-        )
+        // Clean legacy tombstone relationships through the same transaction as
+        // normal deletion, never as three independent destructive requests.
+        for snapshot in snapshots where snapshot.record.deletedAt != nil &&
+            (!snapshot.relationships.students.isEmpty || !snapshot.relationships.hiddenPeople.isEmpty ||
+             !snapshot.relationships.attendances.isEmpty) {
+            _ = try await writeSocialSnapshot(id: snapshot.id, expected: capturedCloudSnapshot(table: "social_sessions", id: snapshot.id),
+                                              replacement: nil, createdAt: nil, token: token)
+        }
 
         let studentsByID = localStudents.reduce(into: [UUID: Student]()) { $0[$1.syncID] = $1 }
         let outsidersByID = localOutsiders.reduce(into: [UUID: Outsider]()) { $0[$1.syncID] = $1 }
@@ -909,17 +904,10 @@ final class SupabaseCloud: ObservableObject {
             guard let cloud = remainingCloud.removeValue(forKey: social.syncID) else {
                 if social.lastSyncedAt == nil || syncLedger.socialSessions[ledgerKey] == nil {
                     let sentRevision = revision(of: social)
-                    let relationships = socialRelationshipRows(for: social)
-                    var created = try await insertCloudSocialSession(social, token: token)
-                    recordAcknowledgement(table: "social_sessions", id: social.syncID, timestamp: created.updatedAt)
-                    if !relationships.students.isEmpty || !relationships.hiddenPeople.isEmpty || !relationships.attendances.isEmpty {
-                        try await replaceCloudRelationships(
-                            for: social, rows: relationships, studentsChanged: !relationships.students.isEmpty,
-                            hiddenPeopleChanged: !relationships.hiddenPeople.isEmpty,
-                            attendanceChanged: !relationships.attendances.isEmpty, token: token
-                        )
-                        created = try await fetchCurrentSocial(id: social.syncID, token: token)
-                    }
+                    let replacement = try resolutionReplacement(for: social)
+                    recordCreationIntent(table: "social_sessions", id: social.syncID)
+                    let created = try await writeSocialSnapshot(id: social.syncID, expected: nil,
+                                                               replacement: replacement, createdAt: social.createdAt, token: token)
                     if acknowledge(social, table: "social_sessions", id: social.syncID,
                                    sent: sentRevision, current: revision(of: social), serverTimestamp: created.updatedAt) {
                         stampSocialChildren(social, parentTimestamp: created.updatedAt)
@@ -945,7 +933,7 @@ final class SupabaseCloud: ObservableObject {
 
             let knownVersion = syncLedger.socialSessions[ledgerKey]
             let baseline = social.lastSyncedAt ?? knownVersion ?? cloud.updatedAt
-            var localChanged = social.updatedAt > baseline || (social.lastSyncedAt == nil && knownVersion != nil)
+            let localChanged = social.updatedAt > baseline || (social.lastSyncedAt == nil && knownVersion != nil)
             if social.lastSyncedAt == nil {
                 social.lastSyncedAt = baseline
                 if knownVersion != nil { social.updatedAt = max(social.updatedAt, baseline.addingTimeInterval(0.002)) }
@@ -964,12 +952,10 @@ final class SupabaseCloud: ObservableObject {
             let relationshipsMatch = !studentsChanged && !hiddenPeopleChanged && !attendanceChanged
             let payloadsMatch = cloud.matchesPayload(of: social) && relationshipsMatch
 
-            if !localChanged && !cloudChanged &&
-                !payloadsMatch {
-                localChanged = true
-            }
-
-            if localChanged && cloudChanged {
+            // An old mixed-version cache or an untracked edit is ambiguous.
+            // Never turn a clean timestamp + differing values into an upload.
+            let ambiguousMismatch = !localChanged && !cloudChanged && !payloadsMatch
+            if (localChanged && cloudChanged) || ambiguousMismatch {
                 if payloadsMatch {
                     social.updatedAt = cloud.updatedAt
                     social.lastSyncedAt = cloud.updatedAt
@@ -987,20 +973,11 @@ final class SupabaseCloud: ObservableObject {
                 }
             } else if localChanged {
                 let sentRevision = revision(of: social)
-                let relationships = socialRelationshipRows(for: social)
-                var updated = try await updateCloudSocialSession(
-                    social,
-                    expectedUpdatedAt: baseline,
-                    token: token
-                )
-                recordAcknowledgement(table: "social_sessions", id: social.syncID, timestamp: updated.updatedAt)
-                if !relationshipsMatch {
-                    try await replaceCloudRelationships(
-                        for: social, rows: relationships, studentsChanged: studentsChanged, hiddenPeopleChanged: hiddenPeopleChanged,
-                        attendanceChanged: attendanceChanged, token: token
-                    )
-                    updated = try await fetchCurrentSocial(id: social.syncID, token: token)
+                guard let expected = capturedCloudSnapshot(table: "social_sessions", id: social.syncID) else {
+                    throw SupabaseCloudError.invalidResponse
                 }
+                let updated = try await writeSocialSnapshot(id: social.syncID, expected: expected,
+                                                           replacement: resolutionReplacement(for: social), createdAt: nil, token: token)
                 if acknowledge(social, table: "social_sessions", id: social.syncID,
                                sent: sentRevision, current: revision(of: social), serverTimestamp: updated.updatedAt) {
                     stampSocialChildren(social, parentTimestamp: updated.updatedAt)
@@ -1046,13 +1023,10 @@ final class SupabaseCloud: ObservableObject {
                     cloudOnly += 1
                     nextLedger[ledgerKey] = baseline
                 } else {
-                    try await softDeleteCloudRecord(
-                        table: "social_sessions",
-                        id: cloud.id,
-                        expectedUpdatedAt: baseline,
-                        token: token
-                    )
-                    try await cleanupCloudRelationships(forSocialID: cloud.id, token: token)
+                    guard let expected = capturedCloudSnapshot(table: "social_sessions", id: cloud.id) else {
+                        throw SupabaseCloudError.invalidResponse
+                    }
+                    _ = try await writeSocialSnapshot(id: cloud.id, expected: expected, replacement: nil, createdAt: nil, token: token)
                     pushed += 1
                 }
             } else {
@@ -1939,33 +1913,6 @@ final class SupabaseCloud: ObservableObject {
         )
     }
 
-    private func updateCloudSocialSession(
-        _ social: SocialSession,
-        expectedUpdatedAt: Date,
-        token: String
-    ) async throws -> CloudSocialRecord {
-        let body: [String: Any] = [
-            "title": social.title,
-            "week_start": Self.dateOnlyFormatter.string(from: social.weekStart),
-            "day_of_week": social.dayOfWeek,
-            "start_time": Self.isoFormatter.string(from: social.effectiveStartTime),
-            "end_time": Self.isoFormatter.string(from: social.effectiveEndTime),
-            "venue": social.venue,
-            "status": social.status,
-            "are_courts_booked": social.areCourtsBooked,
-            "court_numbers": social.courtNumbers,
-            "shuttlecock_cost": social.shuttlecockCost,
-            "court_cost": social.courtCost
-        ]
-        return try await updateCloudRecord(
-            table: "social_sessions",
-            id: social.syncID,
-            body: body,
-            expectedUpdatedAt: expectedUpdatedAt,
-            token: token
-        )
-    }
-
     private func insertCloudStudent(_ student: Student, token: String) async throws -> CloudStudentRecord {
         try await insertCloudRecord(
             table: "students",
@@ -2034,29 +1981,6 @@ final class SupabaseCloud: ObservableObject {
                 "venue": booking.venue,
                 "court_number": booking.courtNumber,
                 "created_at": Self.isoFormatter.string(from: booking.createdAt)
-            ],
-            token: token
-        )
-    }
-
-    private func insertCloudSocialSession(_ social: SocialSession, token: String) async throws -> CloudSocialRecord {
-        try await insertCloudRecord(
-            table: "social_sessions",
-            body: [
-                "id": social.syncID.uuidString,
-                "workspace_id": SupabaseConfiguration.workspaceID.uuidString,
-                "title": social.title,
-                "week_start": Self.dateOnlyFormatter.string(from: social.weekStart),
-                "day_of_week": social.dayOfWeek,
-                "start_time": Self.isoFormatter.string(from: social.effectiveStartTime),
-                "end_time": Self.isoFormatter.string(from: social.effectiveEndTime),
-                "venue": social.venue,
-                "status": social.status,
-                "are_courts_booked": social.areCourtsBooked,
-                "court_numbers": social.courtNumbers,
-                "shuttlecock_cost": social.shuttlecockCost,
-                "court_cost": social.courtCost,
-                "created_at": Self.isoFormatter.string(from: social.createdAt)
             ],
             token: token
         )
@@ -2169,14 +2093,78 @@ final class SupabaseCloud: ObservableObject {
         )
     }
 
-    private func fetchSocialRecords(token: String) async throws -> [CloudSocialRecord] {
-        try await fetchCloudRecords(
-            table: "social_sessions",
-            select: "id,title,week_start,day_of_week,start_time,end_time,venue,status,are_courts_booked,court_numbers,shuttlecock_cost,court_cost,created_at,updated_at,deleted_at",
-            order: "id.asc",
-            filters: [URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")],
-            token: token
-        )
+    private func fetchSocialSnapshots(token: String) async throws -> [CloudSocialSnapshot] {
+        let endpoint = "rpc/coachplanner_social_snapshots"
+        let snapshots: [CloudSocialSnapshot]
+        do {
+            snapshots = try await fetchCloudRecords(
+                table: endpoint, select: "id,record,relationships", order: "id.asc",
+                filters: [URLQueryItem(name: "p_workspace_id", value: SupabaseConfiguration.workspaceID.uuidString)],
+                token: token
+            )
+        } catch SupabaseCloudError.requestFailed(let message) where message.contains("PGRST202") {
+            throw SupabaseCloudError.socialSyncSetupRequired
+        }
+        guard Set(snapshots.map(\.id)).count == snapshots.count else { throw SupabaseCloudError.invalidResponse }
+        for snapshot in snapshots {
+            try validateSocialSnapshot(id: snapshot.id, record: snapshot.record, relationships: snapshot.relationships)
+        }
+        // Publish raw values only after every page is complete and validated.
+        // These exact timestamps/rows also protect subsequent writes and review.
+        var parents: [[String: Any]] = []
+        var children = Dictionary(uniqueKeysWithValues: Self.conflictRelationships(for: "social_sessions").map { ($0.table, [[String: Any]]()) })
+        for raw in fetchedConflictRows[endpoint] ?? [] {
+            guard let record = raw["record"] as? [String: Any],
+                  let relationships = raw["relationships"] as? [String: Any] else { throw SupabaseCloudError.invalidResponse }
+            parents.append(record)
+            for table in children.keys {
+                guard let rows = relationships[table] as? [[String: Any]] else { throw SupabaseCloudError.invalidResponse }
+                children[table, default: []].append(contentsOf: rows)
+            }
+        }
+        guard parents.count == snapshots.count else { throw SupabaseCloudError.invalidResponse }
+        fetchedConflictRows["social_sessions"] = parents
+        for (table, rows) in children { fetchedConflictRows[table] = rows }
+        return snapshots
+    }
+
+    private func validateSocialSnapshot(id: UUID, record: CloudSocialRecord, relationships: CloudSocialRelationships) throws {
+        guard record.id == id,
+              relationships.students.allSatisfy({ $0.sessionID == id }),
+              relationships.hiddenPeople.allSatisfy({ $0.socialSessionID == id && ($0.studentID != nil) != ($0.outsiderID != nil) }),
+              relationships.attendances.allSatisfy({ $0.socialSessionID == id && ($0.studentID != nil) != ($0.outsiderID != nil) }),
+              Set(relationships.students.map(\.studentID)).count == relationships.students.count,
+              Set(relationships.hiddenPeople.map(\.id)).count == relationships.hiddenPeople.count,
+              Set(relationships.attendances.map(\.id)).count == relationships.attendances.count else {
+            throw SupabaseCloudError.invalidResponse
+        }
+    }
+
+    private func writeSocialSnapshot(id: UUID, expected: [String: Any]?, replacement: [String: Any]?,
+                                     createdAt: Date?, token: String) async throws -> CloudSocialRecord {
+        guard expected != nil || replacement != nil else { throw SupabaseCloudError.invalidResponse }
+        let data: Data
+        do {
+            data = try await send(
+                url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/rpc/sync_coachplanner_social"),
+                method: "POST",
+                body: JSONSerialization.data(withJSONObject: [
+                    "p_workspace_id": SupabaseConfiguration.workspaceID.uuidString,
+                    "p_record_id": id.uuidString,
+                    "p_expected": expected as Any? ?? NSNull(),
+                    "p_replacement": replacement as Any? ?? NSNull(),
+                    "p_created_at": createdAt.map { Self.isoFormatter.string(from: $0) } ?? NSNull()
+                ]), token: token
+            )
+        } catch SupabaseCloudError.requestFailed(let message) where message.contains("PGRST202") {
+            throw SupabaseCloudError.socialSyncSetupRequired
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .supabaseTimestamp
+        let result = try decoder.decode(CloudSocialSnapshotBody.self, from: data)
+        try validateSocialSnapshot(id: id, record: result.record, relationships: result.relationships)
+        guard (replacement == nil) == (result.record.deletedAt != nil) else { throw SupabaseCloudError.invalidResponse }
+        return result.record
     }
 
     private func fetchOutsiderRecords(token: String) async throws -> [CloudOutsiderRecord] {
@@ -2185,15 +2173,6 @@ final class SupabaseCloud: ObservableObject {
             select: "id,name,gender,contact_preference,contact_detail,created_at,updated_at,deleted_at",
             order: "id.asc",
             filters: [URLQueryItem(name: "workspace_id", value: "eq.\(SupabaseConfiguration.workspaceID.uuidString)")],
-            token: token
-        )
-    }
-
-    private func fetchAttendanceRecords(token: String) async throws -> [CloudAttendanceRecord] {
-        try await fetchCloudRecords(
-            table: "social_attendance",
-            select: "id,social_session_id,student_id,outsider_id,status,payment_status,created_at,updated_at",
-            order: "id.asc",
             token: token
         )
     }
@@ -2212,24 +2191,6 @@ final class SupabaseCloud: ObservableObject {
             table: "coaching_session_students",
             select: "session_id,student_id",
             order: "session_id.asc,student_id.asc",
-            token: token
-        )
-    }
-
-    private func fetchSocialSessionStudentLinks(token: String) async throws -> [CloudSessionStudentLink] {
-        try await fetchCloudRecords(
-            table: "social_session_students",
-            select: "session_id,student_id",
-            order: "session_id.asc,student_id.asc",
-            token: token
-        )
-    }
-
-    private func fetchHiddenPersonRecords(token: String) async throws -> [CloudHiddenPersonRecord] {
-        try await fetchCloudRecords(
-            table: "social_hidden_people",
-            select: "id,social_session_id,student_id,outsider_id,created_at",
-            order: "id.asc",
             token: token
         )
     }
@@ -2308,7 +2269,7 @@ final class SupabaseCloud: ObservableObject {
         case "outsiders": return ("id", activeScope.outsiders)
         case "court_bookings": return ("id", activeScope.courtBookings)
         case "coaching_sessions": return ("id", activeScope.coachingSessions)
-        case "social_sessions": return ("id", activeScope.socialSessions)
+        case "social_sessions", "rpc/coachplanner_social_snapshots": return ("id", activeScope.socialSessions)
         case "student_hidden_weeks": return ("student_id", activeScope.students)
         case "coaching_session_students": return ("session_id", activeScope.coachingSessions)
         case "social_session_students": return ("session_id", activeScope.socialSessions)
@@ -2620,36 +2581,6 @@ final class SupabaseCloud: ObservableObject {
         return social
     }
 
-    private func replaceCloudRelationships(
-        for social: SocialSession,
-        rows: SocialRelationshipRows,
-        studentsChanged: Bool,
-        hiddenPeopleChanged: Bool,
-        attendanceChanged: Bool,
-        token: String
-    ) async throws {
-        if studentsChanged {
-            try await deleteCloudRows(
-                table: "social_session_students", column: "session_id", ids: [social.syncID], token: token
-            )
-            try await insertCloudRows(table: "social_session_students", rows: rows.students, token: token)
-        }
-
-        if hiddenPeopleChanged {
-            try await deleteCloudRows(
-                table: "social_hidden_people", column: "social_session_id", ids: [social.syncID], token: token
-            )
-            try await insertCloudRows(table: "social_hidden_people", rows: rows.hiddenPeople, token: token)
-        }
-
-        if attendanceChanged {
-            try await deleteCloudRows(
-                table: "social_attendance", column: "social_session_id", ids: [social.syncID], token: token
-            )
-            try await insertCloudRows(table: "social_attendance", rows: rows.attendances, token: token)
-        }
-    }
-
     private struct SocialRelationshipRows {
         let students: [[String: String]]
         let hiddenPeople: [[String: Any]]
@@ -2798,30 +2729,6 @@ final class SupabaseCloud: ObservableObject {
         return students
     }
 
-    private func fetchCurrentSocial(id: UUID, token: String) async throws -> CloudSocialRecord {
-        try await fetchCloudRecord(
-            table: "social_sessions",
-            select: "id,title,week_start,day_of_week,start_time,end_time,venue,status,are_courts_booked,court_numbers,shuttlecock_cost,court_cost,created_at,updated_at,deleted_at",
-            id: id,
-            token: token
-        )
-    }
-
-    private func cleanupCloudRelationships(forSocialID id: UUID, token: String) async throws {
-        try await deleteCloudRows(
-            table: "social_session_students",
-            filters: [URLQueryItem(name: "session_id", value: "eq.\(id.uuidString)")],
-            token: token
-        )
-        for table in ["social_hidden_people", "social_attendance"] {
-            try await deleteCloudRows(
-                table: table,
-                filters: [URLQueryItem(name: "social_session_id", value: "eq.\(id.uuidString)")],
-                token: token
-            )
-        }
-    }
-
     private func applyCloudHiddenWeeks(
         _ records: [CloudHiddenWeekRecord],
         to student: Student,
@@ -2945,15 +2852,17 @@ final class SupabaseCloud: ObservableObject {
         context.delete(outsider)
     }
 
-    private func removeOrphanedSocialChildren(in context: ModelContext) throws {
+    private func removeOrphanedSocialChildren(in context: ModelContext, socialIDs: Set<UUID>? = nil) throws {
         SyncTimestamping.isApplyingRemoteChange = true
         defer { SyncTimestamping.isApplyingRemoteChange = false }
         for attendance in try context.fetch(FetchDescriptor<SocialAttendance>())
-        where attendance.student == nil && attendance.outsider == nil {
+        where attendance.student == nil && attendance.outsider == nil &&
+            (socialIDs == nil || attendance.session.map { socialIDs!.contains($0.syncID) } == true) {
             context.delete(attendance)
         }
         for hiddenPerson in try context.fetch(FetchDescriptor<SocialHiddenPerson>())
-        where hiddenPerson.student == nil && hiddenPerson.outsider == nil {
+        where hiddenPerson.student == nil && hiddenPerson.outsider == nil &&
+            (socialIDs == nil || hiddenPerson.session.map { socialIDs!.contains($0.syncID) } == true) {
             context.delete(hiddenPerson)
         }
     }
@@ -3490,6 +3399,29 @@ private struct CloudCourtRecord: Decodable {
     }
 }
 
+private struct CloudSocialRelationships: Decodable {
+    let students: [CloudSessionStudentLink]
+    let hiddenPeople: [CloudHiddenPersonRecord]
+    let attendances: [CloudAttendanceRecord]
+
+    enum CodingKeys: String, CodingKey {
+        case students = "social_session_students"
+        case hiddenPeople = "social_hidden_people"
+        case attendances = "social_attendance"
+    }
+}
+
+private struct CloudSocialSnapshot: Decodable {
+    let id: UUID
+    let record: CloudSocialRecord
+    let relationships: CloudSocialRelationships
+}
+
+private struct CloudSocialSnapshotBody: Decodable {
+    let record: CloudSocialRecord
+    let relationships: CloudSocialRelationships
+}
+
 private struct CloudSocialRecord: Decodable {
     let id: UUID
     let title: String
@@ -3745,6 +3677,7 @@ private enum SupabaseCloudError: LocalizedError {
     case invalidResponse
     case requestFailed(String)
     case conflict
+    case socialSyncSetupRequired
 
     var errorDescription: String? {
         switch self {
@@ -3758,6 +3691,8 @@ private enum SupabaseCloudError: LocalizedError {
             return "Supabase request failed: \(message)"
         case .conflict:
             return "The cloud record changed before the local update could be applied."
+        case .socialSyncSetupRequired:
+            return "Social sync needs the latest CoachPlanner database migration. Your local changes are kept; no partial social upload was attempted."
         }
     }
 }
