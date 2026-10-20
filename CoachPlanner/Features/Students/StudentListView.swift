@@ -129,25 +129,6 @@ struct StudentListView: View {
                 } else {
                     List {
                         Section {
-                            HStack(spacing: 8) {
-                                MetricTile(
-                                    title: "Students",
-                                    value: "\(students.count)",
-                                    systemImage: "person.3.fill",
-                                    tint: .blue
-                                )
-                                MetricTile(
-                                    title: "Needs",
-                                    value: "\(summary.underallocatedCount)",
-                                    systemImage: "exclamationmark.circle.fill",
-                                    tint: summary.underallocatedCount == 0 ? .green : .red
-                                )
-                            }
-                        }
-                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                        .listRowBackground(Color.clear)
-
-                        Section {
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack(spacing: 8) {
                                     ForEach(GenderFilter.allCases) { option in
