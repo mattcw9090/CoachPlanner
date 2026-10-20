@@ -1349,7 +1349,7 @@ final class SupabaseCloud: ObservableObject {
             row = ["week_start": value.weekStart.map { Self.dateOnlyFormatter.string(from: $0) } ?? NSNull(),
                    "day_of_week": value.dayOfWeek, "start_time": Self.isoFormatter.string(from: value.effectiveStartTime),
                    "end_time": Self.isoFormatter.string(from: value.effectiveEndTime), "venue": value.venue,
-                   "status": value.status, "court_number": value.courtNumber, "session_fee": value.sessionFee,
+                   "status": value.statusValue.rawValue, "court_number": value.courtNumber, "session_fee": value.sessionFee,
                    "session_description": value.sessionDescription ?? NSNull()]
             relationships["coaching_session_students"] = coachingStudentRows(for: value)
         case let value as CourtBooking:
@@ -1636,7 +1636,7 @@ final class SupabaseCloud: ObservableObject {
             conflictField("start_time", "Start time", conflictTime(local.startTime), conflictTime(cloud.startTime)),
             conflictField("end_time", "End time", conflictTime(local.endTime), conflictTime(cloud.endTime)),
             conflictField("venue", "Venue", conflictText(local.venue), conflictText(cloud.venue)),
-            conflictField("status", "Session status", conflictText(local.status), conflictText(cloud.status)),
+            conflictField("status", "Session status", conflictText(local.statusValue.rawValue), conflictText(SessionStatus.coachingValue(fromStored: cloud.status).rawValue)),
             conflictField("court_number", "Court", conflictText(local.courtNumber), conflictText(cloud.courtNumber)),
             abs(local.sessionFee - cloud.sessionFee) < 0.005 ? nil
                 : conflictField("session_fee", "Session fee", conflictAmount(local.sessionFee), conflictAmount(cloud.sessionFee)),
@@ -1656,7 +1656,7 @@ final class SupabaseCloud: ObservableObject {
             let label = (name?.isEmpty == false ? name! : "Student \(studentID.uuidString)")
             let localStudent = local.studentList.first { $0.syncID == studentID }
             let localStatus = localStudent.map { local.confirmationStatus(for: $0).rawValue } ?? "Not included"
-            let cloudStatus = cloudByStudent[studentID]?.status ?? "Not included"
+            let cloudStatus = cloudByStudent[studentID].map { SessionStudentStatus.storedValue(from: $0.status).rawValue } ?? "Not included"
             if let status = conflictField("student_status:\(studentID.uuidString.lowercased())", "\(label) · Response", localStatus, cloudStatus) {
                 differences.append(status)
             }
@@ -1905,7 +1905,7 @@ final class SupabaseCloud: ObservableObject {
             "start_time": Self.isoFormatter.string(from: session.effectiveStartTime),
             "end_time": Self.isoFormatter.string(from: session.effectiveEndTime),
             "venue": session.venue,
-            "status": session.status,
+            "status": session.statusValue.rawValue,
             "court_number": session.courtNumber,
             "session_fee": session.sessionFee,
             "session_description": session.sessionDescription ?? NSNull()
@@ -2008,7 +2008,7 @@ final class SupabaseCloud: ObservableObject {
                 "start_time": Self.isoFormatter.string(from: session.effectiveStartTime),
                 "end_time": Self.isoFormatter.string(from: session.effectiveEndTime),
                 "venue": session.venue,
-                "status": session.status,
+                "status": session.statusValue.rawValue,
                 "court_number": session.courtNumber,
                 "session_fee": session.sessionFee,
                 "session_description": session.sessionDescription ?? NSNull(),
@@ -2442,7 +2442,7 @@ final class SupabaseCloud: ObservableObject {
         LocalRevision(updatedAt: session.updatedAt, payload: [
             String(describing: session.weekStart), String(session.dayOfWeek),
             String(session.startTime.timeIntervalSince1970), String(session.endTime.timeIntervalSince1970),
-            session.venue, session.status, session.courtNumber, String(session.sessionFee),
+            session.venue, session.statusValue.rawValue, session.courtNumber, String(session.sessionFee),
             String(describing: session.sessionDescription)
         ] + session.studentList.map { student in
             let responded = session.respondedAt(for: student)?.timeIntervalSince1970 ?? 0
@@ -2517,10 +2517,10 @@ final class SupabaseCloud: ObservableObject {
             let status: String
             let respondedAt: Date?
             if session.confirmationRecord(for: student) != nil {
-                status = session.confirmationRecord(for: student)?.status ?? SessionStudentStatus.pending.rawValue
+                status = SessionStudentStatus.storedValue(from: session.confirmationRecord(for: student)?.status ?? "").rawValue
                 respondedAt = session.respondedAt(for: student)
             } else if let cloud = preserved[student.syncID] {
-                status = cloud.status
+                status = SessionStudentStatus.storedValue(from: cloud.status).rawValue
                 respondedAt = cloud.respondedAt
             } else {
                 status = (session.statusValue == .confirmed ? SessionStudentStatus.confirmed : .pending).rawValue
@@ -2541,14 +2541,14 @@ final class SupabaseCloud: ObservableObject {
 
     private func studentLinkSignature(_ row: [String: Any]) -> String {
         let student = (row["student_id"] as? String ?? "").lowercased()
-        let status = row["status"] as? String ?? SessionStudentStatus.pending.rawValue
+        let status = SessionStudentStatus.storedValue(from: row["status"] as? String ?? "").rawValue
         let responded = row["responded_at"] as? String ?? ""
         return "\(student)|\(status)|\(responded)"
     }
 
     private func studentLinkSignature(_ link: CloudSessionStudentLink) -> String {
         let responded = link.respondedAt.map { Self.isoFormatter.string(from: $0) } ?? ""
-        return "\(link.studentID.uuidString.lowercased())|\(link.status)|\(responded)"
+        return "\(link.studentID.uuidString.lowercased())|\(SessionStudentStatus.storedValue(from: link.status).rawValue)|\(responded)"
     }
 
     private func links(from rows: [[String: Any]]) -> [CloudSessionStudentLink] {
@@ -2559,7 +2559,7 @@ final class SupabaseCloud: ObservableObject {
             return CloudSessionStudentLink(
                 sessionID: sessionID,
                 studentID: studentID,
-                status: row["status"] as? String ?? SessionStudentStatus.pending.rawValue,
+                status: SessionStudentStatus.storedValue(from: row["status"] as? String ?? "").rawValue,
                 respondedAt: respondedAt
             )
         }
@@ -2575,7 +2575,7 @@ final class SupabaseCloud: ObservableObject {
         var kept: [SessionStudentConfirmation] = []
         for student in session.studentList {
             let link = byStudent[student.syncID]
-            let status = SessionStudentStatus(rawValue: link?.status ?? "") ?? session.confirmationStatus(for: student)
+            let status = link.map { SessionStudentStatus.storedValue(from: $0.status) } ?? session.confirmationStatus(for: student)
             let respondedAt = link?.respondedAt
             let record = session.confirmationRecord(for: student) ?? SessionStudentConfirmation(student: student)
             if record.modelContext == nil {
@@ -2583,7 +2583,7 @@ final class SupabaseCloud: ObservableObject {
                 record.session = session
             }
             record.student = student
-            record.status = link?.status ?? status.rawValue
+            record.status = status.rawValue
             record.respondedAt = respondedAt
             kept.append(record)
         }
@@ -2591,6 +2591,7 @@ final class SupabaseCloud: ObservableObject {
             context.delete(stale)
         }
         session.confirmationList = kept
+        session.alignSingleStudentReply(in: context, registersLocalEdit: false)
     }
 
     private func apply(_ cloud: CloudSessionRecord, to session: CoachingSession) {
@@ -2599,7 +2600,7 @@ final class SupabaseCloud: ObservableObject {
         session.startTime = cloud.startTime
         session.endTime = cloud.endTime
         session.venue = cloud.venue
-        session.status = cloud.status
+        session.status = SessionStatus.coachingValue(fromStored: cloud.status).rawValue
         session.courtNumber = cloud.courtNumber
         session.sessionFee = cloud.sessionFee
         session.sessionDescription = cloud.sessionDescription
@@ -2617,7 +2618,7 @@ final class SupabaseCloud: ObservableObject {
             startTime: cloud.startTime,
             endTime: cloud.endTime,
             venue: Venue(rawValue: cloud.venue) ?? .pbaMalaga,
-            status: SessionStatus(rawValue: cloud.status) ?? .unscheduled,
+            status: SessionStatus.coachingValue(fromStored: cloud.status),
             courtNumber: cloud.courtNumber,
             sessionFee: cloud.sessionFee,
             sessionDescription: cloud.sessionDescription,
@@ -3438,7 +3439,7 @@ private struct CloudSessionStudentLink: Decodable {
         sessionID = try container.decode(UUID.self, forKey: .sessionID)
         studentID = try container.decode(UUID.self, forKey: .studentID)
         let decodedStatus = try container.decodeIfPresent(String.self, forKey: .status)
-        status = (decodedStatus?.isEmpty == false) ? decodedStatus! : SessionStudentStatus.pending.rawValue
+        status = SessionStudentStatus.storedValue(from: (decodedStatus?.isEmpty == false) ? decodedStatus! : "").rawValue
         respondedAt = try container.decodeIfPresent(Date.self, forKey: .respondedAt)
     }
 }
@@ -3474,13 +3475,30 @@ private struct CloudSessionRecord: Decodable {
         case deletedAt = "deleted_at"
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        weekStart = try container.decodeIfPresent(Date.self, forKey: .weekStart)
+        dayOfWeek = try container.decode(Int.self, forKey: .dayOfWeek)
+        startTime = try container.decode(Date.self, forKey: .startTime)
+        endTime = try container.decode(Date.self, forKey: .endTime)
+        venue = try container.decode(String.self, forKey: .venue)
+        status = SessionStatus.coachingValue(fromStored: try container.decode(String.self, forKey: .status)).rawValue
+        courtNumber = try container.decode(String.self, forKey: .courtNumber)
+        sessionFee = try container.decode(Double.self, forKey: .sessionFee)
+        sessionDescription = try container.decodeIfPresent(String.self, forKey: .sessionDescription)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
+    }
+
     func matches(_ session: CoachingSession) -> Bool {
         dayOfWeek == session.dayOfWeek &&
             sameWeek(as: session.weekStart) &&
             startTime.syncMinutes == session.startTime.syncMinutes &&
             endTime.syncMinutes == session.endTime.syncMinutes &&
             venue == session.venue &&
-            status == session.status &&
+            SessionStatus.coachingValue(fromStored: status).rawValue == session.statusValue.rawValue &&
             courtNumber == session.courtNumber
     }
 
@@ -3759,7 +3777,7 @@ private extension SupabaseCloud {
             for link in coachingLinks {
                 let parent = try coachingParent(link.sessionID)
                 parent.studentList = parent.studentList.filter { $0.syncID != student.syncID } + [student]
-                let reply = SessionStudentStatus(rawValue: link.status) ?? .pending
+                let reply = SessionStudentStatus.storedValue(from: link.status)
                 parent.setStudentStatus(student, to: reply, respondedAt: link.respondedAt, in: context, registersLocalEdit: false)
             }
             for link in socialLinks {

@@ -89,12 +89,21 @@ struct SessionEditorView: View {
             initialValue: Set(editor.session?.studentList.map(\.persistentModelID) ?? [])
         )
         if let session = editor.session {
-            _studentStatuses = State(initialValue: Dictionary(uniqueKeysWithValues: session.studentList.map {
+            var statuses = Dictionary(uniqueKeysWithValues: session.studentList.map {
                 ($0.persistentModelID, session.confirmationStatus(for: $0))
-            }))
-            _respondedAtByStudentID = State(initialValue: Dictionary(uniqueKeysWithValues: session.studentList.compactMap { student in
+            })
+            var responded = Dictionary(uniqueKeysWithValues: session.studentList.compactMap { student in
                 session.respondedAt(for: student).map { (student.persistentModelID, $0) }
-            }))
+            })
+            if session.studentList.count == 1, let student = session.studentList.first {
+                let reply = SessionStudentStatus.matching(session.statusValue)
+                statuses[student.persistentModelID] = reply
+                if reply != .confirmed {
+                    responded[student.persistentModelID] = nil
+                }
+            }
+            _studentStatuses = State(initialValue: statuses)
+            _respondedAtByStudentID = State(initialValue: responded)
         } else {
             _studentStatuses = State(initialValue: [:])
             _respondedAtByStudentID = State(initialValue: [:])
@@ -218,6 +227,10 @@ struct SessionEditorView: View {
         selectedStudentsList.count > 1
     }
 
+    private var showsIndividualStudentReplies: Bool {
+        selectedStudentsList.count > 1
+    }
+
     private var filteredStudentMatches: [Student] {
         let trimmed = studentSearch.trimmingCharacters(in: .whitespacesAndNewlines)
         let unselected = students.filter { !selectedStudentIDs.contains($0.persistentModelID) }
@@ -291,21 +304,24 @@ struct SessionEditorView: View {
                             HStack(spacing: 12) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(student.name)
-                                    if let respondedAt = respondedAtByStudentID[student.persistentModelID] {
+                                    if showsIndividualStudentReplies,
+                                       let respondedAt = respondedAtByStudentID[student.persistentModelID] {
                                         Text("Responded \(respondedAt.formatted(date: .abbreviated, time: .shortened))")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
                                 }
                                 Spacer(minLength: 8)
-                                Picker("Status", selection: studentStatusBinding(for: student)) {
-                                    ForEach(SessionStudentStatus.allCases) { option in
-                                        Label(option.rawValue, systemImage: option.iconName)
-                                            .tag(option)
+                                if showsIndividualStudentReplies {
+                                    Picker("Status", selection: studentStatusBinding(for: student)) {
+                                        ForEach(SessionStudentStatus.allCases) { option in
+                                            Label(option.rawValue, systemImage: option.iconName)
+                                                .tag(option)
+                                        }
                                     }
+                                    .labelsHidden()
+                                    .pickerStyle(.menu)
                                 }
-                                .labelsHidden()
-                                .pickerStyle(.menu)
                                 Button {
                                     selectedStudentIDs.remove(student.persistentModelID)
                                 } label: {
@@ -319,8 +335,8 @@ struct SessionEditorView: View {
                     } header: {
                         Text("Selected (\(selectedStudentsList.count))")
                     } footer: {
-                        if selectedStudentsList.count > 1 {
-                            Text("Each student accepts or declines separately. The session is confirmed only when every student has accepted.")
+                        if showsIndividualStudentReplies {
+                            Text("Each student accepts separately. The session is confirmed only when every student has accepted.")
                         }
                     }
                 }
@@ -511,7 +527,12 @@ struct SessionEditorView: View {
             }
             .onChange(of: selectedStudentIDs) { _, ids in
                 for id in ids where studentStatuses[id] == nil {
-                    studentStatuses[id] = .pending
+                    if ids.count == 1, status == .confirmed {
+                        studentStatuses[id] = .confirmed
+                        respondedAtByStudentID[id] = .now
+                    } else {
+                        studentStatuses[id] = .pending
+                    }
                 }
                 for id in Array(studentStatuses.keys) where !ids.contains(id) {
                     studentStatuses[id] = nil
@@ -654,22 +675,47 @@ struct SessionEditorView: View {
     }
 
     private func refreshSessionStatusFromStudents() {
-        let replies = selectedStudentsList.map { studentStatuses[$0.persistentModelID] ?? .pending }
-        guard !replies.isEmpty, status != .unscheduled else { return }
-        let derived = SessionStatusDerivation.derived(from: replies)
+        let students = selectedStudentsList
+        if students.count > 1 {
+            guard status != .unscheduled else { return }
+            let replies = students.map { studentStatuses[$0.persistentModelID] ?? .pending }
+            let derived = SessionStatusDerivation.derived(from: replies)
+            if status != derived { status = derived }
+            return
+        }
+        guard let student = students.first else { return }
+        let id = student.persistentModelID
+        if status == .unscheduled {
+            studentStatuses[id] = .pending
+            respondedAtByStudentID[id] = nil
+            return
+        }
+        let reply = studentStatuses[id] ?? .pending
+        let derived: SessionStatus = reply == .confirmed ? .confirmed : .pending
         if status != derived { status = derived }
     }
 
     private func applySessionStatusToSingleStudent(_ newValue: SessionStatus) {
-        guard selectedStudentsList.count == 1,
-              let student = selectedStudentsList.first,
-              let reply = SessionStudentStatus(rawValue: newValue.rawValue) else { return }
-        updateStudentStatus(student, to: reply)
+        guard selectedStudentsList.count == 1, let student = selectedStudentsList.first else { return }
+        let id = student.persistentModelID
+        if newValue == .confirmed {
+            studentStatuses[id] = .confirmed
+            if respondedAtByStudentID[id] == nil {
+                respondedAtByStudentID[id] = .now
+            }
+        } else {
+            studentStatuses[id] = .pending
+            respondedAtByStudentID[id] = nil
+        }
     }
 
     private func markAvailabilityRequested(for student: Student) {
         if selectedStudentIDs.contains(student.persistentModelID), status == .unscheduled {
             status = .pending
+            if selectedStudentsList.count == 1 {
+                studentStatuses[student.persistentModelID] = .pending
+                respondedAtByStudentID[student.persistentModelID] = nil
+            }
             refreshSessionStatusFromStudents()
         }
         let editingID = editor.session?.persistentModelID
@@ -825,6 +871,9 @@ struct SessionEditorView: View {
                 in: modelContext
             )
             session.status = status.rawValue
+            if selectedStudents.count == 1 {
+                session.updateStatus(status, in: modelContext)
+            }
         } else {
             let session = CoachingSession(
                 weekStart: messageWeekStart,
@@ -846,6 +895,9 @@ struct SessionEditorView: View {
                 in: modelContext
             )
             session.status = status.rawValue
+            if selectedStudents.count == 1 {
+                session.updateStatus(status, in: modelContext)
+            }
             consumeCourtBookingIfNeeded()
         }
 
