@@ -188,8 +188,14 @@ final class SupabaseCloud: ObservableObject {
                 needsDependencyRecovery = activeScope != nil
                 throw SupabaseCloudError.invalidResponse
             }
-            let cloudStudentIDsBySession = Dictionary(grouping: cloudLinks, by: \.sessionID)
-                .mapValues { Set($0.map(\.studentID)) }
+            let cloudLinksBySession = Dictionary(grouping: cloudLinks, by: \.sessionID)
+            guard cloudLinksBySession.values.allSatisfy({ links in
+                Set(links.map(\.studentID)).count == links.count
+            }) else {
+                needsDependencyRecovery = activeScope != nil
+                throw SupabaseCloudError.invalidResponse
+            }
+            let cloudStudentIDsBySession = cloudLinksBySession.mapValues { Set($0.map(\.studentID)) }
             var remainingCloud = Dictionary(uniqueKeysWithValues: cloudSessions.map { ($0.id, $0) })
             try await deleteCloudRows(
                 table: "coaching_session_students", column: "session_id",
@@ -223,8 +229,10 @@ final class SupabaseCloud: ObservableObject {
                             try await replaceCloudStudents(for: local, rows: studentRows, token: accessToken)
                             created = try await fetchCurrentSession(id: local.syncID, token: accessToken)
                         }
-                        acknowledge(local, table: "coaching_sessions", id: local.syncID,
-                                    sent: sentRevision, current: revision(of: local), serverTimestamp: created.updatedAt)
+                        if acknowledge(local, table: "coaching_sessions", id: local.syncID,
+                                       sent: sentRevision, current: revision(of: local), serverTimestamp: created.updatedAt) {
+                            storeConfirmations(links(from: studentRows), on: local, in: context)
+                        }
                         nextLedger[ledgerKey] = created.updatedAt
                         pushed += 1
                     } else {
@@ -253,37 +261,43 @@ final class SupabaseCloud: ObservableObject {
                     if knownVersion != nil { local.updatedAt = max(local.updatedAt, baseline.addingTimeInterval(0.002)) }
                 }
                 let cloudChanged = cloud.updatedAt > baseline
-                let localStudentIDs = Set(local.studentList.map(\.syncID))
+                let cloudStudentLinks = cloudLinksBySession[local.syncID] ?? []
                 let cloudStudentIDs = cloudStudentIDsBySession[local.syncID] ?? []
-                let payloadsMatch = cloud.matchesPayload(of: local) && localStudentIDs == cloudStudentIDs
+                let studentRows = coachingStudentRows(for: local, preserving: cloudStudentLinks)
+                let linksMatch = sameStudentLinks(studentRows, cloudStudentLinks)
+                let payloadsMatch = cloud.matchesPayload(of: local) && linksMatch
                 if !localChanged && !cloudChanged &&
                     !payloadsMatch {
                     localChanged = true
                 }
                 if localChanged && cloudChanged {
                     if payloadsMatch {
+                        SyncTimestamping.isApplyingRemoteChange = true
                         local.updatedAt = cloud.updatedAt
                         local.lastSyncedAt = cloud.updatedAt
+                        storeConfirmations(cloudStudentLinks, on: local, in: context)
+                        SyncTimestamping.isApplyingRemoteChange = false
                         nextLedger[ledgerKey] = cloud.updatedAt
                     } else {
                         conflicts += 1
                         reportedIDs.insert(local.syncID)
                         publishConflict(coachingConflict(local: local, cloud: cloud,
-                                                        cloudStudentIDs: cloudStudentIDs, studentsByID: studentByID),
+                                                        cloudLinks: cloudStudentLinks, studentsByID: studentByID),
                                         localRevision: revision(of: local))
                         nextLedger[ledgerKey] = baseline
                     }
                 } else if localChanged {
                     let sentRevision = revision(of: local)
-                    let studentRows = coachingStudentRows(for: local)
                     var updated = try await updateCloudSession(local, expectedUpdatedAt: baseline, token: accessToken)
                     recordAcknowledgement(table: "coaching_sessions", id: local.syncID, timestamp: updated.updatedAt)
-                    if localStudentIDs != cloudStudentIDs {
+                    if !linksMatch {
                         try await replaceCloudStudents(for: local, rows: studentRows, token: accessToken)
                         updated = try await fetchCurrentSession(id: local.syncID, token: accessToken)
                     }
-                    acknowledge(local, table: "coaching_sessions", id: local.syncID,
-                                sent: sentRevision, current: revision(of: local), serverTimestamp: updated.updatedAt)
+                    if acknowledge(local, table: "coaching_sessions", id: local.syncID,
+                                   sent: sentRevision, current: revision(of: local), serverTimestamp: updated.updatedAt) {
+                        storeConfirmations(links(from: studentRows), on: local, in: context)
+                    }
                     nextLedger[ledgerKey] = updated.updatedAt
                     pushed += 1
                 } else if cloudChanged {
@@ -298,10 +312,16 @@ final class SupabaseCloud: ObservableObject {
                     SyncTimestamping.isApplyingRemoteChange = true
                     apply(cloud, to: local)
                     local.studentList = students
+                    storeConfirmations(cloudStudentLinks, on: local, in: context)
                     SyncTimestamping.isApplyingRemoteChange = false
                     nextLedger[ledgerKey] = cloud.updatedAt
                     pulled += 1
                 } else {
+                    if !sameStudentLinks(coachingStudentRows(for: local), cloudStudentLinks) {
+                        SyncTimestamping.isApplyingRemoteChange = true
+                        storeConfirmations(cloudStudentLinks, on: local, in: context)
+                        SyncTimestamping.isApplyingRemoteChange = false
+                    }
                     nextLedger[ledgerKey] = cloud.updatedAt
                 }
             }
@@ -344,7 +364,9 @@ final class SupabaseCloud: ObservableObject {
                         throw SupabaseCloudError.invalidResponse
                     }
                     SyncTimestamping.isApplyingRemoteChange = true
-                    context.insert(makeLocalSession(from: cloud, students: students))
+                    let created = makeLocalSession(from: cloud, students: students)
+                    context.insert(created)
+                    storeConfirmations(cloudLinksBySession[cloud.id] ?? [], on: created, in: context)
                     SyncTimestamping.isApplyingRemoteChange = false
                     nextLedger[ledgerKey] = cloud.updatedAt
                     pulled += 1
@@ -1117,10 +1139,14 @@ final class SupabaseCloud: ObservableObject {
         let filters = [URLQueryItem(name: column, value: "eq.\(id.uuidString)")]
         var result: [String: Any] = [:]
         if isStudent {
-            for table in ["coaching_session_students", "social_session_students"] {
+            let relationshipSelects = [
+                "coaching_session_students": "session_id,student_id,status,responded_at",
+                "social_session_students": "session_id,student_id"
+            ]
+            for (table, selection) in relationshipSelects {
                 fetchedConflictRows[table] = []
                 let _: [CloudSessionStudentLink] = try await fetchCloudRecords(
-                    table: table, select: "session_id,student_id", order: "session_id.asc,student_id.asc",
+                    table: table, select: selection, order: "session_id.asc,student_id.asc",
                     filters: filters, token: token, applyScope: false
                 )
                 result[table] = fetchedConflictRows[table] ?? []
@@ -1390,6 +1416,7 @@ final class SupabaseCloud: ObservableObject {
             if local == nil { context.insert(session) }
             apply(cloud, to: session)
             session.studentList = students
+            storeConfirmations(links, on: session, in: context)
         case "court_bookings":
             let cloud = try decode(CloudCourtRecord.self, row)
             let booking = (local as? CourtBooking) ?? makeLocalCourtBooking(from: cloud)
@@ -1543,6 +1570,10 @@ final class SupabaseCloud: ObservableObject {
         date.formatted(date: .omitted, time: .shortened)
     }
 
+    private func conflictDateTime(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .standard)
+    }
+
     private func conflictWeekday(_ day: Int) -> String {
         Weekday(rawValue: day)?.name ?? String(day)
     }
@@ -1597,7 +1628,7 @@ final class SupabaseCloud: ObservableObject {
     }
 
     private func coachingConflict(
-        local: CoachingSession, cloud: CloudSessionRecord, cloudStudentIDs: Set<UUID>, studentsByID: [UUID: Student]
+        local: CoachingSession, cloud: CloudSessionRecord, cloudLinks: [CloudSessionStudentLink], studentsByID: [UUID: Student]
     ) -> SyncConflict {
         var differences = [
             conflictField("week_start", "Week starting", conflictDate(local.weekStart), conflictDate(cloud.weekStart)),
@@ -1611,12 +1642,31 @@ final class SupabaseCloud: ObservableObject {
                 : conflictField("session_fee", "Session fee", conflictAmount(local.sessionFee), conflictAmount(cloud.sessionFee)),
             conflictField("session_description", "Description", conflictText(local.sessionDescription), conflictText(cloud.sessionDescription))
         ].compactMap { $0 }
+        let cloudStudentIDs = Set(cloudLinks.map(\.studentID))
         differences += participantDifferences(
             local: Set(local.studentList.map { SocialPersonSyncKey.student($0.syncID) }),
             cloud: Set(cloudStudentIDs.map(SocialPersonSyncKey.student)), label: "Participant", field: "participant",
             localPresent: "Included", cloudPresent: "Included", absent: "Not included",
             studentsByID: studentsByID, outsidersByID: [:]
         )
+        let cloudByStudent = Dictionary(uniqueKeysWithValues: cloudLinks.map { ($0.studentID, $0) })
+        let studentIDs = Set(local.studentList.map(\.syncID)).union(cloudStudentIDs)
+        for studentID in studentIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+            let name = studentsByID[studentID]?.name
+            let label = (name?.isEmpty == false ? name! : "Student \(studentID.uuidString)")
+            let localStudent = local.studentList.first { $0.syncID == studentID }
+            let localStatus = localStudent.map { local.confirmationStatus(for: $0).rawValue } ?? "Not included"
+            let cloudStatus = cloudByStudent[studentID]?.status ?? "Not included"
+            if let status = conflictField("student_status:\(studentID.uuidString.lowercased())", "\(label) · Response", localStatus, cloudStatus) {
+                differences.append(status)
+            }
+            let localResponded = localStudent.flatMap { local.respondedAt(for: $0) }.map { conflictDateTime($0) } ?? "No response yet"
+            let cloudResponded = cloudByStudent[studentID]?.respondedAt.map { conflictDateTime($0) } ?? "No response yet"
+            if localStudent != nil, cloudByStudent[studentID] != nil,
+               let responded = conflictField("student_responded_at:\(studentID.uuidString.lowercased())", "\(label) · Responded", localResponded, cloudResponded) {
+                differences.append(responded)
+            }
+        }
         return conflictReport(table: "coaching_sessions", id: local.syncID, entityName: "Coaching session",
                               title: sessionConflictTitle(start: local.effectiveStartTime, venue: local.venue),
                               localUpdatedAt: local.updatedAt, cloudUpdatedAt: cloud.updatedAt, differences: differences)
@@ -2189,7 +2239,7 @@ final class SupabaseCloud: ObservableObject {
     private func fetchCoachingSessionStudentLinks(token: String) async throws -> [CloudSessionStudentLink] {
         try await fetchCloudRecords(
             table: "coaching_session_students",
-            select: "session_id,student_id",
+            select: "session_id,student_id,status,responded_at",
             order: "session_id.asc,student_id.asc",
             token: token
         )
@@ -2394,7 +2444,10 @@ final class SupabaseCloud: ObservableObject {
             String(session.startTime.timeIntervalSince1970), String(session.endTime.timeIntervalSince1970),
             session.venue, session.status, session.courtNumber, String(session.sessionFee),
             String(describing: session.sessionDescription)
-        ] + session.studentList.map { $0.syncID.uuidString }.sorted())
+        ] + session.studentList.map { student in
+            let responded = session.respondedAt(for: student)?.timeIntervalSince1970 ?? 0
+            return "\(student.syncID.uuidString):\(session.confirmationStatus(for: student).rawValue):\(responded)"
+        }.sorted())
     }
 
     private func revision(of booking: CourtBooking) -> LocalRevision {
@@ -2444,7 +2497,7 @@ final class SupabaseCloud: ObservableObject {
         }
     }
 
-    private func replaceCloudStudents(for session: CoachingSession, rows: [[String: String]], token: String) async throws {
+    private func replaceCloudStudents(for session: CoachingSession, rows: [[String: Any]], token: String) async throws {
         try await deleteCloudRows(
             table: "coaching_session_students",
             filters: [URLQueryItem(name: "session_id", value: "eq.\(session.syncID.uuidString)")],
@@ -2453,13 +2506,91 @@ final class SupabaseCloud: ObservableObject {
         try await insertCloudRows(table: "coaching_session_students", rows: rows, token: token)
     }
 
-    private func coachingStudentRows(for session: CoachingSession) -> [[String: String]] {
-        session.studentList.map { student in
-            [
+    /// Rows include each student's reply. Students without a stored reply keep the cloud reply
+    /// when one exists, so an unrelated session edit cannot reset them to Pending.
+    private func coachingStudentRows(
+        for session: CoachingSession,
+        preserving cloudLinks: [CloudSessionStudentLink] = []
+    ) -> [[String: Any]] {
+        let preserved = cloudLinks.reduce(into: [UUID: CloudSessionStudentLink]()) { $0[$1.studentID] = $1 }
+        return session.studentList.map { student in
+            let status: String
+            let respondedAt: Date?
+            if session.confirmationRecord(for: student) != nil {
+                status = session.confirmationRecord(for: student)?.status ?? SessionStudentStatus.pending.rawValue
+                respondedAt = session.respondedAt(for: student)
+            } else if let cloud = preserved[student.syncID] {
+                status = cloud.status
+                respondedAt = cloud.respondedAt
+            } else {
+                status = (session.statusValue == .confirmed ? SessionStudentStatus.confirmed : .pending).rawValue
+                respondedAt = nil
+            }
+            return [
                 "session_id": session.syncID.uuidString,
-                "student_id": student.syncID.uuidString
+                "student_id": student.syncID.uuidString,
+                "status": status,
+                "responded_at": respondedAt.map { Self.isoFormatter.string(from: $0) } ?? NSNull()
             ]
         }
+    }
+
+    private func sameStudentLinks(_ rows: [[String: Any]], _ links: [CloudSessionStudentLink]) -> Bool {
+        Set(rows.map(studentLinkSignature)) == Set(links.map(studentLinkSignature))
+    }
+
+    private func studentLinkSignature(_ row: [String: Any]) -> String {
+        let student = (row["student_id"] as? String ?? "").lowercased()
+        let status = row["status"] as? String ?? SessionStudentStatus.pending.rawValue
+        let responded = row["responded_at"] as? String ?? ""
+        return "\(student)|\(status)|\(responded)"
+    }
+
+    private func studentLinkSignature(_ link: CloudSessionStudentLink) -> String {
+        let responded = link.respondedAt.map { Self.isoFormatter.string(from: $0) } ?? ""
+        return "\(link.studentID.uuidString.lowercased())|\(link.status)|\(responded)"
+    }
+
+    private func links(from rows: [[String: Any]]) -> [CloudSessionStudentLink] {
+        rows.compactMap { row in
+            guard let sessionID = UUID(uuidString: row["session_id"] as? String ?? ""),
+                  let studentID = UUID(uuidString: row["student_id"] as? String ?? "") else { return nil }
+            let respondedAt = (row["responded_at"] as? String).flatMap { Self.isoFormatter.date(from: $0) }
+            return CloudSessionStudentLink(
+                sessionID: sessionID,
+                studentID: studentID,
+                status: row["status"] as? String ?? SessionStudentStatus.pending.rawValue,
+                respondedAt: respondedAt
+            )
+        }
+    }
+
+    /// Stores cloud replies without treating the write as a new local edit.
+    private func storeConfirmations(
+        _ links: [CloudSessionStudentLink],
+        on session: CoachingSession,
+        in context: ModelContext
+    ) {
+        let byStudent = links.reduce(into: [UUID: CloudSessionStudentLink]()) { $0[$1.studentID] = $1 }
+        var kept: [SessionStudentConfirmation] = []
+        for student in session.studentList {
+            let link = byStudent[student.syncID]
+            let status = SessionStudentStatus(rawValue: link?.status ?? "") ?? session.confirmationStatus(for: student)
+            let respondedAt = link?.respondedAt
+            let record = session.confirmationRecord(for: student) ?? SessionStudentConfirmation(student: student)
+            if record.modelContext == nil {
+                context.insert(record)
+                record.session = session
+            }
+            record.student = student
+            record.status = link?.status ?? status.rawValue
+            record.respondedAt = respondedAt
+            kept.append(record)
+        }
+        for stale in session.confirmationList where !kept.contains(where: { $0.persistentModelID == stale.persistentModelID }) {
+            context.delete(stale)
+        }
+        session.confirmationList = kept
     }
 
     private func apply(_ cloud: CloudSessionRecord, to session: CoachingSession) {
@@ -2817,6 +2948,10 @@ final class SupabaseCloud: ObservableObject {
         let studentID = student.persistentModelID
         for session in try context.fetch(FetchDescriptor<CoachingSession>()) {
             session.studentList.removeAll { $0.persistentModelID == studentID }
+        }
+        for confirmation in try context.fetch(FetchDescriptor<SessionStudentConfirmation>())
+        where confirmation.student?.persistentModelID == studentID {
+            context.delete(confirmation)
         }
         for social in try context.fetch(FetchDescriptor<SocialSession>()) {
             social.studentList.removeAll { $0.persistentModelID == studentID }
@@ -3281,10 +3416,30 @@ private struct CloudHiddenWeekRecord: Decodable {
 private struct CloudSessionStudentLink: Decodable {
     let sessionID: UUID
     let studentID: UUID
+    let status: String
+    let respondedAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case studentID = "student_id"
+        case status
+        case respondedAt = "responded_at"
+    }
+
+    init(sessionID: UUID, studentID: UUID, status: String, respondedAt: Date?) {
+        self.sessionID = sessionID
+        self.studentID = studentID
+        self.status = status
+        self.respondedAt = respondedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(UUID.self, forKey: .sessionID)
+        studentID = try container.decode(UUID.self, forKey: .studentID)
+        let decodedStatus = try container.decodeIfPresent(String.self, forKey: .status)
+        status = (decodedStatus?.isEmpty == false) ? decodedStatus! : SessionStudentStatus.pending.rawValue
+        respondedAt = try container.decodeIfPresent(Date.self, forKey: .respondedAt)
     }
 }
 
@@ -3604,6 +3759,8 @@ private extension SupabaseCloud {
             for link in coachingLinks {
                 let parent = try coachingParent(link.sessionID)
                 parent.studentList = parent.studentList.filter { $0.syncID != student.syncID } + [student]
+                let reply = SessionStudentStatus(rawValue: link.status) ?? .pending
+                parent.setStudentStatus(student, to: reply, respondedAt: link.respondedAt, in: context, registersLocalEdit: false)
             }
             for link in socialLinks {
                 let parent = try socialParent(link.sessionID)

@@ -11,7 +11,7 @@ private struct SocialEditingTests {
             print("PASS: \(message)")
         }
         let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
-                             CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+                             CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: schema, configurations: [configuration])
         let context = ModelContext(container)

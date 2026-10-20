@@ -25,7 +25,8 @@ struct CoachPlannerApp: App {
         CourtBooking.self,
         SocialSession.self,
         SocialHiddenPerson.self,
-        SocialAttendance.self
+        SocialAttendance.self,
+        SessionStudentConfirmation.self
     ]
 
     /// The schema shared across the iOS and Mac Catalyst app.

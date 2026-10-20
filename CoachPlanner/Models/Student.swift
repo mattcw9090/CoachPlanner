@@ -76,6 +76,9 @@ final class Student: SyncTimestamped {
     @Relationship(inverse: \SocialAttendance.student)
     var socialAttendances: [SocialAttendance]? = nil
 
+    @Relationship(deleteRule: .cascade, inverse: \SessionStudentConfirmation.student)
+    var sessionConfirmations: [SessionStudentConfirmation]? = nil
+
     init(
         name: String,
         gender: String,

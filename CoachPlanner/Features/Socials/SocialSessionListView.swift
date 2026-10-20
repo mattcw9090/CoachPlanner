@@ -327,7 +327,7 @@ private struct SocialStatusMenu: View {
 
     var body: some View {
         Menu {
-            ForEach(SessionStatus.allCases) { option in
+            ForEach(SessionStatus.attendanceDisplayOrder) { option in
                 Button {
                     onChange(option)
                 } label: {
@@ -359,6 +359,7 @@ private extension SessionStatus {
         case .confirmed: return 0
         case .pending: return 1
         case .unscheduled: return 2
+        case .declined: return 3
         }
     }
 }
@@ -2290,5 +2291,5 @@ private struct OutsiderEditorView: View {
     @Previewable @State var weekStart = SocialSessionListView.monday(of: .now)
 
     SocialSessionListView(weekStart: $weekStart)
-        .modelContainer(for: [Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self], inMemory: true)
+        .modelContainer(for: [Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self], inMemory: true)
 }

@@ -66,8 +66,11 @@ create table if not exists coaching_sessions (
 create table if not exists coaching_session_students (
   session_id uuid not null references coaching_sessions(id) on delete cascade,
   student_id uuid not null references students(id) on delete restrict,
+  status text not null default 'Pending',
+  responded_at timestamptz,
   created_at timestamptz not null default now(),
-  primary key (session_id, student_id)
+  primary key (session_id, student_id),
+  constraint coaching_session_students_status_check check (status in ('Pending', 'Confirmed', 'Declined'))
 );
 
 create table if not exists court_bookings (
