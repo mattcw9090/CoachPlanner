@@ -301,36 +301,16 @@ struct SessionEditorView: View {
                 if !selectedStudentsList.isEmpty {
                     Section {
                         ForEach(selectedStudentsList) { student in
-                            HStack(spacing: 12) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(student.name)
-                                    if showsIndividualStudentReplies,
-                                       let respondedAt = respondedAtByStudentID[student.persistentModelID] {
-                                        Text("Responded \(respondedAt.formatted(date: .abbreviated, time: .shortened))")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer(minLength: 8)
-                                if showsIndividualStudentReplies {
-                                    Picker("Status", selection: studentStatusBinding(for: student)) {
-                                        ForEach(SessionStudentStatus.allCases) { option in
-                                            Label(option.rawValue, systemImage: option.iconName)
-                                                .tag(option)
-                                        }
-                                    }
-                                    .labelsHidden()
-                                    .pickerStyle(.menu)
-                                }
-                                Button {
-                                    selectedStudentIDs.remove(student.persistentModelID)
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .foregroundStyle(.secondary)
-                                }
-                                .buttonStyle(.borderless)
-                                .accessibilityLabel("Remove \(student.name)")
-                            }
+                            SelectedStudentRow(
+                                name: student.name,
+                                showsReply: showsIndividualStudentReplies,
+                                status: studentStatuses[student.persistentModelID] ?? .pending,
+                                respondedAt: showsIndividualStudentReplies
+                                    ? respondedAtByStudentID[student.persistentModelID]
+                                    : nil,
+                                onStatusChange: { updateStudentStatus(student, to: $0) },
+                                onRemove: { selectedStudentIDs.remove(student.persistentModelID) }
+                            )
                         }
                     } header: {
                         Text("Selected (\(selectedStudentsList.count))")
@@ -653,13 +633,6 @@ struct SessionEditorView: View {
 
         openURL(url)
         markAvailabilityRequested(for: student)
-    }
-
-    private func studentStatusBinding(for student: Student) -> Binding<SessionStudentStatus> {
-        Binding(
-            get: { studentStatuses[student.persistentModelID] ?? .pending },
-            set: { updateStudentStatus(student, to: $0) }
-        )
     }
 
     private func updateStudentStatus(_ student: Student, to newStatus: SessionStudentStatus) {
@@ -1005,6 +978,146 @@ struct SessionEditorView: View {
                 modelContext.insert(trailingBooking)
             }
         }
+    }
+}
+
+/// One selected student. iPhone keeps the name and reply on a single line; wider layouts keep the system menu.
+private struct SelectedStudentRow: View {
+    let name: String
+    let showsReply: Bool
+    let status: SessionStudentStatus
+    let respondedAt: Date?
+    let onStatusChange: (SessionStudentStatus) -> Void
+    let onRemove: () -> Void
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var usesCompactReply: Bool {
+        showsReply && horizontalSizeClass == .compact
+    }
+
+    var body: some View {
+        if usesCompactReply {
+            compactReply
+        } else {
+            regularRow
+        }
+    }
+
+    private var compactReply: some View {
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(name)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if let respondedAt {
+                    Text("Responded \(respondedAt.formatted(.dateTime.day().month(.abbreviated).hour().minute()))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+            StudentReplyMenu(status: status, onChange: onStatusChange)
+
+            removeButton
+        }
+        // Large Dynamic Type still scales, but extreme accessibility sizes would wrap the reply under the name.
+        .dynamicTypeSize(.xSmall ... .accessibility1)
+    }
+
+    private var regularRow: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                if showsReply, let respondedAt {
+                    Text("Responded \(respondedAt.formatted(date: .abbreviated, time: .shortened))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer(minLength: 8)
+            if showsReply {
+                Picker("Status", selection: statusBinding) {
+                    ForEach(SessionStudentStatus.allCases) { option in
+                        Label(option.rawValue, systemImage: option.iconName)
+                            .tag(option)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
+            removeButton
+        }
+    }
+
+    private var statusBinding: Binding<SessionStudentStatus> {
+        Binding(get: { status }, set: onStatusChange)
+    }
+
+    @ViewBuilder
+    private var removeButton: some View {
+        if usesCompactReply {
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Remove \(name)")
+        } else {
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Remove \(name)")
+        }
+    }
+}
+
+/// Compact Pending / Confirmed control used on iPhone. Same symbols and colours as the session status.
+private struct StudentReplyMenu: View {
+    let status: SessionStudentStatus
+    let onChange: (SessionStudentStatus) -> Void
+
+    var body: some View {
+        Menu {
+            Picker("Status", selection: Binding(get: { status }, set: onChange)) {
+                ForEach(SessionStudentStatus.allCases) { option in
+                    Label(option.rawValue, systemImage: option.iconName)
+                        .tag(option)
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: status.iconName)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(status.color)
+                Text(status.rawValue)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .frame(minHeight: 32)
+            .background(Capsule().fill(status.color.opacity(0.18)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.borderless)
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityLabel("Status, \(status.rawValue)")
     }
 }
 

@@ -2633,6 +2633,8 @@ private struct SessionBlock: View {
     var isBulkSelectionEligible = false
     var isBulkSelectionSelected = false
 
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     private var color: Color {
         session.displayStatus.color
     }
@@ -2641,9 +2643,19 @@ private struct SessionBlock: View {
         session.confirmationBadgeText
     }
 
+    /// Narrow day columns cannot fit "2 of 3 confirmed" on one line. Show each student with a status symbol instead.
+    private var usesCompactStudentRows: Bool {
+        horizontalSizeClass == .compact && session.studentList.count > 1
+    }
+
+    private var sortedStudents: [Student] {
+        session.studentList.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
     private var studentNames: String {
-        session.studentList
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        sortedStudents
             .map(\.name)
             .joined(separator: ", ")
     }
@@ -2694,7 +2706,7 @@ private struct SessionBlock: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: usesCompactStudentRows ? 2 : 3) {
             if isBulkSelectionModeEnabled {
                 Label(
                     isBulkSelectionSelected ? "Selected" : (isBulkSelectionEligible ? "Tap to select" : "Already booked"),
@@ -2706,18 +2718,26 @@ private struct SessionBlock: View {
                 .minimumScaleFactor(0.7)
             }
 
-            Text(studentNames.isEmpty ? "No students" : studentNames)
-                .font(AppStyle.timeGridFont(size: 10, weight: .bold))
-                .foregroundStyle(.primary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.75)
+            if usesCompactStudentRows {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(sortedStudents) { student in
+                        compactStudentStatusLine(student)
+                    }
+                }
+            } else {
+                Text(studentNames.isEmpty ? "No students" : studentNames)
+                    .font(AppStyle.timeGridFont(size: 10, weight: .bold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
 
-            if let confirmationBadge {
-                Text(confirmationBadge)
-                    .font(AppStyle.timeGridFont(size: 8, weight: .bold))
-                    .foregroundStyle(color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                if let confirmationBadge {
+                    Text(confirmationBadge)
+                        .font(AppStyle.timeGridFont(size: 8, weight: .bold))
+                        .foregroundStyle(color)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
             }
 
             Text(session.venue)
@@ -2735,8 +2755,8 @@ private struct SessionBlock: View {
             }
         }
         .padding(.leading, 6)
-        .padding(.trailing, 3)
-        .padding(.vertical, 5)
+        .padding(.trailing, usesCompactStudentRows ? 2 : 3)
+        .padding(.vertical, usesCompactStudentRows ? 3 : 5)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 6)
@@ -2754,6 +2774,26 @@ private struct SessionBlock: View {
         .shadow(color: shadowColor, radius: 5, x: 0, y: 2)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .opacity(isModeLocked ? 0.48 : 1)
+    }
+
+    private func compactStudentStatusLine(_ student: Student) -> some View {
+        let reply = session.confirmationStatus(for: student)
+        return HStack(spacing: 2) {
+            Text(student.name)
+                .font(AppStyle.timeGridFont(size: 8, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .truncationMode(.tail)
+            Image(systemName: reply.iconName)
+                .font(AppStyle.timeGridFont(size: 7, weight: .bold))
+                .foregroundStyle(reply.color)
+                .fixedSize(horizontal: true, vertical: false)
+                .accessibilityHidden(true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(student.name), \(reply.rawValue)")
     }
 }
 
