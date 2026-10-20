@@ -1,13 +1,13 @@
 # CoachPlanner
 
-CoachPlanner is a SwiftUI and SwiftData app for managing weekly coaching sessions, court bookings, students, socials, messaging, finance handoff, and iCalendar exports.
+CoachPlanner is a SwiftUI and SwiftData app for managing weekly coaching sessions, court bookings, students, socials, messaging, and iCalendar exports.
 
 ## Project structure
 
 - `CoachPlanner/App/` — app entry point, root navigation, shared styling.
 - `CoachPlanner/Models/` — SwiftData models and scheduling enums.
 - `CoachPlanner/Features/` — student, session, social, and settings UI grouped by feature.
-- `CoachPlanner/Services/` — external handoff and integration helpers.
+- `CoachPlanner/Services/` — cloud sync and integration helpers.
 - `CoachPlanner/Resources/` — app icon, Info.plist, and entitlements.
 - `Backend/` — Supabase/PostgreSQL schema, migrations, and import utilities.
 - `PrivatePlanning/` — local, Git-excluded scheduling rules; never commit personal contact data or message content.

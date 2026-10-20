@@ -454,13 +454,6 @@ struct SessionListView: View {
                     courtBookingsForWeek.isEmpty &&
                     summary.socialSessionsByDay.values.allSatisfy(\.isEmpty)
             )
-
-            Button {
-                sendToFinanceTracker()
-            } label: {
-                Label("Send to Finance Tracker", systemImage: "dollarsign.circle")
-            }
-            .disabled(sessionsForWeek.isEmpty)
         } label: {
             Label("Share", systemImage: "square.and.arrow.up")
         }
@@ -1471,29 +1464,6 @@ struct SessionListView: View {
         }
     }
 
-    private func sendToFinanceTracker() {
-        let payloads = sessionsForWeek.map { session in
-            FinanceBridge.SessionPayload(
-                sessionName: sessionName(for: session),
-                dayOfWeek: session.weekday.name,
-                sessionFee: session.sessionFee
-            )
-        }
-
-        switch FinanceBridge.send(sessions: payloads, exportedAt: .now) {
-        case let .success(count, _):
-            sessionNotice = SessionNotice(
-                title: "Sent to Finance Tracker",
-                message: "\(count) \(count == 1 ? "session" : "sessions") shared with MyFinanceTracker. Open MyFinanceTracker to import them."
-            )
-        case let .failure(reason):
-            sessionNotice = SessionNotice(
-                title: "Couldn't Send",
-                message: reason
-            )
-        }
-    }
-
     private func messageTRSCourtBookingContact() {
         guard let phone = AustralianPhoneNumber.whatsappDigits(from: trsBookingContactPhone) else {
             sessionNotice = SessionNotice(
@@ -1699,15 +1669,6 @@ struct SessionListView: View {
                 sessionNotice = SessionNotice(title: failure.alertTitle, message: failure.alertMessage)
             }
         }
-    }
-
-    private func sessionName(for session: CoachingSession) -> String {
-        let studentList = session.studentList
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            .map(\.name)
-            .joined(separator: ", ")
-
-        return studentList.isEmpty ? "\(session.venue) coaching" : studentList
     }
 
     private func generateICSContent() -> String? {
