@@ -2643,7 +2643,7 @@ private struct SessionBlock: View {
         session.confirmationBadgeText
     }
 
-    /// Narrow day columns cannot fit "2 of 3 confirmed" on one line. Show each student with a status symbol instead.
+    /// Narrow day columns list each student on a separate line so the names stay readable.
     private var usesCompactStudentRows: Bool {
         horizontalSizeClass == .compact && session.studentList.count > 1
     }
@@ -2721,7 +2721,7 @@ private struct SessionBlock: View {
             if usesCompactStudentRows {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(sortedStudents) { student in
-                        compactStudentStatusLine(student)
+                        compactStudentNameLine(student)
                     }
                 }
             } else {
@@ -2776,24 +2776,14 @@ private struct SessionBlock: View {
         .opacity(isModeLocked ? 0.48 : 1)
     }
 
-    private func compactStudentStatusLine(_ student: Student) -> some View {
-        let reply = session.confirmationStatus(for: student)
-        return HStack(spacing: 2) {
-            Text(student.name)
-                .font(AppStyle.timeGridFont(size: 8, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .truncationMode(.tail)
-            Image(systemName: reply.iconName)
-                .font(AppStyle.timeGridFont(size: 7, weight: .bold))
-                .foregroundStyle(reply.color)
-                .fixedSize(horizontal: true, vertical: false)
-                .accessibilityHidden(true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(student.name), \(reply.rawValue)")
+    private func compactStudentNameLine(_ student: Student) -> some View {
+        Text(student.name)
+            .font(AppStyle.timeGridFont(size: 8, weight: .semibold))
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
