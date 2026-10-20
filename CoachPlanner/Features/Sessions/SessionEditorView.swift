@@ -305,9 +305,6 @@ struct SessionEditorView: View {
                                 name: student.name,
                                 showsReply: showsIndividualStudentReplies,
                                 status: studentStatuses[student.persistentModelID] ?? .pending,
-                                respondedAt: showsIndividualStudentReplies
-                                    ? respondedAtByStudentID[student.persistentModelID]
-                                    : nil,
                                 onStatusChange: { updateStudentStatus(student, to: $0) },
                                 onRemove: { selectedStudentIDs.remove(student.persistentModelID) }
                             )
@@ -986,7 +983,6 @@ private struct SelectedStudentRow: View {
     let name: String
     let showsReply: Bool
     let status: SessionStudentStatus
-    let respondedAt: Date?
     let onStatusChange: (SessionStudentStatus) -> Void
     let onRemove: () -> Void
 
@@ -1006,22 +1002,12 @@ private struct SelectedStudentRow: View {
 
     private var compactReply: some View {
         HStack(spacing: 6) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(name)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                if let respondedAt {
-                    Text("Responded \(respondedAt.formatted(.dateTime.day().month(.abbreviated).hour().minute()))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            Text(name)
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
             StudentReplyMenu(status: status, onChange: onStatusChange)
 
@@ -1033,14 +1019,7 @@ private struct SelectedStudentRow: View {
 
     private var regularRow: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                if showsReply, let respondedAt {
-                    Text("Responded \(respondedAt.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Text(name)
             Spacer(minLength: 8)
             if showsReply {
                 Picker("Status", selection: statusBinding) {
