@@ -54,8 +54,6 @@ struct SyncConflictReviewView: View {
         } message: { request in
             Text(request.explanation)
         }
-        .desktopSheetSize(width: 680, height: 600)
-        .desktopReadableTypography()
     }
 
     private func applyResolution(_ request: SyncConflictResolutionRequest) {

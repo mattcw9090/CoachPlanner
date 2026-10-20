@@ -120,7 +120,6 @@ struct SocialSessionListView: View {
                     }
                 }
             }
-            .desktopContentWidth(960)
             .navigationTitle("Socials")
             .scrollContentBackground(.hidden)
             .background(AppStyle.background)
@@ -385,59 +384,29 @@ private enum SocialParticipant: Identifiable {
 private struct SocialAttendanceSummary: View {
     let statuses: [SessionStatus]
 
-#if targetEnvironment(macCatalyst)
-    private let columnAlignment: HorizontalAlignment = .leading
-    private let columnSpacing: CGFloat = 16
-#else
     private let columnAlignment: HorizontalAlignment = .center
     private let columnSpacing: CGFloat = 12
-#endif
 
     private func count(for status: SessionStatus) -> Int {
         statuses.filter { $0 == status }.count
     }
 
-    @ViewBuilder
     private func countText(for status: SessionStatus) -> some View {
-#if targetEnvironment(macCatalyst)
-        Text("\(count(for: status))")
-#else
         Text("\(count(for: status))")
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
-#endif
     }
 
-    @ViewBuilder
     private func countLabel(for status: SessionStatus) -> some View {
-#if targetEnvironment(macCatalyst)
-        Label("\(count(for: status))", systemImage: status.iconName)
-#else
         // Form's automatic Label style reserves row-icon space on iOS.
         HStack(spacing: 6) {
             Image(systemName: status.iconName)
             countText(for: status)
         }
         .fixedSize(horizontal: true, vertical: false)
-#endif
     }
 
-    @ViewBuilder
     private func stackedStatusRow(for status: SessionStatus) -> some View {
-#if targetEnvironment(macCatalyst)
-        HStack(spacing: 12) {
-            Label {
-                Text(status.rawValue)
-            } icon: {
-                Image(systemName: status.iconName)
-                    .foregroundStyle(status.color)
-            }
-            Spacer(minLength: 8)
-            countText(for: status)
-                .fontWeight(.semibold)
-                .monospacedDigit()
-        }
-#else
         VStack(alignment: .leading, spacing: 4) {
             countLabel(for: status)
                 .font(.headline)
@@ -450,7 +419,6 @@ private struct SocialAttendanceSummary: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-#endif
     }
 
     var body: some View {
@@ -485,9 +453,7 @@ private struct SocialAttendanceSummary: View {
             }
         }
         .padding(.vertical, 6)
-#if !targetEnvironment(macCatalyst)
         .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
-#endif
     }
 }
 
@@ -1302,28 +1268,6 @@ struct SocialSessionEditorView: View {
                 }
 
                 Section {
-#if targetEnvironment(macCatalyst)
-                    HStack(alignment: .top, spacing: 18) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Label("Students", systemImage: "person.3.fill")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            addStudentsPage
-                        }
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-
-                        Divider()
-
-                        VStack(alignment: .leading, spacing: 4) {
-                            Label("Outsiders", systemImage: "person.crop.circle.badge.questionmark")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            addOutsidersPage
-                        }
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                    }
-                    .frame(minHeight: 320, alignment: .top)
-#else
                     Picker("People", selection: $addPeoplePage) {
                         ForEach(SocialPeoplePage.allCases) { page in
                             Text(page.title).tag(page)
@@ -1340,19 +1284,14 @@ struct SocialSessionEditorView: View {
                     }
                     .tabViewStyle(.page(indexDisplayMode: .automatic))
                     .frame(minHeight: 320)
-#endif
                 } header: {
                     Text("Add People")
                 } footer: {
-#if targetEnvironment(macCatalyst)
-                    Text("Students and outsiders are shown side by side. Use the options menu to manage outsiders.")
-#else
                     Text(
                         addPeoplePage == .outsiders
                             ? "Swipe right to return to students. Use the options menu to manage outsiders."
                             : "Swipe sideways to switch between students and outsiders."
                     )
-#endif
                 }
 
                 if isEditing {
@@ -1399,7 +1338,6 @@ struct SocialSessionEditorView: View {
         }
         .presentationContentInteraction(.scrolls)
         .interactiveDismissDisabled()
-        .desktopSheetSize(width: 920, height: 780)
     }
 
     private func addCreatedOutsiderToSession(_ outsider: Outsider) {
@@ -1998,7 +1936,6 @@ private struct OutsiderManagerView: View {
                 Text("This removes the outsider record from every social.")
             }
         }
-        .desktopSheetSize(width: 620, height: 620)
     }
 }
 
@@ -2174,7 +2111,6 @@ private struct OutsiderEditorView: View {
                 contactDetail = Self.formattedAustralianPhoneNumber(phone)
             }
         )
-        .desktopSheetSize(width: 560, height: 580)
     }
 
     private func save() {

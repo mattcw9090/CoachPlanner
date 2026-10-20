@@ -5,7 +5,7 @@ This directory defines the first cloud-backed storage contract. It is provider-n
 ## Design decisions
 
 - The server is the authoritative source of truth.
-- The iPhone and Mac keep SwiftData as an offline cache during the migration.
+- The iPhone keeps SwiftData as an offline cache during the migration.
 - Every mutable row has a UUID, `updated_at`, and a soft-delete timestamp.
 - Client writes include an `expected_updated_at` value. A stale write returns `409 Conflict` instead of silently overwriting another device.
 - Contact details are private fields and must only be returned to an authenticated coach account.
@@ -33,7 +33,7 @@ This directory defines the first cloud-backed storage contract. It is provider-n
 
 The local automation command reads the authenticated Supabase workspace directly. It has no database write commands and deliberately excludes contact details, fees, and session descriptions.
 
-Sign in once; the password is entered invisibly and is never stored. The short Supabase refresh token is kept in a CLI-specific macOS Keychain entry, separate from the iPhone and Mac app sessions. Access tokens exist only in memory while a command runs:
+Sign in once; the password is entered invisibly and is never stored. The short Supabase refresh token is kept in a CLI-specific macOS Keychain entry, separate from the iPhone app session. Access tokens exist only in memory while a command runs:
 
 ```sh
 Tools/coachplanner-cloud auth login --email YOUR_SUPABASE_EMAIL

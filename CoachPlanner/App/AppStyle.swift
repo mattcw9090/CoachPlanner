@@ -52,11 +52,7 @@ enum AppStyle {
     static let radius: CGFloat = 10
 
     static func timeGridFont(size: CGFloat, weight: Font.Weight) -> Font {
-#if targetEnvironment(macCatalyst)
-        .system(size: size * 1.25, weight: weight)
-#else
         .system(size: size, weight: weight)
-#endif
     }
 
     static var currencyCode: String {
@@ -111,35 +107,5 @@ struct MetricTile: View {
             RoundedRectangle(cornerRadius: AppStyle.radius)
                 .stroke(AppStyle.separator.opacity(0.16), lineWidth: 0.5)
         )
-    }
-}
-
-extension View {
-    @ViewBuilder
-    func desktopReadableTypography() -> some View {
-#if targetEnvironment(macCatalyst)
-        dynamicTypeSize(.xxLarge ... .accessibility5)
-#else
-        self
-#endif
-    }
-
-    @ViewBuilder
-    func desktopContentWidth(_ maxWidth: CGFloat) -> some View {
-#if targetEnvironment(macCatalyst)
-        frame(maxWidth: maxWidth)
-            .frame(maxWidth: .infinity)
-#else
-        self
-#endif
-    }
-
-    @ViewBuilder
-    func desktopSheetSize(width: CGFloat, height: CGFloat) -> some View {
-#if targetEnvironment(macCatalyst)
-        frame(minWidth: width, minHeight: height)
-#else
-        self
-#endif
     }
 }

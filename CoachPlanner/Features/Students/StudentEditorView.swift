@@ -185,7 +185,6 @@ struct StudentEditorView: View {
                 contactDetail = Self.formattedAustralianPhoneNumber(phone)
             }
         )
-        .desktopSheetSize(width: 560, height: 600)
     }
 
     private var hasUnsavedChanges: Bool {

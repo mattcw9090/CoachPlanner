@@ -14,4 +14,4 @@
 ## Verification
 
 - Run `git diff --check` after edits.
-- Prefer a Mac Catalyst build; also run the iOS Simulator build when the local simulator service is available.
+- Build for iPhone. Also run the iOS Simulator build when the local simulator service is available.

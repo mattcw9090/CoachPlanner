@@ -23,7 +23,7 @@ returning id;
 From **Project Settings → API**, the app/backend integration will need:
 
 - Project URL, for example `https://your-project.supabase.co`.
-- The publishable/anon key for the iPhone and Mac app.
+- The publishable/anon key for the iPhone app.
 - A user access token for the one-time importer, generated after signing in to the CoachPlanner account.
 
 Never put the `service_role` key in the iPhone app, repository, migration bundle, or shell history. It is only appropriate for a server-side importer/function.
@@ -41,7 +41,7 @@ Never put the `service_role` key in the iPhone app, repository, migration bundle
 
 CoachPlanner connects to Supabase from Settings. It uses the project's publishable key, signs in through Supabase Auth, and stores only the returned session tokens in the device Keychain. SwiftData remains the offline local cache. Automatic sync uploads committed edits and listens for authenticated, workspace-filtered Realtime notifications while open.
 
-1. Build and run CoachPlanner on the iPhone or Mac Catalyst target.
+1. Build and run CoachPlanner on an iPhone.
 2. Open **Settings → Supabase Cloud**.
 3. Sign in with the Auth user created for the project.
 4. Tap **Sync cloud data**. A repeat sync with no further changes should report that cloud data is up to date.

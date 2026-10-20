@@ -50,17 +50,10 @@ struct SessionListView: View {
 
     private let dayStartHour = 6
     private let dayEndHour = 23
-#if targetEnvironment(macCatalyst)
-    private let hourHeight: CGFloat = 76
-    private let timeAxisWidth: CGFloat = 52
-    private let dayHeaderHeight: CGFloat = 56
-    private let calendarHorizontalPadding: CGFloat = 16
-#else
     private let hourHeight: CGFloat = 64
     private let timeAxisWidth: CGFloat = 42
     private let dayHeaderHeight: CGFloat = 46
     private let calendarHorizontalPadding: CGFloat = 12
-#endif
     private let gridLineOpacity: Double = 0.26
     private let activeGridLineOpacity: Double = 0.42
 
@@ -362,9 +355,6 @@ struct SessionListView: View {
 
         NavigationStack {
             VStack(spacing: 0) {
-#if targetEnvironment(macCatalyst)
-                desktopSessionActions(summary)
-#endif
                 weekSummaryStrip(summary)
                     .padding(.horizontal, calendarHorizontalPadding)
                     .padding(.top, 8)
@@ -381,7 +371,6 @@ struct SessionListView: View {
             }
             .animation(.snappy(duration: 0.24), value: isBulkSelectionModeEnabled)
             .navigationTitle("Sessions")
-#if !targetEnvironment(macCatalyst)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     sessionShareMenu(summary)
@@ -395,7 +384,6 @@ struct SessionListView: View {
                     moveToNextWeekButton
                 }
             }
-#endif
             .confirmationDialog(
                 "Move this week's sessions to next week?",
                 isPresented: $isResetConfirmationPresented,
@@ -424,7 +412,6 @@ struct SessionListView: View {
                 }
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
-                .desktopSheetSize(width: 480, height: 340)
             }
             .sheet(item: $fileExport) { item in
                 ICSShareSheet(url: item.url)
@@ -441,31 +428,6 @@ struct SessionListView: View {
             }
         }
     }
-
-#if targetEnvironment(macCatalyst)
-    private func desktopSessionActions(_ summary: ScheduleSummary) -> some View {
-        // Keep these changing actions out of Catalyst's native toolbar grouping:
-        // AppKit can otherwise create constraints across detached toolbar views.
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) {
-                sessionShareMenu(summary)
-                bulkCourtSelectionButton
-                moveToNextWeekButton
-            }
-            VStack(alignment: .trailing, spacing: 8) {
-                sessionShareMenu(summary)
-                bulkCourtSelectionButton
-                moveToNextWeekButton
-            }
-        }
-        .labelStyle(.titleAndIcon)
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .padding(.horizontal, calendarHorizontalPadding)
-        .padding(.top, 8)
-        .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-#endif
 
     private func sessionShareMenu(_ summary: ScheduleSummary) -> some View {
         Menu {
@@ -3070,7 +3032,6 @@ private struct CourtBookingEditorView: View {
                 }
             }
         }
-        .desktopSheetSize(width: 560, height: 620)
     }
 
     private func minutes(of date: Date) -> Int {

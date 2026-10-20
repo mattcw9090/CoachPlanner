@@ -185,7 +185,6 @@ struct StudentListView: View {
                     }
                 }
             }
-            .desktopContentWidth(960)
             .navigationTitle("My Students")
             .scrollContentBackground(.hidden)
             .background(AppStyle.background)

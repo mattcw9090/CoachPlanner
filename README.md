@@ -16,21 +16,16 @@ For repository-specific guardrails, see `AGENTS.md`.
 
 ## Platforms
 
-- iPhone and iPad on iOS 17 or later
-- macOS 14 or later through Mac Catalyst
+- iPhone on iOS 17 or later
 
-Both versions use the same models and feature code. The Mac app adds sidebar navigation, desktop-sized editors, side-by-side socials lists, keyboard shortcuts, and right-click alternatives for actions that use swipe gestures on iPhone.
+The project targets the iPhone device family only. Editors still accept Command-S to save and Escape to cancel when a hardware keyboard is connected.
 
 ## Run
 
 1. Open `CoachPlanner.xcodeproj` in Xcode.
 2. Select the `CoachPlanner` scheme.
-3. Choose an iPhone or iPad simulator for iOS, or `My Mac (Mac Catalyst)` for macOS.
+3. Choose an iPhone or the iOS Simulator.
 4. Build and run.
-
-On Mac, use Command-1 for Students, Command-2 for Sessions, Command-3 for Socials, and Command-comma for Settings. Editors support Command-S to save and Escape to cancel.
-
-The Mac Sessions screen keeps Share, Book Courts, and Move to Next Week in an adaptive action row above the timetable. This avoids a Catalyst native-toolbar layout crash; iPhone/iPad retain their native toolbar. When checking this UI, launch on Mac, switch sections, open/dismiss Share, enter/cancel bulk selection, and open/cancel an editor at both normal and minimum window width. Do not confirm a booking, export, message, move, or save as part of this smoke test.
 
 ## Storage and sync
 
@@ -50,7 +45,7 @@ Conflict details update through normal sync, stay visible across unrelated updat
 
 For an existing Supabase project, apply `Backend/migrations/2026-09-21_realtime.sql` after the relationship-version migration. This adds the five parent tables to the Realtime publication while retaining existing row-level security. Without it, uploads and foreground recovery still work, but live notifications cannot connect.
 
-Normal social sync requires `Backend/migrations/2026-09-24_atomic_social_sync.sql` after the conflict-resolution migration. It downloads each social and all its participants, hidden people, and attendance from one consistent database snapshot. Creates, edits, and deletions commit as one server transaction with exact stale-version checks; a failed attendance write cannot leave a half-uploaded social. Missing server support stops social sync without falling back to multipart writes. Install the updated app on every device to retire the older upload path.
+Normal social sync requires `Backend/migrations/2026-09-24_atomic_social_sync.sql` after the conflict-resolution migration. It downloads each social and all its participants, hidden people, and attendance from one consistent database snapshot. Creates, edits, and deletions commit as one server transaction with exact stale-version checks; a failed attendance write cannot leave a half-uploaded social. Missing server support stops social sync without falling back to multipart writes. Install the updated app on the iPhone to retire the older upload path.
 
 The social editor preserves existing attendance and hidden-person identities, updating only changed values. If the underlying social changes while an editor is open, saving the stale draft is blocked; cancel and reopen to review the current version. An unexplained mismatch with an unchanged sync timestamp is held for review, never automatically uploaded as if it were a local edit.
 

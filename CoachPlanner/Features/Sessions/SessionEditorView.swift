@@ -541,7 +541,6 @@ struct SessionEditorView: View {
                 )
             }
         }
-        .desktopSheetSize(width: 720, height: 760)
     }
 
     private func minutes(of date: Date) -> Int {
