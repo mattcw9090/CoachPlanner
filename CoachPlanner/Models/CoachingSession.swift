@@ -15,6 +15,7 @@ enum SessionStatus: String, CaseIterable, Identifiable {
     case unscheduled = "Unscheduled"
     case pending = "Pending"
     case confirmed = "Confirmed"
+    case declined = "Declined"
 
     var id: String { rawValue }
 
@@ -23,6 +24,7 @@ enum SessionStatus: String, CaseIterable, Identifiable {
         case .unscheduled: return .red
         case .pending: return .yellow
         case .confirmed: return .green
+        case .declined: return .orange
         }
     }
 
@@ -31,6 +33,7 @@ enum SessionStatus: String, CaseIterable, Identifiable {
         case .unscheduled: return "exclamationmark.circle.fill"
         case .pending: return "clock.fill"
         case .confirmed: return "checkmark.circle.fill"
+        case .declined: return "xmark.circle.fill"
         }
     }
 
@@ -38,8 +41,37 @@ enum SessionStatus: String, CaseIterable, Identifiable {
         switch self {
         case .unscheduled: return .pending
         case .pending: return .confirmed
-        case .confirmed: return nil
+        case .confirmed, .declined: return nil
         }
+    }
+}
+
+/// A student's reply to one coaching session. This is separate from social attendance.
+enum SessionStudentStatus: String, CaseIterable, Identifiable {
+    case pending = "Pending"
+    case confirmed = "Confirmed"
+    case declined = "Declined"
+
+    var id: String { rawValue }
+
+    var color: Color { sessionStatus.color }
+    var iconName: String { sessionStatus.iconName }
+
+    var sessionStatus: SessionStatus {
+        switch self {
+        case .pending: return .pending
+        case .confirmed: return .confirmed
+        case .declined: return .declined
+        }
+    }
+}
+
+enum SessionStatusDerivation {
+    /// Any decline makes the session declined. Every student must accept before it is confirmed.
+    static func derived(from studentStatuses: [SessionStudentStatus]) -> SessionStatus {
+        if studentStatuses.contains(.declined) { return .declined }
+        if !studentStatuses.isEmpty, studentStatuses.allSatisfy({ $0 == .confirmed }) { return .confirmed }
+        return .pending
     }
 }
 
@@ -89,6 +121,11 @@ final class CoachingSession: SyncTimestamped {
     @Relationship(deleteRule: .nullify)
     var students: [Student]? = nil
 
+    /// Additive join records. Existing many-to-many memberships stay in `students`
+    /// so a lightweight migration does not drop people already on the session.
+    @Relationship(deleteRule: .cascade, inverse: \SessionStudentConfirmation.session)
+    var studentConfirmations: [SessionStudentConfirmation]? = nil
+
     init(
         weekStart: Date? = nil,
         dayOfWeek: Weekday,
@@ -132,6 +169,159 @@ final class CoachingSession: SyncTimestamped {
     var studentList: [Student] {
         get { students ?? [] }
         set { students = newValue }
+    }
+
+    var confirmationList: [SessionStudentConfirmation] {
+        get { studentConfirmations ?? [] }
+        set { studentConfirmations = newValue }
+    }
+
+    /// Stored session status, except a session that has left Unscheduled follows its students.
+    var displayStatus: SessionStatus {
+        guard !studentList.isEmpty, statusValue != .unscheduled else { return statusValue }
+        return SessionStatusDerivation.derived(from: studentList.map { confirmationStatus(for: $0) })
+    }
+
+    var confirmedStudentCount: Int {
+        studentList.filter { confirmationStatus(for: $0) == .confirmed }.count
+    }
+
+    func confirmationStatus(for student: Student) -> SessionStudentStatus {
+        if let record = confirmationRecord(for: student) {
+            return record.statusValue
+        }
+        // Devices that have not stored a reply yet match the cloud backfill:
+        // students on an already confirmed session are confirmed, everyone else is pending.
+        return statusValue == .confirmed ? .confirmed : .pending
+    }
+
+    func respondedAt(for student: Student) -> Date? {
+        confirmationRecord(for: student)?.respondedAt
+    }
+
+    func confirmationRecord(for student: Student) -> SessionStudentConfirmation? {
+        confirmationList.first { $0.student?.syncID == student.syncID }
+    }
+
+    /// Writes one student's reply. Passing `registersLocalEdit` as false is for cloud applies.
+    func setStudentStatus(
+        _ student: Student,
+        to status: SessionStudentStatus,
+        respondedAt: Date?,
+        in context: ModelContext,
+        registersLocalEdit: Bool = true
+    ) {
+        let record = confirmationRecord(for: student) ?? SessionStudentConfirmation(student: student)
+        if record.modelContext == nil {
+            context.insert(record)
+            record.session = self
+            if !confirmationList.contains(where: { $0.persistentModelID == record.persistentModelID }) {
+                confirmationList = confirmationList + [record]
+            }
+        }
+        record.student = student
+        record.status = status.rawValue
+        record.respondedAt = respondedAt
+        if registersLocalEdit {
+            touchForLocalEdit()
+        }
+    }
+
+    /// Keeps replies for the selected students and drops anyone removed from the session.
+    func replaceConfirmations(
+        students: [Student],
+        statuses: [PersistentIdentifier: SessionStudentStatus],
+        respondedAt: [PersistentIdentifier: Date],
+        in context: ModelContext
+    ) {
+        var kept: [SessionStudentConfirmation] = []
+        for student in students {
+            let status = statuses[student.persistentModelID] ?? confirmationStatus(for: student)
+            let response = respondedAt[student.persistentModelID]
+            setStudentStatus(student, to: status, respondedAt: response, in: context, registersLocalEdit: false)
+            if let record = confirmationRecord(for: student) {
+                kept.append(record)
+            }
+        }
+        for stale in confirmationList where !kept.contains(where: { $0.persistentModelID == stale.persistentModelID }) {
+            context.delete(stale)
+        }
+        confirmationList = kept
+        touchForLocalEdit()
+    }
+
+    /// Copies inferred replies into stored rows before the session status changes.
+    /// Otherwise a confirmed session that becomes pending would forget those acceptances.
+    func materializeInferredConfirmations(in context: ModelContext) {
+        for student in studentList where confirmationRecord(for: student) == nil {
+            setStudentStatus(
+                student,
+                to: confirmationStatus(for: student),
+                respondedAt: nil,
+                in: context,
+                registersLocalEdit: false
+            )
+        }
+    }
+
+    /// Unscheduled sessions stay unscheduled. Every other session with students follows their replies.
+    func applyDerivedStatus(in context: ModelContext) {
+        guard !studentList.isEmpty, statusValue != .unscheduled else { return }
+        materializeInferredConfirmations(in: context)
+        let derived = SessionStatusDerivation.derived(from: studentList.map { confirmationStatus(for: $0) }).rawValue
+        guard status != derived else { return }
+        status = derived
+        touchForLocalEdit()
+    }
+
+    /// The availability message has been handed off, so an unscheduled session can start collecting replies.
+    func noteAvailabilityRequested(in context: ModelContext) {
+        guard statusValue == .unscheduled else { return }
+        materializeInferredConfirmations(in: context)
+        status = SessionStatus.pending.rawValue
+        touchForLocalEdit()
+        applyDerivedStatus(in: context)
+    }
+
+    /// Next week's copy asks again. Previous replies do not carry over.
+    func resetResponsesForUnscheduledWeek(in context: ModelContext) {
+        status = SessionStatus.unscheduled.rawValue
+        for student in studentList {
+            setStudentStatus(student, to: .pending, respondedAt: nil, in: context, registersLocalEdit: false)
+        }
+        touchForLocalEdit()
+    }
+
+    private func touchForLocalEdit() {
+        updatedAt = max(Date(), lastSyncedAt?.addingTimeInterval(0.002) ?? .distantPast)
+    }
+}
+
+/// Per-student reply stored beside the existing session/student relationship.
+/// New optional relationship, so SwiftData can add it without rewriting current rows.
+@Model
+final class SessionStudentConfirmation {
+    var status: String = SessionStudentStatus.pending.rawValue
+    var respondedAt: Date? = nil
+
+    @Relationship(deleteRule: .nullify)
+    var session: CoachingSession? = nil
+
+    @Relationship(deleteRule: .nullify)
+    var student: Student? = nil
+
+    init(
+        student: Student,
+        status: SessionStudentStatus = .pending,
+        respondedAt: Date? = nil
+    ) {
+        self.student = student
+        self.status = status.rawValue
+        self.respondedAt = respondedAt
+    }
+
+    var statusValue: SessionStudentStatus {
+        SessionStudentStatus(rawValue: status) ?? .pending
     }
 }
 

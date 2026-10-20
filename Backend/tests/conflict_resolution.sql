@@ -12,6 +12,8 @@ grant execute on function auth.uid() to authenticated;
 -- Reproduce Supabase's explicit anon default grant, independent of PUBLIC.
 alter default privileges in schema public grant execute on functions to anon;
 \ir ../migrations/2026-09-21_conflict_resolution.sql
+\ir ../migrations/2026-10-20_session_student_status.sql
+\ir ../migrations/2026-10-20_conflict_resolution_student_status.sql
 grant usage on schema public to authenticated;
 grant select,insert,update,delete on all tables in schema public to authenticated;
 
@@ -64,7 +66,8 @@ insert into court_bookings(id,workspace_id,week_start,day_of_week,start_time,end
 ('50000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000001','2026-09-21',1,'2026-09-21T09:00:00Z','2026-09-21T10:00:00Z','Apex','1');
 insert into social_sessions(id,workspace_id,week_start,day_of_week,start_time,end_time,venue) values
 ('60000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000001','2026-09-21',1,'2026-09-21T09:00:00Z','2026-09-21T10:00:00Z','Apex');
-insert into coaching_session_students(session_id,student_id) values ('40000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000001');
+insert into coaching_session_students(session_id,student_id,status,responded_at) values
+('40000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000001','Confirmed','2026-10-20 01:02:03.123456+00');
 insert into student_hidden_weeks(student_id,week_start) values ('20000000-0000-0000-0000-000000000001','2026-09-21');
 insert into social_session_students(session_id,student_id) values ('60000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000001');
 insert into social_hidden_people(id,social_session_id,outsider_id) values ('70000000-0000-0000-0000-000000000001','60000000-0000-0000-0000-000000000001','30000000-0000-0000-0000-000000000001');
@@ -90,6 +93,42 @@ begin
         result := resolve_coachplanner_conflict(workspace,tables[i],ids[i],expected,'device',replacement);
         perform test_assert(result=test_snapshot(tables[i],ids[i]) and result->'record' <> expected->'record', tables[i] || ': device choice returns committed full snapshot');
     end loop;
+    perform test_assert(
+        (select status from coaching_session_students where session_id = ids[3]) = 'Confirmed'
+        and (select responded_at from coaching_session_students where session_id = ids[3]) = '2026-10-20 01:02:03.123456+00',
+        'Device choice preserves per-student status and responded_at');
+
+    expected := test_snapshot('coaching_sessions', ids[3]);
+    replacement := jsonb_build_object('record',(expected->'record')-array['id','created_at','updated_at','deleted_at'],'relationships',expected->'relationships');
+    replacement := jsonb_set(replacement,'{relationships,coaching_session_students,0,status}','"Declined"');
+    replacement := jsonb_set(replacement,'{relationships,coaching_session_students,0,responded_at}','"2026-10-20T04:05:06.000000Z"');
+    result := resolve_coachplanner_conflict(workspace,'coaching_sessions',ids[3],expected,'device',replacement);
+    perform test_assert(
+        result = test_snapshot('coaching_sessions', ids[3])
+        and (select status from coaching_session_students where session_id = ids[3]) = 'Declined'
+        and (select responded_at from coaching_session_students where session_id = ids[3]) = '2026-10-20 04:05:06+00',
+        'Device choice can save a new per-student decline and response time');
+
+    expected := test_snapshot('coaching_sessions', ids[3]);
+    replacement := jsonb_set(replacement,'{relationships,coaching_session_students,0,status}','"Maybe"');
+    begin
+        perform resolve_coachplanner_conflict(workspace,'coaching_sessions',ids[3],expected,'device',replacement);
+        raise exception 'FAIL: invalid student status accepted';
+    exception when check_violation then null; end;
+    perform test_assert(
+        test_snapshot('coaching_sessions', ids[3]) = expected
+        and (select status from coaching_session_students where session_id = ids[3]) = 'Declined',
+        'Invalid student status rolls back the parent and the existing reply');
+
+    expected := test_snapshot('coaching_sessions', ids[3]);
+    update coaching_session_students set status = 'Pending' where session_id = ids[3];
+    before_snapshot := test_snapshot('coaching_sessions', ids[3]);
+    begin
+        perform resolve_coachplanner_conflict(workspace,'coaching_sessions',ids[3],expected,'cloud');
+        raise exception 'FAIL: stale student status accepted';
+    exception when serialization_failure then null; end;
+    perform test_assert(test_snapshot('coaching_sessions', ids[3]) = before_snapshot, 'A per-student status change rejects a stale conflict snapshot');
+    update coaching_session_students set status = 'Declined', responded_at = '2026-10-20 04:05:06+00' where session_id = ids[3];
 
     expected := test_snapshot('students',ids[1]);
     update students set name='Newer cloud change' where id=ids[1];

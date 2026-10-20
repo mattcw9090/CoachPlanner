@@ -56,6 +56,8 @@ struct SessionEditorView: View {
     @State private var sessionFeeText: String
     @State private var sessionDescription: String
     @State private var selectedStudentIDs: Set<PersistentIdentifier>
+    @State private var studentStatuses: [PersistentIdentifier: SessionStudentStatus]
+    @State private var respondedAtByStudentID: [PersistentIdentifier: Date]
     @State private var studentSearch: String = ""
     @State private var hasUserAdjustedStart: Bool = false
     @State private var hasUserAdjustedEnd: Bool = false
@@ -75,7 +77,7 @@ struct SessionEditorView: View {
         _startTime = State(initialValue: editor.session?.startTime ?? editor.preselectedStartTime ?? defaultStart)
         _endTime = State(initialValue: editor.session?.endTime ?? editor.preselectedEndTime ?? defaultEnd)
         _venue = State(initialValue: editor.session?.venueValue ?? editor.preselectedVenue ?? .pbaMalaga)
-        _status = State(initialValue: editor.session?.statusValue ?? .unscheduled)
+        _status = State(initialValue: editor.session?.displayStatus ?? .unscheduled)
         let existingCourtNumber = editor.session?.courtNumber ?? editor.preselectedCourtNumber ?? ""
         _isCourtBooked = State(
             initialValue: !existingCourtNumber.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -86,6 +88,17 @@ struct SessionEditorView: View {
         _selectedStudentIDs = State(
             initialValue: Set(editor.session?.studentList.map(\.persistentModelID) ?? [])
         )
+        if let session = editor.session {
+            _studentStatuses = State(initialValue: Dictionary(uniqueKeysWithValues: session.studentList.map {
+                ($0.persistentModelID, session.confirmationStatus(for: $0))
+            }))
+            _respondedAtByStudentID = State(initialValue: Dictionary(uniqueKeysWithValues: session.studentList.compactMap { student in
+                session.respondedAt(for: student).map { (student.persistentModelID, $0) }
+            }))
+        } else {
+            _studentStatuses = State(initialValue: [:])
+            _respondedAtByStudentID = State(initialValue: [:])
+        }
         _hasUserAdjustedStart = State(initialValue: editor.preselectedStartTime != nil)
         _hasUserAdjustedEnd = State(initialValue: editor.preselectedEndTime != nil)
     }
@@ -201,6 +214,10 @@ struct SessionEditorView: View {
         students.filter { selectedStudentIDs.contains($0.persistentModelID) }
     }
 
+    private var locksSessionStatus: Bool {
+        selectedStudentsList.count > 1
+    }
+
     private var filteredStudentMatches: [Student] {
         let trimmed = studentSearch.trimmingCharacters(in: .whitespacesAndNewlines)
         let unselected = students.filter { !selectedStudentIDs.contains($0.persistentModelID) }
@@ -269,16 +286,41 @@ struct SessionEditorView: View {
                 }
 
                 if !selectedStudentsList.isEmpty {
-                    Section("Selected (\(selectedStudentsList.count))") {
-                        StudentChipFlow(spacing: 6) {
-                            ForEach(selectedStudentsList) { student in
-                                StudentChip(
-                                    name: student.name,
-                                    color: iconColor(for: student)
-                                ) {
-                                    selectedStudentIDs.remove(student.persistentModelID)
+                    Section {
+                        ForEach(selectedStudentsList) { student in
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(student.name)
+                                    if let respondedAt = respondedAtByStudentID[student.persistentModelID] {
+                                        Text("Responded \(respondedAt.formatted(date: .abbreviated, time: .shortened))")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
+                                Spacer(minLength: 8)
+                                Picker("Status", selection: studentStatusBinding(for: student)) {
+                                    ForEach(SessionStudentStatus.allCases) { option in
+                                        Label(option.rawValue, systemImage: option.iconName)
+                                            .tag(option)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                Button {
+                                    selectedStudentIDs.remove(student.persistentModelID)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("Remove \(student.name)")
                             }
+                        }
+                    } header: {
+                        Text("Selected (\(selectedStudentsList.count))")
+                    } footer: {
+                        if selectedStudentsList.count > 1 {
+                            Text("Each student accepts or declines separately. The session is confirmed only when every student has accepted.")
                         }
                     }
                 }
@@ -331,7 +373,13 @@ struct SessionEditorView: View {
                         }
                     }
 
-                    Picker("Status", selection: $status) {
+                    Picker("Status", selection: Binding(
+                        get: { status },
+                        set: { newValue in
+                            status = newValue
+                            applySessionStatusToSingleStudent(newValue)
+                        }
+                    )) {
                         ForEach(SessionStatus.allCases) { option in
                             HStack {
                                 Image(systemName: option.iconName)
@@ -341,8 +389,15 @@ struct SessionEditorView: View {
                             .tag(option)
                         }
                     }
+                    .disabled(locksSessionStatus)
                 } header: {
                     Text("Session Details")
+                } footer: {
+                    if locksSessionStatus && status == .unscheduled {
+                        Text("This stays unscheduled until the availability message is sent.")
+                    } else if locksSessionStatus {
+                        Text("Session status follows the students. It is confirmed only when every student has accepted.")
+                    }
                 }
 
                 Section {
@@ -454,6 +509,16 @@ struct SessionEditorView: View {
             .onChange(of: dayOfWeek) { _, _ in
                 applyAutoFillIfNeeded()
             }
+            .onChange(of: selectedStudentIDs) { _, ids in
+                for id in ids where studentStatuses[id] == nil {
+                    studentStatuses[id] = .pending
+                }
+                for id in Array(studentStatuses.keys) where !ids.contains(id) {
+                    studentStatuses[id] = nil
+                    respondedAtByStudentID[id] = nil
+                }
+                refreshSessionStatusFromStudents()
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
@@ -542,6 +607,7 @@ struct SessionEditorView: View {
     private func contact(_ student: Student) {
         let message = availabilityMessage(for: student)
         let preference = student.contactPreferenceValue
+        var handedOff = false
 
         if preference.requiresClipboardMessage {
             UIPasteboard.general.string = message
@@ -549,17 +615,72 @@ struct SessionEditorView: View {
                 title: "Message Copied",
                 message: "Paste the copied availability message into \(preference.rawValue)."
             )
+            handedOff = true
         }
 
         guard let url = contactURL(for: student, message: message) else {
-            contactNotice = ContactNotice(
-                title: "Contact Unavailable",
-                message: "The contact detail for \(student.name) does not look usable."
-            )
+            if !handedOff {
+                contactNotice = ContactNotice(
+                    title: "Contact Unavailable",
+                    message: "The contact detail for \(student.name) does not look usable."
+                )
+            } else {
+                markAvailabilityRequested(for: student)
+            }
             return
         }
 
         openURL(url)
+        markAvailabilityRequested(for: student)
+    }
+
+    private func studentStatusBinding(for student: Student) -> Binding<SessionStudentStatus> {
+        Binding(
+            get: { studentStatuses[student.persistentModelID] ?? .pending },
+            set: { updateStudentStatus(student, to: $0) }
+        )
+    }
+
+    private func updateStudentStatus(_ student: Student, to newStatus: SessionStudentStatus) {
+        let id = student.persistentModelID
+        guard studentStatuses[id] != newStatus else { return }
+        studentStatuses[id] = newStatus
+        if newStatus == .pending {
+            respondedAtByStudentID[id] = nil
+        } else {
+            respondedAtByStudentID[id] = .now
+        }
+        refreshSessionStatusFromStudents()
+    }
+
+    private func refreshSessionStatusFromStudents() {
+        let replies = selectedStudentsList.map { studentStatuses[$0.persistentModelID] ?? .pending }
+        guard !replies.isEmpty, status != .unscheduled else { return }
+        let derived = SessionStatusDerivation.derived(from: replies)
+        if status != derived { status = derived }
+    }
+
+    private func applySessionStatusToSingleStudent(_ newValue: SessionStatus) {
+        guard selectedStudentsList.count == 1,
+              let student = selectedStudentsList.first,
+              let reply = SessionStudentStatus(rawValue: newValue.rawValue) else { return }
+        updateStudentStatus(student, to: reply)
+    }
+
+    private func markAvailabilityRequested(for student: Student) {
+        if selectedStudentIDs.contains(student.persistentModelID), status == .unscheduled {
+            status = .pending
+            refreshSessionStatusFromStudents()
+        }
+        let editingID = editor.session?.persistentModelID
+        for session in existingSessions {
+            guard session.persistentModelID != editingID,
+                  belongsToEditorWeek(session.weekStart),
+                  session.studentList.contains(where: { $0.persistentModelID == student.persistentModelID }) else {
+                continue
+            }
+            session.noteAvailabilityRequested(in: modelContext)
+        }
     }
 
     private func availabilityMessage(for student: Student) -> String {
@@ -697,6 +818,13 @@ struct SessionEditorView: View {
             session.sessionFee = sessionFeeValue
             session.sessionDescription = normalizedSessionDescription
             session.studentList = selectedStudents
+            session.replaceConfirmations(
+                students: selectedStudents,
+                statuses: studentStatuses,
+                respondedAt: respondedAtByStudentID,
+                in: modelContext
+            )
+            session.status = status.rawValue
         } else {
             let session = CoachingSession(
                 weekStart: messageWeekStart,
@@ -711,6 +839,13 @@ struct SessionEditorView: View {
                 students: selectedStudents
             )
             modelContext.insert(session)
+            session.replaceConfirmations(
+                students: selectedStudents,
+                statuses: studentStatuses,
+                respondedAt: respondedAtByStudentID,
+                in: modelContext
+            )
+            session.status = status.rawValue
             consumeCourtBookingIfNeeded()
         }
 
@@ -945,75 +1080,5 @@ struct HalfHourTimePicker: View {
         let calendar = Calendar.current
         let date = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: .now) ?? .now
         return date.formatted(.dateTime.hour().minute())
-    }
-}
-
-private struct StudentChip: View {
-    let name: String
-    let color: Color
-    let onRemove: () -> Void
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-            Text(name)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.borderless)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            Capsule().fill(color.opacity(0.15))
-        )
-    }
-}
-
-private struct StudentChipFlow: Layout {
-    var spacing: CGFloat = 6
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        var totalHeight: CGFloat = 0
-        var currentRowWidth: CGFloat = 0
-        var currentRowHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if currentRowWidth + size.width > maxWidth && currentRowWidth > 0 {
-                totalHeight += currentRowHeight + spacing
-                currentRowWidth = size.width + spacing
-                currentRowHeight = size.height
-            } else {
-                currentRowWidth += size.width + spacing
-                currentRowHeight = max(currentRowHeight, size.height)
-            }
-        }
-        totalHeight += currentRowHeight
-        return CGSize(width: maxWidth.isFinite ? maxWidth : currentRowWidth, height: totalHeight)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x: CGFloat = bounds.minX
-        var y: CGFloat = bounds.minY
-        var currentRowHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x + size.width > bounds.maxX && x > bounds.minX {
-                x = bounds.minX
-                y += currentRowHeight + spacing
-                currentRowHeight = 0
-            }
-            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            currentRowHeight = max(currentRowHeight, size.height)
-        }
     }
 }

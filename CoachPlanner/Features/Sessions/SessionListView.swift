@@ -116,7 +116,7 @@ struct SessionListView: View {
 
         for session in sessions where belongs(session.weekStart, to: targetWeekStart) {
             sessionsByDay[session.weekday, default: []].append(session)
-            if session.statusValue == .confirmed {
+            if session.displayStatus == .confirmed {
                 confirmedSessionCount += 1
             }
             totalSessionFees += session.sessionFee
@@ -1138,11 +1138,30 @@ struct SessionListView: View {
     }
 
     private func advanceStatus(of session: CoachingSession) {
-        guard belongsToVisibleWeek(session.weekStart),
+        guard belongsToVisibleWeek(session.weekStart) else { return }
+        if session.statusValue == .unscheduled {
+            withAnimation(.snappy(duration: 0.2)) {
+                session.noteAvailabilityRequested(in: modelContext)
+            }
+            UISelectionFeedbackGenerator().selectionChanged()
+            return
+        }
+        guard session.studentList.count <= 1,
               let nextStatus = session.statusValue.nextStatus else { return }
 
         withAnimation(.snappy(duration: 0.2)) {
-            session.status = nextStatus.rawValue
+            if let student = session.studentList.first,
+               let reply = SessionStudentStatus(rawValue: nextStatus.rawValue) {
+                session.setStudentStatus(
+                    student,
+                    to: reply,
+                    respondedAt: reply == .pending ? nil : .now,
+                    in: modelContext
+                )
+                session.applyDerivedStatus(in: modelContext)
+            } else if session.studentList.isEmpty {
+                session.status = nextStatus.rawValue
+            }
         }
         UISelectionFeedbackGenerator().selectionChanged()
     }
@@ -1718,8 +1737,8 @@ struct SessionListView: View {
         let nextWeek = Self.monday(of: Calendar.current.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart)
         for session in sessionsForWeek {
             session.weekStart = nextWeek
-            session.status = SessionStatus.unscheduled.rawValue
             session.courtNumber = ""
+            session.resetResponsesForUnscheduledWeek(in: modelContext)
         }
         setWeekStart(nextWeek)
     }
@@ -1801,7 +1820,7 @@ struct SessionListView: View {
                 String(minutesOfDay(session.endTime)),
                 String(Int(session.createdAt.timeIntervalSince1970 * 1000))
             ].joined(separator: "-"))
-            let status = session.statusValue
+            let status = session.displayStatus
 
             let studentList = session.studentList
                 .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -1920,7 +1939,11 @@ struct SessionListView: View {
     }
 
     private func icsStatus(for status: SessionStatus) -> String {
-        status == .confirmed ? "CONFIRMED" : "TENTATIVE"
+        switch status {
+        case .confirmed: return "CONFIRMED"
+        case .declined: return "CANCELLED"
+        case .pending, .unscheduled: return "TENTATIVE"
+        }
     }
 
     private func eventDates(
@@ -2623,7 +2646,13 @@ private struct SessionBlock: View {
     var isBulkSelectionSelected = false
 
     private var color: Color {
-        session.statusValue.color
+        session.displayStatus.color
+    }
+
+    private var confirmationBadge: String? {
+        let count = session.studentList.count
+        guard count > 1 else { return nil }
+        return "\(session.confirmedStudentCount) of \(count) confirmed"
     }
 
     private var studentNames: String {
@@ -2696,6 +2725,14 @@ private struct SessionBlock: View {
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .minimumScaleFactor(0.75)
+
+            if let confirmationBadge {
+                Text(confirmationBadge)
+                    .font(AppStyle.timeGridFont(size: 8, weight: .bold))
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
 
             Text(session.venue)
                 .font(AppStyle.timeGridFont(size: 9, weight: .medium))
@@ -3055,5 +3092,5 @@ private struct CourtBookingEditorView: View {
 
 #Preview {
     SessionListView()
-        .modelContainer(for: [Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self], inMemory: true)
+        .modelContainer(for: [Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self], inMemory: true)
 }

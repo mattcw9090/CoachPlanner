@@ -163,6 +163,7 @@ final class SupabaseAutoSync: ObservableObject {
                 if let week = model as? StudentHiddenWeek { Self.markEdited(week.student, at: now) }
                 if let attendance = model as? SocialAttendance { Self.markEdited(attendance.session, at: now) }
                 if let hidden = model as? SocialHiddenPerson { Self.markEdited(hidden.session, at: now) }
+                if let confirmation = model as? SessionStudentConfirmation { Self.markEdited(confirmation.session, at: now) }
             }
         }
     }
@@ -368,6 +369,13 @@ final class SupabaseAutoSync: ObservableObject {
                 if let session = attendance.session { scope.socialSessions.insert(session.syncID) }
             case let hidden as SocialHiddenPerson:
                 if let session = hidden.session { scope.socialSessions.insert(session.syncID) }
+            case let confirmation as SessionStudentConfirmation:
+                if let session = confirmation.session {
+                    scope.coachingSessions.insert(session.syncID)
+                    for student in session.studentList where student.lastSyncedAt == nil {
+                        scope.students.insert(student.syncID)
+                    }
+                }
             default: break
             }
         }
@@ -383,6 +391,9 @@ final class SupabaseAutoSync: ObservableObject {
                 parents.append(contentsOf: student.legacyHiddenSocialSessions ?? [])
                 parents.append(contentsOf: (student.socialHiddenRecords ?? []).compactMap(\.session))
                 parents.append(contentsOf: (student.socialAttendances ?? []).compactMap(\.session))
+                parents.append(contentsOf: (student.sessionConfirmations ?? []).compactMap(\.session))
+            } else if let confirmation = model as? SessionStudentConfirmation {
+                if let session = confirmation.session { parents.append(session) }
             } else if let outsider = model as? Outsider {
                 parents.append(contentsOf: outsider.legacyHiddenSocialSessions ?? [])
                 parents.append(contentsOf: (outsider.socialHiddenRecords ?? []).compactMap(\.session))

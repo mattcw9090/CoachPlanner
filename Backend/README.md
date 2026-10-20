@@ -17,6 +17,8 @@ This directory defines the first cloud-backed storage contract. It is provider-n
 - `migrations/2026-09-21_realtime.sql` — idempotently publishes the five parent tables for authenticated live notifications.
 - `migrations/2026-09-21_conflict_resolution.sql` — atomic, explicitly reviewed conflict choices; apply after the schema and owner-scoped policies. Required before the app can apply a conflict choice.
 - `migrations/2026-09-24_atomic_social_sync.sql` — coherent social snapshots and atomic normal social create/update/delete; apply after the conflict-resolution migration.
+- `migrations/2026-10-20_session_student_status.sql` — per-student coaching reply and response time. Idempotent. Confirmed sessions' students are backfilled as confirmed.
+- `migrations/2026-10-20_conflict_resolution_student_status.sql` — replaces the conflict function so a device choice keeps those replies. Apply after the column migration and the original conflict function, and only once every device that resolves conflicts sends `status` and `responded_at`.
 - `openapi.yaml` — the minimum API contract for storage migration and synchronization.
 - `export_swiftdata_store.py` — read-only exporter for the existing Mac SwiftData store.
 - `import_bundle.py` — authenticated, idempotent uploader for an exported bundle.
@@ -79,6 +81,8 @@ The app uses this contract for automatic saved-edit uploads, live updates, and f
 Deploy `migrations/2026-09-21_conflict_resolution.sql` with the project's database owner after `schema.sql` and `supabase_policies.sql`. It is a separate migration, not automatically installed by `schema.sql`. The `resolve_coachplanner_conflict` RPC runs with the caller's ordinary authenticated RLS permissions; it is not a service-role bypass.
 
 The app submits the exact reviewed parent and complete child snapshot. The RPC locks and compares them before applying one explicit device or cloud choice. Device replacement updates the parent and its relationships in one transaction; an error rolls everything back. Cloud choice only validates and returns the current snapshot. A stale snapshot returns `CP_CONFLICT_STALE`; the user must review again. Person deletion additionally requires reviewing incoming session and attendance relationships, because removing the person also removes those links. Never replace this RPC with sequential REST writes when the migration is unavailable.
+
+Coaching membership rows now include `status` and `responded_at`. Apply `migrations/2026-10-20_conflict_resolution_student_status.sql` before choosing a device version for a coaching session on the build that edits those replies. Until that function is installed, a device choice rewrites each student as Pending.
 
 Run the isolated SQL checks without touching a live project:
 

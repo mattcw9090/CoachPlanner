@@ -139,6 +139,14 @@ private final class SyncMockServer: @unchecked Sendable {
                     result = (body as? [[String: Any]]) ?? [body as! [String: Any]]
                     for index in result.indices {
                         result[index]["updated_at"] = timestamp()
+                        if table == "coaching_session_students" {
+                            if result[index]["status"] == nil || result[index]["status"] is NSNull {
+                                result[index]["status"] = "Pending"
+                            }
+                            if result[index]["responded_at"] == nil {
+                                result[index]["responded_at"] = NSNull()
+                            }
+                        }
                         touchParent(table, row: result[index])
                     }
                     rows.append(contentsOf: result)
@@ -172,7 +180,7 @@ private final class SyncMockServer: @unchecked Sendable {
     private func relationshipTables(for table: String) -> [(String, String, String)] {
         switch table {
         case "students": return [("student_hidden_weeks", "student_id", "student_id,week_start,created_at")]
-        case "coaching_sessions": return [("coaching_session_students", "session_id", "session_id,student_id")]
+        case "coaching_sessions": return [("coaching_session_students", "session_id", "session_id,student_id,status,responded_at")]
         case "social_sessions": return [
             ("social_session_students", "session_id", "session_id,student_id"),
             ("social_hidden_people", "social_session_id", "id,social_session_id,student_id,outsider_id,created_at"),
@@ -202,7 +210,7 @@ private final class SyncMockServer: @unchecked Sendable {
         if table == "students" || table == "outsiders" {
             let column = table == "students" ? "student_id" : "outsider_id"
             let candidates = [
-                ("coaching_session_students", "session_id,student_id"),
+                ("coaching_session_students", "session_id,student_id,status,responded_at"),
                 ("social_session_students", "session_id,student_id"),
                 ("social_hidden_people", "id,social_session_id,student_id,outsider_id,created_at"),
                 ("social_attendance", "id,social_session_id,student_id,outsider_id,status,payment_status,created_at,updated_at")
@@ -372,7 +380,7 @@ private extension SupabaseCloud {
         }
         func makeContext() throws -> ModelContext {
             let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
-                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
             let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
             let context = ModelContext(try ModelContainer(for: schema, configurations: [config]))
             context.autosaveEnabled = false
@@ -549,6 +557,7 @@ private extension SupabaseCloud {
         try await runConflictResolutionTests(session: session)
         try await runPersonRestorationTests(session: session)
         try await runAtomicSocialTests(session: session)
+        try await runStudentStatusTests(session: session)
         print("All Supabase sync regression checks passed. No live cloud or app data used.")
     }
 
@@ -559,7 +568,7 @@ private extension SupabaseCloud {
         }
         func makeContext() throws -> ModelContext {
             let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
-                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
             let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
             let context = ModelContext(try ModelContainer(for: schema, configurations: [configuration]))
             context.autosaveEnabled = false
@@ -948,7 +957,7 @@ private extension SupabaseCloud {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
-                             CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+                             CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let context = ModelContext(try ModelContainer(for: schema, configurations: [configuration]))
         context.autosaveEnabled = false
@@ -1140,7 +1149,7 @@ private extension SupabaseCloud {
             let defaults = UserDefaults(suiteName: suite)!
             defer { defaults.removePersistentDomain(forName: suite) }
             let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
-                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
             let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
             let context = ModelContext(try ModelContainer(for: schema, configurations: [configuration]))
             context.autosaveEnabled = false
@@ -1383,7 +1392,7 @@ private extension SupabaseCloud {
             let defaults = UserDefaults(suiteName: suite)!
             defer { defaults.removePersistentDomain(forName: suite) }
             let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
-                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
             let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
             let context = ModelContext(try ModelContainer(for: schema, configurations: [configuration]))
             context.autosaveEnabled = false
@@ -1493,7 +1502,7 @@ private extension SupabaseCloud {
         defer { prefsA.removePersistentDomain(forName: suite + ".a"); prefsB.removePersistentDomain(forName: suite + ".b") }
         func makeContext() throws -> ModelContext {
             let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
-                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
             let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
             let context = ModelContext(try ModelContainer(for: schema, configurations: [configuration]))
             context.autosaveEnabled = false
@@ -1652,5 +1661,157 @@ private extension SupabaseCloud {
         check(cloudA.lastError == nil && server.rows("social_sessions").first { $0["id"] as? String == addedID.uuidString }?["deleted_at"] is String &&
               !server.rows("social_attendance").contains { $0["social_session_id"] as? String == addedID.uuidString },
               "a confirmed social deletion commits its tombstone and child cleanup together")
+    }
+
+    static func runStudentStatusTests(session: URLSession) async throws {
+        func check(_ condition: @autoclosure () -> Bool, _ message: String) {
+            precondition(condition(), message)
+            print("PASS: \(message)")
+        }
+        check(SessionStatusDerivation.derived(from: [.confirmed, .pending]) == .pending, "a pending student keeps the session pending")
+        check(SessionStatusDerivation.derived(from: [.confirmed, .confirmed]) == .confirmed, "every acceptance confirms the session")
+        check(SessionStatusDerivation.derived(from: [.confirmed, .declined]) == .declined, "any decline declines the session")
+        check(SessionStatus(rawValue: "Declined") == .declined, "declined session status decodes")
+        check(SessionStatus(rawValue: "Not a status") == nil, "unknown session status does not become a known case")
+
+        func makeContext() throws -> ModelContext {
+            let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
+                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
+            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+            let context = ModelContext(try ModelContainer(for: schema, configurations: [configuration]))
+            context.autosaveEnabled = false
+            return context
+        }
+        let derivationContext = try makeContext()
+        let week = dateOnlyFormatter.date(from: "2026-10-19")!
+        let start = week.addingTimeInterval(9 * 3600), end = start.addingTimeInterval(3600)
+        let legacyStudent = Student(name: "Legacy", gender: "", contactPreference: .sms, contactDetail: "")
+        let legacy = CoachingSession(weekStart: week, dayOfWeek: .monday, startTime: start, endTime: end,
+                                     venue: .apex, status: .confirmed, students: [legacyStudent])
+        derivationContext.insert(legacyStudent)
+        derivationContext.insert(legacy)
+        check(legacy.studentList.count == 1 && legacy.confirmationList.isEmpty && legacy.confirmationStatus(for: legacyStudent) == .confirmed,
+              "existing confirmed memberships stay put and infer a confirmed reply before a stored row exists")
+        legacy.materializeInferredConfirmations(in: derivationContext)
+        legacy.status = SessionStatus.unscheduled.rawValue
+        check(legacy.displayStatus == .unscheduled && legacy.confirmationStatus(for: legacyStudent) == .confirmed,
+              "an unscheduled session stays unscheduled before the availability message")
+        legacy.noteAvailabilityRequested(in: derivationContext)
+        check(legacy.displayStatus == .confirmed, "leaving unscheduled derives confirmed when the stored reply is an acceptance")
+        let second = Student(name: "Second", gender: "", contactPreference: .sms, contactDetail: "")
+        derivationContext.insert(second)
+        legacy.studentList.append(second)
+        legacy.setStudentStatus(second, to: .pending, respondedAt: nil, in: derivationContext)
+        legacy.applyDerivedStatus(in: derivationContext)
+        check(legacy.displayStatus == .pending && legacy.confirmedStudentCount == 1,
+              "adding a student who has not accepted returns the session to pending")
+        legacy.setStudentStatus(second, to: .declined, respondedAt: Date(timeIntervalSince1970: 1_700_000_000), in: derivationContext)
+        legacy.applyDerivedStatus(in: derivationContext)
+        check(legacy.displayStatus == .declined, "a stored decline overrides the other student's acceptance")
+
+        let suite = "CoachPlanner.StudentStatusTests.\(UUID().uuidString)"
+        let receivingSuite = "CoachPlanner.StudentStatusReceiver.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let receivingDefaults = UserDefaults(suiteName: receivingSuite)!
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            receivingDefaults.removePersistentDomain(forName: receivingSuite)
+        }
+        let server = SyncMockProtocol.server
+        server.lock.withLock {
+            server.tables = ["workspaces": [["id": SupabaseConfiguration.workspaceID.uuidString]]]
+            server.pageLimit = 500
+            server.failLaterPage = false
+            server.rejectNextPatch = false
+            server.failTable = nil
+            server.afterResponse = nil
+        }
+        let cloud = SupabaseCloud(urlSession: session, defaults: defaults, restoreSession: false)
+        cloud.accessToken = "e30.eyJleHAiOjQxMDI0NDQ4MDB9.fixture"
+        let context = try makeContext()
+        let alice = Student(name: "Alice", gender: "", contactPreference: .sms, contactDetail: "")
+        let bob = Student(name: "Bob", gender: "", contactPreference: .sms, contactDetail: "")
+        let coaching = CoachingSession(weekStart: week, dayOfWeek: .tuesday, startTime: start, endTime: end,
+                                       venue: .apex, status: .pending, sessionFee: 40, students: [alice, bob])
+        let respondedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        context.insert(alice)
+        context.insert(bob)
+        context.insert(coaching)
+        coaching.setStudentStatus(alice, to: .confirmed, respondedAt: respondedAt, in: context, registersLocalEdit: false)
+        coaching.setStudentStatus(bob, to: .pending, respondedAt: nil, in: context, registersLocalEdit: false)
+        try context.save()
+        await cloud.syncStudentsAndOutsiders(in: context)
+        await cloud.syncCoachingSessions(in: context)
+        check(cloud.lastError == nil, "sessions with per-student replies upload")
+        let uploaded = server.rows("coaching_session_students")
+        let aliceRow = uploaded.first { $0["student_id"] as? String == alice.syncID.uuidString }
+        let bobRow = uploaded.first { $0["student_id"] as? String == bob.syncID.uuidString }
+        check(aliceRow?["status"] as? String == "Confirmed" && aliceRow?["responded_at"] is String &&
+              bobRow?["status"] as? String == "Pending",
+              "upload stores each student's status and response time")
+
+        server.clearRequests()
+        coaching.sessionFee = 45
+        coaching.updatedAt = coaching.lastSyncedAt!.addingTimeInterval(10)
+        try context.save()
+        await cloud.syncCoachingSessions(in: context)
+        check(cloud.lastError == nil && server.writes.count == 1 && server.writes[0].method == "PATCH",
+              "a fee edit does not delete and recreate student replies")
+        let preservedAlice = server.rows("coaching_session_students").first { $0["student_id"] as? String == alice.syncID.uuidString }
+        check(preservedAlice?["status"] as? String == "Confirmed" && preservedAlice?["responded_at"] as? String == aliceRow?["responded_at"] as? String,
+              "a fee edit preserves confirmed status and responded_at")
+
+        coaching.setStudentStatus(bob, to: .declined, respondedAt: respondedAt.addingTimeInterval(3600), in: context)
+        coaching.applyDerivedStatus(in: context)
+        coaching.updatedAt = coaching.lastSyncedAt!.addingTimeInterval(10)
+        try context.save()
+        await cloud.syncCoachingSessions(in: context)
+        let declinedBob = server.rows("coaching_session_students").first { $0["student_id"] as? String == bob.syncID.uuidString }
+        let sessionRow = server.rows("coaching_sessions").first { $0["id"] as? String == coaching.syncID.uuidString }
+        check(cloud.lastError == nil && declinedBob?["status"] as? String == "Declined" &&
+              preservedAlice?["status"] as? String == server.rows("coaching_session_students").first { $0["student_id"] as? String == alice.syncID.uuidString }?["status"] as? String &&
+              sessionRow?["status"] as? String == "Declined",
+              "changing one reply uploads that reply and the derived session status without resetting the other student")
+
+        let receiver = SupabaseCloud(urlSession: session, defaults: receivingDefaults, restoreSession: false)
+        receiver.accessToken = cloud.accessToken
+        let receivingContext = try makeContext()
+        await receiver.syncStudentsAndOutsiders(in: receivingContext)
+        await receiver.syncCoachingSessions(in: receivingContext)
+        let received = try receivingContext.fetch(FetchDescriptor<CoachingSession>()).first { $0.syncID == coaching.syncID }
+        let receivedAlice = received?.studentList.first { $0.syncID == alice.syncID }
+        let receivedBob = received?.studentList.first { $0.syncID == bob.syncID }
+        let aliceReply = receivedAlice.flatMap { student in received.map { $0.confirmationStatus(for: student) } }
+        let bobReply = receivedBob.flatMap { student in received.map { $0.confirmationStatus(for: student) } }
+        let aliceResponded = receivedAlice.flatMap { student in received?.respondedAt(for: student) }
+        check(receiver.lastError == nil && received?.status == "Declined" &&
+              aliceReply == .confirmed && bobReply == .declined && aliceResponded != nil,
+              "another device restores each student's status and response time")
+
+        coaching.setStudentStatus(alice, to: .declined, respondedAt: respondedAt.addingTimeInterval(7200), in: context)
+        coaching.applyDerivedStatus(in: context)
+        coaching.updatedAt = coaching.lastSyncedAt!.addingTimeInterval(10)
+        try context.save()
+        server.lock.withLock {
+            if let index = server.tables["coaching_session_students"]?.firstIndex(where: { $0["student_id"] as? String == bob.syncID.uuidString }) {
+                server.tables["coaching_session_students"]![index]["status"] = "Confirmed"
+                server.tables["coaching_session_students"]![index]["responded_at"] = "2026-10-20T03:04:05.000Z"
+            }
+            if let index = server.tables["coaching_sessions"]?.firstIndex(where: { $0["id"] as? String == coaching.syncID.uuidString }) {
+                server.tables["coaching_sessions"]![index]["status"] = "Pending"
+                server.tables["coaching_sessions"]![index]["updated_at"] = server.timestamp()
+            }
+        }
+        await cloud.syncCoachingSessions(in: context)
+        let conflict = cloud.conflicts.first { $0.recordID == coaching.syncID }
+        check(cloud.lastSyncResult?.conflicts == 1 && conflict?.differences.contains { $0.label.contains("Alice") && $0.localValue == "Declined" && $0.cloudValue == "Confirmed" } == true &&
+              conflict?.differences.contains { $0.label.contains("Bob") && $0.localValue == "Declined" && $0.cloudValue == "Confirmed" } == true,
+              "conflict review shows each student's local and cloud response")
+        _ = try await cloud.resolveConflict(conflict!, choice: .device, in: context)
+        let resolvedAlice = server.rows("coaching_session_students").first { $0["student_id"] as? String == alice.syncID.uuidString }
+        let resolvedBob = server.rows("coaching_session_students").first { $0["student_id"] as? String == bob.syncID.uuidString }
+        check(resolvedAlice?["status"] as? String == "Declined" && resolvedBob?["status"] as? String == "Declined" &&
+              resolvedAlice?["responded_at"] is String && resolvedBob?["responded_at"] is String,
+              "choosing this device keeps both students' replies instead of resetting them")
     }
 }

@@ -62,7 +62,7 @@ private extension SupabaseAutoSync {
             SyncMockProtocol.server.tables["workspaces"] = [["id": SupabaseConfiguration.workspaceID.uuidString]]
         }
         let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
-                             CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self])
+                             CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
         let modelConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
         let container = try ModelContainer(for: schema, configurations: [modelConfig])
         let context = ModelContext(container)
