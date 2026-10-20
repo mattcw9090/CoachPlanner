@@ -2,6 +2,7 @@
 set timezone = 'UTC';
 create role authenticated;
 create role anon;
+create role service_role;
 create schema auth;
 create function auth.uid() returns uuid language sql stable as
 $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
@@ -9,6 +10,7 @@ grant usage on schema auth to authenticated;
 grant execute on function auth.uid() to authenticated;
 \ir ../schema.sql
 \ir ../supabase_policies.sql
+\ir ../migrations/2026-10-21_public_table_grants.sql
 -- Reproduce Supabase's explicit anon default grant, independent of PUBLIC.
 alter default privileges in schema public grant execute on functions to anon;
 \ir ../migrations/2026-09-21_conflict_resolution.sql
@@ -239,3 +241,23 @@ reset role;
 select test_assert(not prosecdef,'RPC has no SECURITY DEFINER privilege bypass') from pg_proc where oid='public.resolve_coachplanner_conflict(uuid,text,uuid,jsonb,text,jsonb)'::regprocedure;
 select test_assert(not has_function_privilege('public','public.resolve_coachplanner_conflict(uuid,text,uuid,jsonb,text,jsonb)','EXECUTE'),'Anonymous PUBLIC role cannot execute resolution RPC');
 select test_assert(not has_function_privilege('anon','public.resolve_coachplanner_conflict(uuid,text,uuid,jsonb,text,jsonb)','EXECUTE'),'Explicit anon default grant is revoked from resolution RPC');
+do $$
+declare rel text;
+begin
+    foreach rel in array array['workspaces','students','outsiders','coaching_sessions','coaching_session_students','court_bookings','social_sessions','social_session_students','student_hidden_weeks','social_hidden_people','social_attendance'] loop
+        perform test_assert(
+            not has_table_privilege('anon','public.'||rel,'SELECT')
+            and not has_table_privilege('anon','public.'||rel,'INSERT')
+            and not has_table_privilege('anon','public.'||rel,'UPDATE')
+            and not has_table_privilege('anon','public.'||rel,'DELETE')
+            and has_table_privilege('authenticated','public.'||rel,'SELECT')
+            and has_table_privilege('authenticated','public.'||rel,'INSERT')
+            and has_table_privilege('authenticated','public.'||rel,'UPDATE')
+            and has_table_privilege('authenticated','public.'||rel,'DELETE')
+            and has_table_privilege('service_role','public.'||rel,'SELECT')
+            and has_table_privilege('service_role','public.'||rel,'INSERT')
+            and has_table_privilege('service_role','public.'||rel,'UPDATE')
+            and has_table_privilege('service_role','public.'||rel,'DELETE'),
+            'Data API grants exclude anon: '||rel);
+    end loop;
+end $$;

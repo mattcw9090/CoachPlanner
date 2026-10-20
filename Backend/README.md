@@ -19,6 +19,7 @@ This directory defines the first cloud-backed storage contract. It is provider-n
 - `migrations/2026-09-24_atomic_social_sync.sql` — coherent social snapshots and atomic normal social create/update/delete; apply after the conflict-resolution migration.
 - `migrations/2026-10-20_session_student_status.sql` — per-student coaching reply and response time. Idempotent. Confirmed sessions' students are backfilled as confirmed. The check constraint still allows Declined; current builds read that legacy value as Pending and do not write it, so no follow-up migration is required.
 - `migrations/2026-10-20_conflict_resolution_student_status.sql` — replaces the conflict function so a device choice keeps those replies. Apply after the column migration and the original conflict function, and only once every device that resolves conflicts sends `status` and `responded_at`.
+- `migrations/2026-10-21_public_table_grants.sql` — explicit Data API grants for every public table. Idempotent and does not change rows. `authenticated` and `service_role` receive select, insert, update, and delete. `anon` receives nothing because clients query with a signed-in user JWT. `schema.sql` applies the same grants when the tables are created.
 - `openapi.yaml` — the minimum API contract for storage migration and synchronization.
 - `export_swiftdata_store.py` — read-only exporter for the existing Mac SwiftData store.
 - `import_bundle.py` — authenticated, idempotent uploader for an exported bundle.

@@ -265,3 +265,35 @@ alter table social_session_students enable row level security;
 alter table student_hidden_weeks enable row level security;
 alter table social_hidden_people enable row level security;
 alter table social_attendance enable row level security;
+
+-- Data API privileges. Recreating these tables does not receive automatic
+-- grants. The app reads and writes only with a signed-in user JWT, so anon
+-- gets none. authenticated and service_role keep select, insert, update, and
+-- delete. Keep this list matched with migrations/2026-10-21_public_table_grants.sql.
+revoke all on table
+  public.workspaces,
+  public.students,
+  public.outsiders,
+  public.coaching_sessions,
+  public.coaching_session_students,
+  public.court_bookings,
+  public.social_sessions,
+  public.social_session_students,
+  public.student_hidden_weeks,
+  public.social_hidden_people,
+  public.social_attendance
+from anon;
+
+grant select, insert, update, delete on table
+  public.workspaces,
+  public.students,
+  public.outsiders,
+  public.coaching_sessions,
+  public.coaching_session_students,
+  public.court_bookings,
+  public.social_sessions,
+  public.social_session_students,
+  public.student_hidden_weeks,
+  public.social_hidden_people,
+  public.social_attendance
+to authenticated, service_role;

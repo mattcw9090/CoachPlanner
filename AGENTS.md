@@ -8,6 +8,7 @@
 ## Guardrails
 
 - Preserve the existing SwiftData schema and local store paths unless a migration is intentionally designed and verified. Supabase is the shared cross-device store; SwiftData is the offline cache. Automatic sync handles saved edits and foreground live updates; manual full reconciliation remains available. Never infer deletions from an incomplete download.
+- Every new public table migration must include explicit grants. Grant `select`, `insert`, `update`, and `delete` to `authenticated` and `service_role`. Grant `anon` nothing unless a new unauthenticated client path actually queries that table.
 - Do not send messages, book courts, export financial data, or advance session statuses without explicit user approval.
 
 ## Verification
