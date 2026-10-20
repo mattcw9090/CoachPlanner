@@ -18,6 +18,8 @@ private final class SyncMockServer: @unchecked Sendable {
     var loseNextPOSTResponse = false
     var hiddenReadTables: Set<String> = []
     var rejectNextPatch = false
+    var failResetWeek = false
+    var resetWeekRequests: [[String: Any]] = []
     var activeRequests = 0
     var peakRequests = 0
     private var tick = 0.0
@@ -40,7 +42,7 @@ private final class SyncMockServer: @unchecked Sendable {
             }
         }
     }
-    func clearRequests() { lock.withLock { requests = []; requestURLs = []; peakRequests = 0 } }
+    func clearRequests() { lock.withLock { requests = []; requestURLs = []; peakRequests = 0; resetWeekRequests = [] } }
     var writes: [(method: String, table: String)] { lock.withLock { requests.filter { $0.method != "GET" } } }
 
     func edit(_ table: String, id: UUID, fields: [String: Any]) {
@@ -134,6 +136,9 @@ private final class SyncMockServer: @unchecked Sendable {
                 }
                 if table == "sync_coachplanner_social" {
                     return try syncSocial(body as! [String: Any])
+                }
+                if table == "reset_coaching_week" {
+                    return try resetCoachingWeek(body as! [String: Any])
                 }
                 if method == "POST" {
                     result = (body as? [[String: Any]]) ?? [body as! [String: Any]]
@@ -268,6 +273,62 @@ private final class SyncMockServer: @unchecked Sendable {
             tables[table]![index]["updated_at"] = timestamp()
         }
         return (200, try JSONSerialization.data(withJSONObject: conflictSnapshot(table: table, id: id, incoming: incoming)), [:])
+    }
+
+    /// In-memory stand-in for public.reset_coaching_week. Never called against Supabase.
+    private func resetCoachingWeek(_ body: [String: Any]) throws -> (Int, Data, [String: String]) {
+        resetWeekRequests.append(body)
+        if failResetWeek {
+            failResetWeek = false
+            return (503, Data(#"{"message":"injected reset failure"}"#.utf8), [:])
+        }
+        guard let week = body["p_from_week"] as? String else {
+            return (400, Data(#"{"message":"p_from_week is required"}"#.utf8), [:])
+        }
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        let dateOnly = DateFormatter()
+        dateOnly.calendar = utc
+        dateOnly.locale = Locale(identifier: "en_US_POSIX")
+        dateOnly.timeZone = TimeZone(secondsFromGMT: 0)
+        dateOnly.dateFormat = "yyyy-MM-dd"
+        guard let from = dateOnly.date(from: week),
+              let next = utc.date(byAdding: .day, value: 7, to: from) else {
+            return (400, Data(#"{"message":"p_from_week must be a date"}"#.utf8), [:])
+        }
+        let nextWeek = dateOnly.string(from: next)
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let fallback = ISO8601DateFormatter()
+        fallback.formatOptions = [.withInternetDateTime]
+        func shift(_ value: Any?) -> String? {
+            guard let text = value as? String else { return nil }
+            guard let date = parser.date(from: text) ?? fallback.date(from: text) else { return nil }
+            return parser.string(from: date.addingTimeInterval(7 * 24 * 3600))
+        }
+        var moved = 0
+        var sessions = tables["coaching_sessions"] ?? []
+        for index in sessions.indices {
+            let isLive = !(sessions[index]["deleted_at"] is String)
+            guard isLive, (sessions[index]["week_start"] as? String) == week else { continue }
+            if let shifted = shift(sessions[index]["start_time"]) { sessions[index]["start_time"] = shifted }
+            if let shifted = shift(sessions[index]["end_time"]) { sessions[index]["end_time"] = shifted }
+            sessions[index]["week_start"] = nextWeek
+            sessions[index]["status"] = "Unscheduled"
+            sessions[index]["court_number"] = ""
+            sessions[index]["updated_at"] = timestamp()
+            let id = (sessions[index]["id"] as? String)?.lowercased()
+            var links = tables["coaching_session_students"] ?? []
+            for linkIndex in links.indices {
+                guard (links[linkIndex]["session_id"] as? String)?.lowercased() == id else { continue }
+                links[linkIndex]["status"] = "Pending"
+                links[linkIndex]["responded_at"] = NSNull()
+            }
+            tables["coaching_session_students"] = links
+            moved += 1
+        }
+        tables["coaching_sessions"] = sessions
+        return (200, Data(String(moved).utf8), [:])
     }
 
     private func syncSocial(_ body: [String: Any]) throws -> (Int, Data, [String: String]) {

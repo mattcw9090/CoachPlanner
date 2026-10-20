@@ -32,6 +32,33 @@ struct CloudSyncOutbox {
     }
 }
 
+enum MoveCoachingWeekFailure: Error, Equatable {
+    case offline
+    case signedOut
+    case refreshFailed
+    case blocked(String)
+
+    var alertTitle: String {
+        switch self {
+        case .refreshFailed: return "Couldn't Refresh Sessions"
+        default: return "Couldn't Move Sessions"
+        }
+    }
+
+    var alertMessage: String {
+        switch self {
+        case .offline:
+            return "Moving sessions needs an internet connection."
+        case .signedOut:
+            return "Sign in before moving sessions."
+        case .refreshFailed:
+            return "Sessions were moved online, but this device could not refresh. Use Sync cloud data, then open next week."
+        case .blocked(let message):
+            return message
+        }
+    }
+}
+
 @MainActor
 final class SupabaseAutoSync: ObservableObject {
     static let shared = SupabaseAutoSync()
@@ -69,6 +96,7 @@ final class SupabaseAutoSync: ObservableObject {
     private var retryDelay: TimeInterval = 2
     private var lastRecovery = Date.distantPast
     private var hasCompletedSync = false
+    private var moveInProgress = false
     private var hasUnresolvedConflicts: Bool { !cloud.conflicts.isEmpty }
     private var realtimeState = SupabaseRealtimeClient.State.disconnected
     private var connectionTask: Task<Void, Never>?
@@ -132,6 +160,63 @@ final class SupabaseAutoSync: ObservableObject {
         manualSyncRequested = true
         requestRecovery()
         tick()
+    }
+
+    /// Uploads unsynced edits, asks the database to move one coaching week, then downloads
+    /// the result. Local sessions are not rewritten if the reset cannot be completed.
+    func moveCoachingWeek(from weekStart: Date, in context: ModelContext) async -> Result<Int, MoveCoachingWeekFailure> {
+        guard cloud.isSignedIn else { return .failure(.signedOut) }
+        guard isOnline else { return .failure(.offline) }
+        guard !moveInProgress else {
+            return .failure(.blocked("Sessions were not moved. A move is already in progress."))
+        }
+        let deadline = Date().addingTimeInterval(30)
+        while isRunning || cloud.isSyncing {
+            if Date() >= deadline {
+                return .failure(.blocked("Sessions were not moved. Sync is still running. Try again in a moment."))
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard cloud.isSignedIn else { return .failure(.signedOut) }
+            guard isOnline else { return .failure(.offline) }
+        }
+        guard outbox.inFlight.isEmpty else {
+            return .failure(.blocked("Sessions were not moved. Sync is still running. Try again in a moment."))
+        }
+
+        moveInProgress = true
+        isRunning = true
+        updateStatus()
+        defer {
+            moveInProgress = false
+            isRunning = false
+            updateStatus()
+        }
+
+        flushLocalChanges(in: context)
+        if let localSaveError {
+            return .failure(.blocked("Sessions were not moved. \(localSaveError)"))
+        }
+        if let failure = await uploadPendingEdits(in: context) {
+            return .failure(failure)
+        }
+        guard cloud.isSignedIn else { return .failure(.signedOut) }
+        guard isOnline else { return .failure(.offline) }
+
+        let moved: Int
+        do {
+            moved = try await cloud.resetCoachingWeek(from: weekStart)
+        } catch {
+            if !cloud.isSignedIn || error.localizedDescription.lowercased().contains("sign in") {
+                return .failure(.signedOut)
+            }
+            if isConnectivityError(error) { return .failure(.offline) }
+            return .failure(.blocked("Sessions were not moved. \(error.localizedDescription)"))
+        }
+
+        await cloud.syncAll(in: context)
+        guard cloud.lastError == nil else { return .failure(.refreshFailed) }
+        await settleOutbox(in: context)
+        return .success(moved)
     }
 
     private func requestRecovery() {
@@ -200,13 +285,99 @@ final class SupabaseAutoSync: ObservableObject {
     }
 
     private func flushLocalChanges() {
-        guard let context, context.hasChanges, !cloud.isSyncing else { return }
+        guard let context else { return }
+        flushLocalChanges(in: context)
+    }
+
+    private func flushLocalChanges(in context: ModelContext) {
+        guard context.hasChanges, !cloud.isSyncing else { return }
         do {
             try context.save()
             localSaveError = nil
         } catch {
             localSaveError = "Changes could not be saved on this device: \(error.localizedDescription)"
         }
+    }
+
+    /// Runs the normal sync upload until queued edits have been pushed.
+    private func uploadPendingEdits(in context: ModelContext) async -> MoveCoachingWeekFailure? {
+        await cloud.syncAll(in: context)
+        if let failure = failureAfterUpload() { return failure }
+        outbox.enqueue(cloud.deferredChanges)
+        persistOutbox()
+        var passes = 0
+        while !outbox.pending.isEmpty && passes < 3 {
+            passes += 1
+            guard outbox.inFlight.isEmpty else {
+                return .blocked("Sessions were not moved. Sync is still running. Try again in a moment.")
+            }
+            let scope = outbox.begin()
+            persistOutbox()
+            await cloud.syncChanges(scope, in: context)
+            let succeeded = cloud.lastError == nil && cloud.conflicts.isEmpty
+            outbox.finish(succeeded: succeeded)
+            outbox.enqueue(cloud.deferredChanges)
+            persistOutbox()
+            if let failure = failureAfterUpload() { return failure }
+        }
+        if !outbox.pending.isEmpty {
+            return .blocked("Sessions were not moved. This device still has unsynced edits. Try again once sync finishes.")
+        }
+        return nil
+    }
+
+    /// Best-effort queue settle after the moved week has already downloaded.
+    private func settleOutbox(in context: ModelContext) async {
+        outbox.enqueue(cloud.deferredChanges)
+        persistOutbox()
+        var passes = 0
+        while !outbox.pending.isEmpty && passes < 3 && cloud.lastError == nil {
+            passes += 1
+            guard outbox.inFlight.isEmpty else { return }
+            let scope = outbox.begin()
+            persistOutbox()
+            await cloud.syncChanges(scope, in: context)
+            outbox.finish(succeeded: cloud.lastError == nil)
+            outbox.enqueue(cloud.deferredChanges)
+            persistOutbox()
+        }
+    }
+
+    private func failureAfterUpload() -> MoveCoachingWeekFailure? {
+        if !cloud.isSignedIn { return .signedOut }
+        if !isOnline { return .offline }
+        if let lastError = cloud.lastError {
+            return isConnectivityMessage(lastError) ? .offline : .blocked("Sessions were not moved. \(lastError)")
+        }
+        if !cloud.conflicts.isEmpty {
+            return .blocked("Sessions were not moved. Review sync conflicts in Settings, then try again.")
+        }
+        return nil
+    }
+
+    private func isConnectivityError(_ error: Error) -> Bool {
+        if !isOnline { return true }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotConnectToHost,
+                 .cannotFindHost, .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff:
+                return true
+            default:
+                break
+            }
+        }
+        return isConnectivityMessage(error.localizedDescription)
+    }
+
+    private func isConnectivityMessage(_ message: String) -> Bool {
+        let text = message.lowercased()
+        return text.contains("internet connection")
+            || text.contains("appears to be offline")
+            || text.contains("network connection was lost")
+            || text.contains("not connected to the internet")
+            || text.contains("timed out")
+            || text.contains("could not connect")
+            || text.contains("cannot connect")
     }
 
     private func tick() {

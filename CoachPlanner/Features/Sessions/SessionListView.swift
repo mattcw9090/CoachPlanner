@@ -37,6 +37,7 @@ struct SessionListView: View {
     @State private var sessionNotice: SessionNotice?
     @State private var selectedCourtBooking: CourtBooking?
     @State private var isResetConfirmationPresented = false
+    @State private var isMovingSessions = false
     @State private var isBulkCourtSelectionEnabled = false
     @State private var bulkSessionSelection: Set<PersistentIdentifier> = []
     @State private var isMassCourtBookingSheetPresented = false
@@ -406,7 +407,7 @@ struct SessionListView: View {
 
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This moves the current week's sessions to next week, keeps their students and fees, then marks them Unscheduled and clears booked court numbers.")
+                Text("This moves this week's coaching sessions to next week, keeps their students and fees, marks them Unscheduled, clears court numbers, and sets each student back to Pending. Court bookings and socials stay on this week. This needs an internet connection.")
             }
             .sheet(item: $editor) { editor in
                 SessionEditorView(editor: editor)
@@ -529,7 +530,7 @@ struct SessionListView: View {
         } label: {
             Label("Move to Next Week", systemImage: "arrow.forward")
         }
-        .disabled(sessionsForWeek.isEmpty || isBulkSelectionModeEnabled)
+        .disabled(sessionsForWeek.isEmpty || isBulkSelectionModeEnabled || isMovingSessions)
     }
 
     private func weekPager(_ summary: ScheduleSummary) -> some View {
@@ -1723,13 +1724,19 @@ struct SessionListView: View {
     }
 
     private func moveSessionsToNextWeek() {
-        let nextWeek = Self.monday(of: Calendar.current.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart)
-        for session in sessionsForWeek {
-            session.weekStart = nextWeek
-            session.courtNumber = ""
-            session.resetResponsesForUnscheduledWeek(in: modelContext)
+        guard !isMovingSessions else { return }
+        let sourceWeek = weekStart
+        let nextWeek = nextWeekStart
+        isMovingSessions = true
+        Task {
+            defer { isMovingSessions = false }
+            switch await SupabaseAutoSync.shared.moveCoachingWeek(from: sourceWeek, in: modelContext) {
+            case .success:
+                setWeekStart(nextWeek)
+            case let .failure(failure):
+                sessionNotice = SessionNotice(title: failure.alertTitle, message: failure.alertMessage)
+            }
         }
-        setWeekStart(nextWeek)
     }
 
     private func sessionName(for session: CoachingSession) -> String {

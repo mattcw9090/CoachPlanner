@@ -320,15 +320,6 @@ final class CoachingSession: SyncTimestamped {
         applyDerivedStatus(in: context)
     }
 
-    /// Next week's copy asks again. Previous replies do not carry over.
-    func resetResponsesForUnscheduledWeek(in context: ModelContext) {
-        status = SessionStatus.unscheduled.rawValue
-        for student in studentList {
-            setStudentStatus(student, to: .pending, respondedAt: nil, in: context, registersLocalEdit: false)
-        }
-        touchForLocalEdit()
-    }
-
     /// One student's reply follows the session. Unscheduled stores Pending; Pending and Confirmed match.
     func updateStatus(_ newStatus: SessionStatus, in context: ModelContext) {
         let normalized = SessionStatus.coachingValue(fromStored: newStatus.rawValue)

@@ -304,7 +304,200 @@ private extension SupabaseAutoSync {
         try await coordinator.runOneTestPass(full: true)
         check(cloud.lastError == nil && cloud.lastSyncResult?.conflicts == 0 && !coordinator.needsAttention,
               "A successful full reconciliation clears resolved conflict attention")
+        try await Self.runMoveWeekTests { condition, message in
+            check(condition, message)
+        }
         print("Automatic sync: \(checks) checks passed")
+    }
+
+    /// Exercises request construction for reset_coaching_week against the local mock only.
+    static func runMoveWeekTests(check: (Bool, String) -> Void) async throws {
+        let suite = "CoachPlanner.MoveWeekTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(false, forKey: preferenceKey)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SyncMockProtocol.self]
+        let session = URLSession(configuration: config)
+        let cloud = SupabaseCloud.automaticSyncFixture(session: session, defaults: defaults)
+        let server = SyncMockProtocol.server
+        server.lock.withLock {
+            server.tables = ["workspaces": [["id": SupabaseConfiguration.workspaceID.uuidString]]]
+            server.failTable = nil
+            server.failLaterPage = false
+            server.failPOSTCountdown = nil
+            server.loseNextPOSTResponse = false
+            server.hiddenReadTables = []
+            server.rejectNextPatch = false
+            server.failResetWeek = false
+            server.failSocialChildWrite = false
+            server.socialReadOverride = nil
+            server.afterResponse = nil
+            server.pageLimit = 500
+        }
+        server.clearRequests()
+        let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
+                             CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
+        let modelConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        let context = ModelContext(try ModelContainer(for: schema, configurations: [modelConfig]))
+        context.autosaveEnabled = false
+        let coordinator = SupabaseAutoSync(cloud: cloud, defaults: defaults)
+        coordinator.attach(to: context, active: false)
+        coordinator.timer?.invalidate()
+        coordinator.timer = nil
+        coordinator.monitor.cancel()
+        await Task.yield()
+        coordinator.isActive = true
+        coordinator.isOnline = true
+        coordinator.fullSyncRequested = false
+        defer {
+            coordinator.isActive = false
+            coordinator.stopRealtime()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suite)
+            server.lock.withLock { server.afterResponse = nil; server.failResetWeek = false }
+        }
+
+        var perth = Calendar(identifier: .gregorian)
+        perth.timeZone = TimeZone(identifier: "Australia/Perth")!
+        perth.locale = Locale(identifier: "en_US_POSIX")
+        let week = perth.date(from: DateComponents(year: 2026, month: 10, day: 19))!
+        let start = week.addingTimeInterval(10 * 3600)
+        let end = start.addingTimeInterval(3600)
+        let student = Student(name: "Move Week Student", gender: "", contactPreference: .sms, contactDetail: "")
+        let repliedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let coaching = CoachingSession(
+            weekStart: week, dayOfWeek: .monday, startTime: start, endTime: end,
+            venue: .apex, status: .confirmed, courtNumber: "4", sessionFee: 55, students: [student]
+        )
+        let court = CourtBooking(weekStart: week, dayOfWeek: .tuesday, startTime: start, endTime: end, venue: .apex, courtNumber: "2")
+        let social = SocialSession(weekStart: week, dayOfWeek: .friday, startTime: start, endTime: end, venue: .apex, students: [student])
+        context.insert(student)
+        context.insert(coaching)
+        context.insert(court)
+        context.insert(social)
+        coaching.setStudentStatus(student, to: .confirmed, respondedAt: repliedAt, in: context)
+        try context.save()
+        try await coordinator.runOneTestPass(full: true)
+        try await coordinator.runOneTestPass(full: true)
+        check(cloud.lastError == nil, "Move-week fixture uploads before the reset")
+        coaching.sessionFee = 80
+        try context.save()
+        var tombstone = server.rows("coaching_sessions")[0]
+        let tombstoneID = UUID().uuidString
+        tombstone["id"] = tombstoneID
+        tombstone["deleted_at"] = "2030-01-01T00:00:00.000Z"
+        tombstone["court_number"] = "9"
+        server.lock.withLock { server.tables["coaching_sessions", default: []].append(tombstone) }
+
+        var weekAtReset: Date?
+        var courtAtReset = ""
+        var statusAtReset = ""
+        var resetMethod: String?
+        var resetAuthorization: String?
+        var resetAPIKey: String?
+        var resetContentType: String?
+        server.lock.withLock {
+            server.afterResponse = { request in
+                guard request.url?.lastPathComponent == "reset_coaching_week" else { return }
+                weekAtReset = coaching.weekStart
+                courtAtReset = coaching.courtNumber
+                statusAtReset = coaching.status
+                resetMethod = request.httpMethod
+                resetAuthorization = request.value(forHTTPHeaderField: "Authorization")
+                resetAPIKey = request.value(forHTTPHeaderField: "apikey")
+                resetContentType = request.value(forHTTPHeaderField: "Content-Type")
+            }
+        }
+        server.clearRequests()
+        let moved = await coordinator.moveCoachingWeek(from: week, in: context)
+        guard case .success(let count) = moved else {
+            preconditionFailure("Expected the mock reset to succeed, got \(moved)")
+        }
+        check(count == 1, "The reset response count includes only the live session")
+        check(perth.isDate(weekAtReset!, inSameDayAs: week), "The device has not moved the session when the reset request is sent")
+        check(courtAtReset == "4" && statusAtReset == "Confirmed", "Court number and status stay local until the cloud download")
+        check(resetMethod == "POST", "Move Sessions posts the reset function")
+        check(resetAuthorization?.hasPrefix("Bearer ") == true && resetAPIKey == SupabaseConfiguration.publishableKey,
+              "The reset uses the signed-in REST headers")
+        check(resetContentType == "application/json", "The reset body is JSON")
+        let resetURL = server.requestURLs.first { $0.lastPathComponent == "reset_coaching_week" }
+        check(resetURL?.path.hasSuffix("/rest/v1/rpc/reset_coaching_week") == true, "The reset posts to rest/v1/rpc/reset_coaching_week")
+        check(server.resetWeekRequests.count == 1 && server.resetWeekRequests[0]["p_from_week"] as? String == "2026-10-19"
+              && server.resetWeekRequests[0].count == 1, "The reset body is the viewed week as yyyy-MM-dd")
+        let resetAt = server.requests.firstIndex { $0.method == "POST" && $0.table == "reset_coaching_week" }
+        check(resetAt != nil && server.requests[..<resetAt!].contains { $0.method != "GET" && $0.table == "coaching_sessions" },
+              "Pending local edits upload before the reset")
+        check(server.requests[(resetAt! + 1)...].contains { $0.method == "GET" && $0.table == "coaching_sessions" },
+              "A successful reset downloads the moved sessions")
+        let nextWeek = perth.date(byAdding: .day, value: 7, to: week)!
+        check(perth.isDate(coaching.weekStart!, inSameDayAs: nextWeek), "The download places the session on the next week")
+        check(coaching.status == "Unscheduled" && coaching.courtNumber == "" && coaching.sessionFee == 80,
+              "The download applies Unscheduled, a cleared court, and the uploaded fee")
+        check(coaching.confirmationStatus(for: student) == .pending && coaching.respondedAt(for: student) == nil,
+              "The download resets the student to Pending with no reply time")
+        let movedStart = perth.dateComponents([.hour, .minute], from: coaching.startTime)
+        let originalStart = perth.dateComponents([.hour, .minute], from: start)
+        check(movedStart.hour == originalStart.hour && movedStart.minute == originalStart.minute,
+              "The moved session keeps its local start time")
+        check(perth.isDate(court.weekStart!, inSameDayAs: week) && perth.isDate(social.weekStart, inSameDayAs: week),
+              "Court bookings and socials stay on the original week")
+        let live = server.rows("coaching_sessions").first { ($0["id"] as? String) == coaching.syncID.uuidString }
+        let keptTombstone = server.rows("coaching_sessions").first { ($0["id"] as? String) == tombstoneID }
+        let liveWeek = live?["week_start"] as? String
+        let liveStatus = live?["status"] as? String
+        let liveCourt = live?["court_number"] as? String
+        let liveFee = (live?["session_fee"] as? NSNumber)?.doubleValue
+        check(liveWeek == "2026-10-26" && liveStatus == "Unscheduled" && liveCourt == "",
+              "The mock cloud row follows the reset rules")
+        check(liveFee == 80, "The uploaded fee is on the cloud row before the reset keeps it")
+        let link = server.rows("coaching_session_students").first { ($0["session_id"] as? String)?.lowercased() == coaching.syncID.uuidString.lowercased() }
+        let linkStatus = link?["status"] as? String
+        let linkReplied = link?["responded_at"]
+        check(linkStatus == "Pending" && linkReplied is NSNull, "The cloud student reply is Pending with a null response time")
+        let tombstoneWeek = keptTombstone?["week_start"] as? String
+        let tombstoneCourt = keptTombstone?["court_number"] as? String
+        check(tombstoneWeek == "2026-10-19" && tombstoneCourt == "9",
+              "A deleted coaching session is not moved")
+
+        server.clearRequests()
+        server.lock.withLock { server.failResetWeek = true; server.afterResponse = nil }
+        let failedWeek = coaching.weekStart!
+        let failed = await coordinator.moveCoachingWeek(from: failedWeek, in: context)
+        guard case .failure(.blocked(let failureMessage)) = failed else {
+            preconditionFailure("Expected a failed reset to change nothing, got \(failed)")
+        }
+        check(failureMessage.hasPrefix("Sessions were not moved."), "A failed reset explains that nothing was moved")
+        check(perth.isDate(coaching.weekStart!, inSameDayAs: nextWeek) && coaching.courtNumber == "" && coaching.status == "Unscheduled",
+              "A failed reset leaves the downloaded session unchanged")
+        check(server.rows("coaching_sessions").first { ($0["id"] as? String) == coaching.syncID.uuidString }?["week_start"] as? String == "2026-10-26",
+              "A failed reset does not move the cloud row either")
+        let failedResetAt = server.requests.lastIndex { $0.table == "reset_coaching_week" }
+        check(failedResetAt == server.requests.count - 1, "A failed reset does not download afterwards")
+        check(server.resetWeekRequests.last?["p_from_week"] as? String == "2026-10-26", "The failed request still carries the viewed week")
+
+        coaching.sessionFee = 90
+        try context.save()
+        server.clearRequests()
+        coordinator.networkChanged(false)
+        let offline = await coordinator.moveCoachingWeek(from: coaching.weekStart!, in: context)
+        guard case .failure(.offline) = offline else {
+            preconditionFailure("Expected an offline move to be refused, got \(offline)")
+        }
+        check(MoveCoachingWeekFailure.offline.alertMessage == "Moving sessions needs an internet connection.",
+              "Offline move explains that an internet connection is required")
+        check(server.requests.isEmpty && coaching.sessionFee == 90, "An offline move uploads nothing and keeps the local edit")
+        check((server.rows("coaching_sessions").first { ($0["id"] as? String) == coaching.syncID.uuidString }?["session_fee"] as? NSNumber)?.doubleValue == 80,
+              "An offline move does not change the cloud fee")
+        coordinator.networkChanged(true)
+
+        cloud.setFixtureSignedIn(false)
+        server.clearRequests()
+        let signedOut = await coordinator.moveCoachingWeek(from: coaching.weekStart!, in: context)
+        guard case .failure(.signedOut) = signedOut else {
+            preconditionFailure("Expected a signed-out move to be refused, got \(signedOut)")
+        }
+        check(server.requests.isEmpty && coaching.sessionFee == 90,
+              "A signed-out move makes no request and keeps the local edit")
     }
 
     func runOneTestPass(full: Bool = false) async throws {

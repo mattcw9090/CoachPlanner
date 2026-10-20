@@ -3080,6 +3080,24 @@ final class SupabaseCloud: ObservableObject {
         return record
     }
 
+    /// Moves one coaching week through public.reset_coaching_week. Security invoker, so
+    /// the signed-in user's row policies apply. Does not edit the local store.
+    func resetCoachingWeek(from weekStart: Date) async throws -> Int {
+        let token = try await realtimeAccessToken()
+        let data = try await send(
+            url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/rpc/reset_coaching_week"),
+            method: "POST",
+            body: try JSONSerialization.data(withJSONObject: [
+                "p_from_week": Self.dateOnlyFormatter.string(from: weekStart)
+            ]),
+            token: token
+        )
+        guard let moved = try? JSONDecoder().decode(Int.self, from: data) else {
+            throw SupabaseCloudError.invalidResponse
+        }
+        return moved
+    }
+
     private func send(
         url: URL,
         method: String,
