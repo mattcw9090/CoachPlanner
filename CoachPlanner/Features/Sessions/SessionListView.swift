@@ -1139,29 +1139,18 @@ struct SessionListView: View {
 
     private func advanceStatus(of session: CoachingSession) {
         guard belongsToVisibleWeek(session.weekStart) else { return }
-        if session.statusValue == .unscheduled {
+        if session.studentList.count > 1 {
+            guard session.statusValue == .unscheduled else { return }
             withAnimation(.snappy(duration: 0.2)) {
                 session.noteAvailabilityRequested(in: modelContext)
             }
             UISelectionFeedbackGenerator().selectionChanged()
             return
         }
-        guard session.studentList.count <= 1,
-              let nextStatus = session.statusValue.nextStatus else { return }
+        guard let nextStatus = session.statusValue.nextStatus else { return }
 
         withAnimation(.snappy(duration: 0.2)) {
-            if let student = session.studentList.first,
-               let reply = SessionStudentStatus(rawValue: nextStatus.rawValue) {
-                session.setStudentStatus(
-                    student,
-                    to: reply,
-                    respondedAt: reply == .pending ? nil : .now,
-                    in: modelContext
-                )
-                session.applyDerivedStatus(in: modelContext)
-            } else if session.studentList.isEmpty {
-                session.status = nextStatus.rawValue
-            }
+            session.updateStatus(nextStatus, in: modelContext)
         }
         UISelectionFeedbackGenerator().selectionChanged()
     }
@@ -1941,7 +1930,6 @@ struct SessionListView: View {
     private func icsStatus(for status: SessionStatus) -> String {
         switch status {
         case .confirmed: return "CONFIRMED"
-        case .declined: return "CANCELLED"
         case .pending, .unscheduled: return "TENTATIVE"
         }
     }
@@ -2650,9 +2638,7 @@ private struct SessionBlock: View {
     }
 
     private var confirmationBadge: String? {
-        let count = session.studentList.count
-        guard count > 1 else { return nil }
-        return "\(session.confirmedStudentCount) of \(count) confirmed"
+        session.confirmationBadgeText
     }
 
     private var studentNames: String {

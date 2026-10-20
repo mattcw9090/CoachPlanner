@@ -11,20 +11,34 @@ enum SyncTimestamping {
     static var isApplyingRemoteChange = false
 }
 
-enum SessionStatus: String, CaseIterable, Identifiable {
+enum SessionStatus: String, CaseIterable, Identifiable, Codable {
     case unscheduled = "Unscheduled"
     case pending = "Pending"
     case confirmed = "Confirmed"
-    case declined = "Declined"
 
     var id: String { rawValue }
+
+    /// Coaching sessions no longer use Declined. A legacy value reads as Pending; any other unknown value stays Unscheduled.
+    static func coachingValue(fromStored raw: String) -> SessionStatus {
+        if raw == "Declined" { return .pending }
+        return SessionStatus(rawValue: raw) ?? .unscheduled
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self = Self.coachingValue(fromStored: try container.decode(String.self))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 
     var color: Color {
         switch self {
         case .unscheduled: return .red
         case .pending: return .yellow
         case .confirmed: return .green
-        case .declined: return .orange
         }
     }
 
@@ -33,7 +47,6 @@ enum SessionStatus: String, CaseIterable, Identifiable {
         case .unscheduled: return "exclamationmark.circle.fill"
         case .pending: return "clock.fill"
         case .confirmed: return "checkmark.circle.fill"
-        case .declined: return "xmark.circle.fill"
         }
     }
 
@@ -41,18 +54,37 @@ enum SessionStatus: String, CaseIterable, Identifiable {
         switch self {
         case .unscheduled: return .pending
         case .pending: return .confirmed
-        case .confirmed, .declined: return nil
+        case .confirmed: return nil
         }
     }
 }
 
 /// A student's reply to one coaching session. This is separate from social attendance.
-enum SessionStudentStatus: String, CaseIterable, Identifiable {
+enum SessionStudentStatus: String, CaseIterable, Identifiable, Codable {
     case pending = "Pending"
     case confirmed = "Confirmed"
-    case declined = "Declined"
 
     var id: String { rawValue }
+
+    /// A legacy Declined reply reads as Pending. The app does not write Declined.
+    static func storedValue(from raw: String) -> SessionStudentStatus {
+        if raw == "Declined" { return .pending }
+        return SessionStudentStatus(rawValue: raw) ?? .pending
+    }
+
+    static func matching(_ sessionStatus: SessionStatus) -> SessionStudentStatus {
+        sessionStatus == .confirmed ? .confirmed : .pending
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self = Self.storedValue(from: try container.decode(String.self))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 
     var color: Color { sessionStatus.color }
     var iconName: String { sessionStatus.iconName }
@@ -61,15 +93,13 @@ enum SessionStudentStatus: String, CaseIterable, Identifiable {
         switch self {
         case .pending: return .pending
         case .confirmed: return .confirmed
-        case .declined: return .declined
         }
     }
 }
 
 enum SessionStatusDerivation {
-    /// Any decline makes the session declined. Every student must accept before it is confirmed.
+    /// Every student must accept before the session is confirmed. Otherwise it stays pending.
     static func derived(from studentStatuses: [SessionStudentStatus]) -> SessionStatus {
-        if studentStatuses.contains(.declined) { return .declined }
         if !studentStatuses.isEmpty, studentStatuses.allSatisfy({ $0 == .confirmed }) { return .confirmed }
         return .pending
     }
@@ -163,7 +193,7 @@ final class CoachingSession: SyncTimestamped {
     }
 
     var statusValue: SessionStatus {
-        SessionStatus(rawValue: status) ?? .unscheduled
+        SessionStatus.coachingValue(fromStored: status)
     }
 
     var studentList: [Student] {
@@ -176,10 +206,17 @@ final class CoachingSession: SyncTimestamped {
         set { studentConfirmations = newValue }
     }
 
-    /// Stored session status, except a session that has left Unscheduled follows its students.
+    /// Stored session status. Two or more students that have left Unscheduled follow their replies.
     var displayStatus: SessionStatus {
-        guard !studentList.isEmpty, statusValue != .unscheduled else { return statusValue }
+        guard studentList.count > 1, statusValue != .unscheduled else { return statusValue }
         return SessionStatusDerivation.derived(from: studentList.map { confirmationStatus(for: $0) })
+    }
+
+    /// Shown on a timetable block when more than one student has a reply to track.
+    var confirmationBadgeText: String? {
+        let count = studentList.count
+        guard count > 1 else { return nil }
+        return "\(confirmedStudentCount) of \(count) confirmed"
     }
 
     var confirmedStudentCount: Int {
@@ -292,6 +329,39 @@ final class CoachingSession: SyncTimestamped {
         touchForLocalEdit()
     }
 
+    /// One student's reply follows the session. Unscheduled stores Pending; Pending and Confirmed match.
+    func updateStatus(_ newStatus: SessionStatus, in context: ModelContext) {
+        let normalized = SessionStatus.coachingValue(fromStored: newStatus.rawValue)
+        if studentList.count == 1 {
+            writeSingleStudentReply(matching: normalized, in: context, registersLocalEdit: false)
+        }
+        if status != normalized.rawValue {
+            status = normalized.rawValue
+        }
+        touchForLocalEdit()
+    }
+
+    /// Keeps a one-student session and its reply together after a cloud apply.
+    func alignSingleStudentReply(in context: ModelContext, registersLocalEdit: Bool) {
+        guard studentList.count == 1 else { return }
+        writeSingleStudentReply(matching: statusValue, in: context, registersLocalEdit: registersLocalEdit)
+    }
+
+    private func writeSingleStudentReply(
+        matching sessionStatus: SessionStatus,
+        in context: ModelContext,
+        registersLocalEdit: Bool
+    ) {
+        guard studentList.count == 1, let student = studentList.first else { return }
+        let reply = SessionStudentStatus.matching(sessionStatus)
+        let wasConfirmed = confirmationStatus(for: student) == .confirmed
+        let respondedAt: Date? = reply == .confirmed ? (wasConfirmed ? self.respondedAt(for: student) : .now) : nil
+        let current = confirmationRecord(for: student)
+        if current?.status == reply.rawValue, current?.respondedAt == respondedAt { return }
+        if current == nil, confirmationStatus(for: student) == reply, respondedAt == nil { return }
+        setStudentStatus(student, to: reply, respondedAt: respondedAt, in: context, registersLocalEdit: registersLocalEdit)
+    }
+
     private func touchForLocalEdit() {
         updatedAt = max(Date(), lastSyncedAt?.addingTimeInterval(0.002) ?? .distantPast)
     }
@@ -321,7 +391,7 @@ final class SessionStudentConfirmation {
     }
 
     var statusValue: SessionStudentStatus {
-        SessionStudentStatus(rawValue: status) ?? .pending
+        SessionStudentStatus.storedValue(from: status)
     }
 }
 

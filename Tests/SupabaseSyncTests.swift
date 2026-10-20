@@ -1670,9 +1670,20 @@ private extension SupabaseCloud {
         }
         check(SessionStatusDerivation.derived(from: [.confirmed, .pending]) == .pending, "a pending student keeps the session pending")
         check(SessionStatusDerivation.derived(from: [.confirmed, .confirmed]) == .confirmed, "every acceptance confirms the session")
-        check(SessionStatusDerivation.derived(from: [.confirmed, .declined]) == .declined, "any decline declines the session")
-        check(SessionStatus(rawValue: "Declined") == .declined, "declined session status decodes")
+        check(SessionStatusDerivation.derived(from: []) == .pending, "a session with no replies stays pending")
+        check(SessionStatus.coachingValue(fromStored: "Declined") == .pending, "a legacy declined session reads as pending")
+        check(SessionStatus.coachingValue(fromStored: "Confirmed") == .confirmed, "confirmed session status still decodes")
+        check(SessionStatus(rawValue: "Declined") == nil, "declined is not a session status case")
         check(SessionStatus(rawValue: "Not a status") == nil, "unknown session status does not become a known case")
+        check(SessionStudentStatus.storedValue(from: "Declined") == .pending, "a legacy declined reply reads as pending")
+        check(SessionStudentStatus.storedValue(from: "Confirmed") == .confirmed, "confirmed replies still decode")
+        let declinedJSON = Data("\"Declined\"".utf8)
+        let decodedSession = try JSONDecoder().decode(SessionStatus.self, from: declinedJSON)
+        let decodedReply = try JSONDecoder().decode(SessionStudentStatus.self, from: declinedJSON)
+        check(decodedSession == .pending && decodedReply == .pending, "legacy declined JSON decodes as pending instead of failing")
+        check(SessionStatus.unscheduled.nextStatus == .pending && SessionStatus.pending.nextStatus == .confirmed &&
+              SessionStatus.confirmed.nextStatus == nil,
+              "status advances from unscheduled to pending to confirmed")
 
         func makeContext() throws -> ModelContext {
             let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
@@ -1703,11 +1714,40 @@ private extension SupabaseCloud {
         legacy.studentList.append(second)
         legacy.setStudentStatus(second, to: .pending, respondedAt: nil, in: derivationContext)
         legacy.applyDerivedStatus(in: derivationContext)
-        check(legacy.displayStatus == .pending && legacy.confirmedStudentCount == 1,
+        check(legacy.displayStatus == .pending && legacy.confirmedStudentCount == 1 &&
+              legacy.confirmationBadgeText == "1 of 2 confirmed",
               "adding a student who has not accepted returns the session to pending")
-        legacy.setStudentStatus(second, to: .declined, respondedAt: Date(timeIntervalSince1970: 1_700_000_000), in: derivationContext)
+        legacy.confirmationRecord(for: second)?.status = "Declined"
+        check(legacy.confirmationStatus(for: second) == .pending, "a stored declined reply is pending")
         legacy.applyDerivedStatus(in: derivationContext)
-        check(legacy.displayStatus == .declined, "a stored decline overrides the other student's acceptance")
+        check(legacy.displayStatus == .pending && legacy.status == "Pending",
+              "a legacy decline does not decline the session or leave it unscheduled")
+        let soloStudent = Student(name: "Solo", gender: "", contactPreference: .sms, contactDetail: "")
+        let solo = CoachingSession(weekStart: week, dayOfWeek: .wednesday, startTime: start, endTime: end,
+                                   venue: .apex, status: .unscheduled, students: [soloStudent])
+        derivationContext.insert(soloStudent)
+        derivationContext.insert(solo)
+        solo.status = "Declined"
+        check(solo.studentList.count == 1 && solo.statusValue == .pending && solo.displayStatus == .pending &&
+              solo.confirmationBadgeText == nil,
+              "one legacy declined session reads as pending and has no confirmation badge")
+        solo.updateStatus(.unscheduled, in: derivationContext)
+        check(solo.status == "Unscheduled" && solo.confirmationStatus(for: soloStudent) == .pending &&
+              solo.respondedAt(for: soloStudent) == nil,
+              "unscheduled keeps the single student pending")
+        solo.updateStatus(.pending, in: derivationContext)
+        check(solo.status == "Pending" && solo.confirmationStatus(for: soloStudent) == .pending,
+              "pending matches the single student")
+        solo.updateStatus(.confirmed, in: derivationContext)
+        let soloResponse = solo.respondedAt(for: soloStudent)
+        check(solo.status == "Confirmed" && solo.confirmationStatus(for: soloStudent) == .confirmed && soloResponse != nil,
+              "confirmed matches the single student and records the response")
+        solo.updateStatus(.confirmed, in: derivationContext)
+        check(solo.respondedAt(for: soloStudent) == soloResponse, "confirming again keeps the original response time")
+        solo.updateStatus(.unscheduled, in: derivationContext)
+        check(solo.statusValue == .unscheduled && solo.displayStatus == .unscheduled &&
+              solo.confirmationStatus(for: soloStudent) == .pending && solo.respondedAt(for: soloStudent) == nil,
+              "returning to unscheduled clears the single student's acceptance")
 
         let suite = "CoachPlanner.StudentStatusTests.\(UUID().uuidString)"
         let receivingSuite = "CoachPlanner.StudentStatusReceiver.\(UUID().uuidString)"
@@ -1761,17 +1801,19 @@ private extension SupabaseCloud {
         check(preservedAlice?["status"] as? String == "Confirmed" && preservedAlice?["responded_at"] as? String == aliceRow?["responded_at"] as? String,
               "a fee edit preserves confirmed status and responded_at")
 
-        coaching.setStudentStatus(bob, to: .declined, respondedAt: respondedAt.addingTimeInterval(3600), in: context)
+        coaching.setStudentStatus(bob, to: .confirmed, respondedAt: respondedAt.addingTimeInterval(3600), in: context)
         coaching.applyDerivedStatus(in: context)
         coaching.updatedAt = coaching.lastSyncedAt!.addingTimeInterval(10)
         try context.save()
         await cloud.syncCoachingSessions(in: context)
-        let declinedBob = server.rows("coaching_session_students").first { $0["student_id"] as? String == bob.syncID.uuidString }
+        let confirmedBob = server.rows("coaching_session_students").first { $0["student_id"] as? String == bob.syncID.uuidString }
         let sessionRow = server.rows("coaching_sessions").first { $0["id"] as? String == coaching.syncID.uuidString }
-        check(cloud.lastError == nil && declinedBob?["status"] as? String == "Declined" &&
+        check(cloud.lastError == nil && confirmedBob?["status"] as? String == "Confirmed" &&
               preservedAlice?["status"] as? String == server.rows("coaching_session_students").first { $0["student_id"] as? String == alice.syncID.uuidString }?["status"] as? String &&
-              sessionRow?["status"] as? String == "Declined",
-              "changing one reply uploads that reply and the derived session status without resetting the other student")
+              sessionRow?["status"] as? String == "Confirmed" &&
+              !server.rows("coaching_sessions").contains { $0["status"] as? String == "Declined" } &&
+              !server.rows("coaching_session_students").contains { $0["status"] as? String == "Declined" },
+              "changing one reply uploads that reply and the derived session status without writing declined")
 
         let receiver = SupabaseCloud(urlSession: session, defaults: receivingDefaults, restoreSession: false)
         receiver.accessToken = cloud.accessToken
@@ -1784,34 +1826,84 @@ private extension SupabaseCloud {
         let aliceReply = receivedAlice.flatMap { student in received.map { $0.confirmationStatus(for: student) } }
         let bobReply = receivedBob.flatMap { student in received.map { $0.confirmationStatus(for: student) } }
         let aliceResponded = receivedAlice.flatMap { student in received?.respondedAt(for: student) }
-        check(receiver.lastError == nil && received?.status == "Declined" &&
-              aliceReply == .confirmed && bobReply == .declined && aliceResponded != nil,
+        check(receiver.lastError == nil && received?.status == "Confirmed" &&
+              aliceReply == .confirmed && bobReply == .confirmed && aliceResponded != nil,
               "another device restores each student's status and response time")
 
-        coaching.setStudentStatus(alice, to: .declined, respondedAt: respondedAt.addingTimeInterval(7200), in: context)
+        coaching.setStudentStatus(bob, to: .pending, respondedAt: nil, in: context)
         coaching.applyDerivedStatus(in: context)
         coaching.updatedAt = coaching.lastSyncedAt!.addingTimeInterval(10)
         try context.save()
         server.lock.withLock {
-            if let index = server.tables["coaching_session_students"]?.firstIndex(where: { $0["student_id"] as? String == bob.syncID.uuidString }) {
-                server.tables["coaching_session_students"]![index]["status"] = "Confirmed"
-                server.tables["coaching_session_students"]![index]["responded_at"] = "2026-10-20T03:04:05.000Z"
+            if let index = server.tables["coaching_session_students"]?.firstIndex(where: { $0["student_id"] as? String == alice.syncID.uuidString }) {
+                server.tables["coaching_session_students"]![index]["status"] = "Pending"
+                server.tables["coaching_session_students"]![index]["responded_at"] = NSNull()
             }
             if let index = server.tables["coaching_sessions"]?.firstIndex(where: { $0["id"] as? String == coaching.syncID.uuidString }) {
-                server.tables["coaching_sessions"]![index]["status"] = "Pending"
+                server.tables["coaching_sessions"]![index]["status"] = "Confirmed"
                 server.tables["coaching_sessions"]![index]["updated_at"] = server.timestamp()
             }
         }
         await cloud.syncCoachingSessions(in: context)
         let conflict = cloud.conflicts.first { $0.recordID == coaching.syncID }
-        check(cloud.lastSyncResult?.conflicts == 1 && conflict?.differences.contains { $0.label.contains("Alice") && $0.localValue == "Declined" && $0.cloudValue == "Confirmed" } == true &&
-              conflict?.differences.contains { $0.label.contains("Bob") && $0.localValue == "Declined" && $0.cloudValue == "Confirmed" } == true,
+        check(cloud.lastSyncResult?.conflicts == 1 && conflict?.differences.contains { $0.label.contains("Alice") && $0.localValue == "Confirmed" && $0.cloudValue == "Pending" } == true &&
+              conflict?.differences.contains { $0.label.contains("Bob") && $0.localValue == "Pending" && $0.cloudValue == "Confirmed" } == true,
               "conflict review shows each student's local and cloud response")
         _ = try await cloud.resolveConflict(conflict!, choice: .device, in: context)
         let resolvedAlice = server.rows("coaching_session_students").first { $0["student_id"] as? String == alice.syncID.uuidString }
         let resolvedBob = server.rows("coaching_session_students").first { $0["student_id"] as? String == bob.syncID.uuidString }
-        check(resolvedAlice?["status"] as? String == "Declined" && resolvedBob?["status"] as? String == "Declined" &&
-              resolvedAlice?["responded_at"] is String && resolvedBob?["responded_at"] is String,
+        let resolvedSession = server.rows("coaching_sessions").first { $0["id"] as? String == coaching.syncID.uuidString }
+        check(resolvedAlice?["status"] as? String == "Confirmed" && resolvedBob?["status"] as? String == "Pending" &&
+              resolvedAlice?["responded_at"] is String && resolvedSession?["status"] as? String == "Pending",
               "choosing this device keeps both students' replies instead of resetting them")
+
+        server.lock.withLock {
+            if let index = server.tables["coaching_session_students"]?.firstIndex(where: { $0["student_id"] as? String == bob.syncID.uuidString }) {
+                server.tables["coaching_session_students"]![index]["status"] = "Declined"
+                server.tables["coaching_session_students"]![index]["responded_at"] = "2026-10-20T03:04:05.000Z"
+            }
+            if let index = server.tables["coaching_sessions"]?.firstIndex(where: { $0["id"] as? String == coaching.syncID.uuidString }) {
+                server.tables["coaching_sessions"]![index]["status"] = "Declined"
+                server.tables["coaching_sessions"]![index]["updated_at"] = server.timestamp()
+            }
+        }
+        await cloud.syncCoachingSessions(in: context)
+        check(cloud.lastError == nil && coaching.status == "Pending" && coaching.statusValue == .pending &&
+              coaching.confirmationStatus(for: bob) == .pending &&
+              coaching.confirmationRecord(for: bob)?.status == "Pending" &&
+              coaching.displayStatus == .pending,
+              "a declined session and reply downloaded from the cloud are stored as pending")
+        coaching.sessionFee = 50
+        coaching.updatedAt = coaching.lastSyncedAt!.addingTimeInterval(10)
+        try context.save()
+        await cloud.syncCoachingSessions(in: context)
+        let rewrittenBob = server.rows("coaching_session_students").first { $0["student_id"] as? String == bob.syncID.uuidString }
+        let rewrittenSession = server.rows("coaching_sessions").first { $0["id"] as? String == coaching.syncID.uuidString }
+        let rewrittenAlice = server.rows("coaching_session_students").first { $0["student_id"] as? String == alice.syncID.uuidString }
+        check(cloud.lastError == nil && rewrittenSession?["status"] as? String == "Pending" &&
+              rewrittenAlice?["status"] as? String == "Confirmed" && rewrittenBob?["status"] as? String == "Declined",
+              "a fee edit uploads the session as pending and does not rewrite an untouched legacy reply")
+
+        let sam = Student(name: "Sam", gender: "", contactPreference: .sms, contactDetail: "")
+        let soloSession = CoachingSession(weekStart: week, dayOfWeek: .wednesday, startTime: start, endTime: end,
+                                          venue: .apex, status: .unscheduled, students: [sam])
+        context.insert(sam)
+        context.insert(soloSession)
+        soloSession.updateStatus(.confirmed, in: context)
+        try context.save()
+        await cloud.syncStudentsAndOutsiders(in: context)
+        await cloud.syncCoachingSessions(in: context)
+        let soloRow = server.rows("coaching_sessions").first { $0["id"] as? String == soloSession.syncID.uuidString }
+        let samRow = server.rows("coaching_session_students").first { $0["student_id"] as? String == sam.syncID.uuidString }
+        check(cloud.lastError == nil && soloRow?["status"] as? String == "Confirmed" && samRow?["status"] as? String == "Confirmed",
+              "a one-student session uploads the matching confirmed reply")
+        soloSession.updateStatus(.unscheduled, in: context)
+        try context.save()
+        await cloud.syncCoachingSessions(in: context)
+        let unscheduledSolo = server.rows("coaching_sessions").first { $0["id"] as? String == soloSession.syncID.uuidString }
+        let unscheduledSam = server.rows("coaching_session_students").first { $0["student_id"] as? String == sam.syncID.uuidString }
+        check(cloud.lastError == nil && unscheduledSolo?["status"] as? String == "Unscheduled" &&
+              unscheduledSam?["status"] as? String == "Pending" && soloSession.confirmationBadgeText == nil,
+              "setting a one-student session back to unscheduled uploads a pending reply")
     }
 }

@@ -359,7 +359,6 @@ private extension SessionStatus {
         case .confirmed: return 0
         case .pending: return 1
         case .unscheduled: return 2
-        case .declined: return 3
         }
     }
 }
