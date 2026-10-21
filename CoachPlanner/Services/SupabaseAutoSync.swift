@@ -59,6 +59,35 @@ enum MoveCoachingWeekFailure: Error, Equatable {
     }
 }
 
+enum SyncAttentionPrompt: Equatable {
+    case signIn
+    case conflict
+    case uploadFailed
+    case saveFailed
+
+    var title: String {
+        switch self {
+        case .signIn:
+            return "Sign in to keep this device in sync"
+        case .conflict:
+            return "Review sync conflicts"
+        case .uploadFailed:
+            return "Saved changes are not uploading"
+        case .saveFailed:
+            return "Changes could not be saved on this device"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .signIn: return "person.crop.circle.badge.exclamationmark"
+        case .conflict: return "exclamationmark.triangle.fill"
+        case .uploadFailed: return "icloud.slash"
+        case .saveFailed: return "externaldrive.badge.exclamationmark"
+        }
+    }
+}
+
 @MainActor
 final class SupabaseAutoSync: ObservableObject {
     static let shared = SupabaseAutoSync()
@@ -73,7 +102,14 @@ final class SupabaseAutoSync: ObservableObject {
     }
     @Published private(set) var status = "Waiting to sync"
     @Published private(set) var needsAttention = false
+    @Published private(set) var attentionPrompt: SyncAttentionPrompt?
     @Published private(set) var localSaveError: String?
+
+    /// Sync errors worth showing in Settings. A dropped connection retries quietly.
+    var reportedSyncError: String? {
+        guard let error = cloud.lastError, !isConnectivityMessage(error) else { return nil }
+        return error
+    }
 
     private let cloud: SupabaseCloud
     private let defaults: UserDefaults
@@ -97,6 +133,8 @@ final class SupabaseAutoSync: ObservableObject {
     private var lastRecovery = Date.distantPast
     private var hasCompletedSync = false
     private var moveInProgress = false
+    private var consecutiveUploadFailures = 0
+    private static let repeatedUploadFailureThreshold = 3
     private var hasUnresolvedConflicts: Bool { !cloud.conflicts.isEmpty }
     private var realtimeState = SupabaseRealtimeClient.State.disconnected
     private var connectionTask: Task<Void, Never>?
@@ -127,9 +165,20 @@ final class SupabaseAutoSync: ObservableObject {
             cloud.$isSignedIn.removeDuplicates().sink { [weak self] signedIn in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if signedIn { self.requestRecovery() } else { self.stopRealtime() }
+                    if signedIn {
+                        self.consecutiveUploadFailures = 0
+                        self.requestRecovery()
+                    } else {
+                        self.stopRealtime()
+                    }
                     self.updateStatus()
                 }
+            }.store(in: &observations)
+            cloud.$conflicts.sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.updateStatus() }
+            }.store(in: &observations)
+            cloud.$lastError.sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.updateStatus() }
             }.store(in: &observations)
         }
         if timer == nil {
@@ -414,6 +463,7 @@ final class SupabaseAutoSync: ObservableObject {
             else { await self.cloud.syncChanges(scope, in: context) }
             let succeeded = self.cloud.lastError == nil
             self.outbox.finish(succeeded: succeeded)
+            self.recordUploadAttempt(succeeded: succeeded)
             self.outbox.enqueue(self.cloud.deferredChanges)
             self.persistOutbox()
             self.isRunning = false
@@ -490,9 +540,31 @@ final class SupabaseAutoSync: ObservableObject {
         realtimeState = .disconnected
     }
 
+    private func recordUploadAttempt(succeeded: Bool) {
+        if succeeded {
+            consecutiveUploadFailures = 0
+            return
+        }
+        guard isOnline, let lastError = cloud.lastError else { return }
+        if isConnectivityMessage(lastError) || isAuthenticationMessage(lastError) { return }
+        consecutiveUploadFailures += 1
+    }
+
+    private func isAuthenticationMessage(_ message: String) -> Bool {
+        let text = message.lowercased()
+        return text.contains("sign in")
+            || text.contains("jwt")
+            || text.contains("invalid claim")
+            || text.contains("refresh token")
+            || text.contains("session expired")
+            || text.contains("not authenticated")
+            || text.contains("401")
+    }
+
     private func updateStatus() {
         needsAttention = localSaveError != nil || cloud.lastError != nil || hasUnresolvedConflicts
             || cloud.lastSyncResult?.needsAttention == true
+        attentionPrompt = currentAttentionPrompt()
         if localSaveError != nil { status = "Could not save changes" }
         else if !cloud.isSignedIn { status = "Sign in to sync" }
         else if !isOnline { status = "Offline · saved on this device" }
@@ -504,6 +576,22 @@ final class SupabaseAutoSync: ObservableObject {
         else if !hasCompletedSync { status = "Connecting…" }
         else if realtimeState != .connected { status = "Synced · live updates reconnecting" }
         else { status = "Synced" }
+    }
+
+    /// Visible only when Matthew has to act. Ordinary syncing, a finished sync,
+    /// and a short offline retry stay quiet.
+    private func currentAttentionPrompt() -> SyncAttentionPrompt? {
+        if !cloud.isSignedIn || cloud.lastError.map(isAuthenticationMessage) == true {
+            return .signIn
+        }
+        if hasUnresolvedConflicts { return .conflict }
+        if localSaveError != nil { return .saveFailed }
+        if isOnline,
+           consecutiveUploadFailures >= Self.repeatedUploadFailureThreshold,
+           cloud.lastError != nil {
+            return .uploadFailed
+        }
+        return nil
     }
 
     static func scope(for models: [any PersistentModel]) -> CloudSyncScope {

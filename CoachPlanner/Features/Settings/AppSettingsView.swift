@@ -118,13 +118,13 @@ struct AppSettingsView: View {
             systemImage: "arrow.triangle.2.circlepath",
             tint: cloud.isSignedIn ? .green : .blue
         ) {
-            if cloud.isSignedIn {
+            if cloud.isSignedIn && automaticSync.attentionPrompt != .signIn {
                 connectedCloudControls
             } else {
                 signedOutCloudControls
             }
 
-            if let error = cloud.lastError {
+            if let error = automaticSync.reportedSyncError {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.footnote)
                     .foregroundStyle(.red)
@@ -169,7 +169,7 @@ struct AppSettingsView: View {
                     } else {
                         Image(systemName: "arrow.triangle.2.circlepath")
                     }
-                    Text(cloud.isSyncing ? "Syncing…" : "Sync cloud data")
+                    Text("Sync cloud data")
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -183,14 +183,11 @@ struct AppSettingsView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
-            if let result = cloud.lastSyncResult {
-                Label(
-                    result.summary,
-                    systemImage: result.needsAttention ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
-                )
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(result.needsAttention ? Color.orange : Color.green)
-                .fixedSize(horizontal: false, vertical: true)
+            if let result = cloud.lastSyncResult, result.needsAttention {
+                Label(result.summary, systemImage: "exclamationmark.triangle.fill")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Button {

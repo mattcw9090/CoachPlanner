@@ -21,6 +21,10 @@ private extension SupabaseCloud {
         accessToken = signedIn ? "fixture.\(payload).signature" : nil
         isSignedIn = signedIn
     }
+
+    func setFixtureLastError(_ message: String?) {
+        lastError = message
+    }
 }
 
 private extension SupabaseAutoSync {
@@ -284,7 +288,8 @@ private extension SupabaseAutoSync {
         try context.save()
         SyncMockProtocol.server.edit("students", id: conflicted.syncID, fields: ["name": "Remote Conflicting Edit"])
         try await coordinator.runOneTestPass()
-        check(cloud.lastSyncResult?.conflicts == 1 && coordinator.needsAttention, "A real conflict sets persistent coordinator attention")
+        check(cloud.lastSyncResult?.conflicts == 1 && coordinator.needsAttention && coordinator.attentionPrompt == .conflict,
+              "A real conflict sets persistent coordinator attention")
         check(cloud.conflicts.count == 1 && cloud.conflicts[0].recordID == conflicted.syncID &&
               cloud.conflicts[0].differences.contains { $0.localValue == "Locally Edited Conflict" && $0.cloudValue == "Remote Conflicting Edit" },
               "Coordinator attention is backed by the exact record and values available for review")
@@ -292,19 +297,22 @@ private extension SupabaseAutoSync {
         context.insert(unrelatedPerson)
         try context.save()
         try await coordinator.runOneTestPass()
-        check(cloud.lastSyncResult?.conflicts == 0 && coordinator.needsAttention,
+        check(cloud.lastSyncResult?.conflicts == 0 && coordinator.needsAttention && coordinator.attentionPrompt == .conflict,
               "An unrelated scoped success does not hide an existing conflict")
         check(cloud.conflicts.count == 1 && cloud.conflicts[0].recordID == conflicted.syncID,
               "An unrelated successful upload retains the reviewable conflict record")
         SyncMockProtocol.server.edit("students", id: conflicted.syncID, fields: ["name": conflicted.name])
         coordinator.enqueue(CloudSyncScope(students: [conflicted.syncID]))
         try await coordinator.runOneTestPass()
-        check(cloud.lastError == nil && cloud.conflicts.isEmpty && !coordinator.needsAttention,
+        check(cloud.lastError == nil && cloud.conflicts.isEmpty && !coordinator.needsAttention && coordinator.attentionPrompt == nil,
               "A scoped recheck that resolves the reviewed record immediately clears stale conflict attention")
         try await coordinator.runOneTestPass(full: true)
-        check(cloud.lastError == nil && cloud.lastSyncResult?.conflicts == 0 && !coordinator.needsAttention,
+        check(cloud.lastError == nil && cloud.lastSyncResult?.conflicts == 0 && !coordinator.needsAttention && coordinator.attentionPrompt == nil,
               "A successful full reconciliation clears resolved conflict attention")
         try await Self.runMoveWeekTests { condition, message in
+            check(condition, message)
+        }
+        try await Self.runAttentionPromptTests { condition, message in
             check(condition, message)
         }
         print("Automatic sync: \(checks) checks passed")
@@ -510,5 +518,76 @@ private extension SupabaseAutoSync {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         preconditionFailure("Mock sync did not finish within five seconds")
+    }
+
+    static func runAttentionPromptTests(check: (Bool, String) -> Void) async throws {
+        let suite = "CoachPlanner.AttentionPrompt.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: preferenceKey)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SyncMockProtocol.self]
+        let session = URLSession(configuration: config)
+        let cloud = SupabaseCloud.automaticSyncFixture(session: session, defaults: defaults)
+        let coordinator = SupabaseAutoSync(cloud: cloud, defaults: defaults)
+        coordinator.isOnline = true
+        coordinator.isActive = true
+        defer {
+            coordinator.isActive = false
+            coordinator.stopRealtime()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suite)
+        }
+
+        coordinator.updateStatus()
+        check(coordinator.attentionPrompt == nil, "A signed-in idle sync stays quiet")
+        coordinator.isOnline = false
+        coordinator.updateStatus()
+        check(coordinator.attentionPrompt == nil, "A brief offline period stays quiet")
+        coordinator.isOnline = true
+
+        cloud.setFixtureLastError("The network connection was lost.")
+        coordinator.recordUploadAttempt(succeeded: false)
+        coordinator.updateStatus()
+        check(coordinator.consecutiveUploadFailures == 0 && coordinator.attentionPrompt == nil,
+              "A lost connection does not count as a stuck upload")
+
+        cloud.setFixtureLastError("Supabase request failed: HTTP 500")
+        coordinator.recordUploadAttempt(succeeded: false)
+        coordinator.recordUploadAttempt(succeeded: false)
+        coordinator.updateStatus()
+        check(coordinator.consecutiveUploadFailures == 2 && coordinator.attentionPrompt == nil,
+              "Two failed uploads stay quiet while retry continues")
+        coordinator.recordUploadAttempt(succeeded: false)
+        coordinator.updateStatus()
+        check(coordinator.attentionPrompt == .uploadFailed && coordinator.attentionPrompt?.title == "Saved changes are not uploading",
+              "Repeated upload failures ask Matthew to open Settings")
+        coordinator.isOnline = false
+        coordinator.updateStatus()
+        check(coordinator.attentionPrompt == nil, "Going offline hides the upload prompt until the connection returns")
+        coordinator.isOnline = true
+        coordinator.recordUploadAttempt(succeeded: true)
+        cloud.setFixtureLastError(nil)
+        coordinator.updateStatus()
+        check(coordinator.consecutiveUploadFailures == 0 && coordinator.attentionPrompt == nil,
+              "A successful upload clears the stuck-upload prompt")
+
+        cloud.setFixtureLastError("Sign in to Supabase first.")
+        coordinator.updateStatus()
+        check(coordinator.attentionPrompt == .signIn, "An expired session asks for sign-in immediately")
+        cloud.setFixtureSignedIn(false)
+        cloud.setFixtureLastError(nil)
+        coordinator.updateStatus()
+        check(coordinator.attentionPrompt == .signIn && coordinator.attentionPrompt?.title == "Sign in to keep this device in sync",
+              "Signing out asks for sign-in")
+        cloud.setFixtureSignedIn(true)
+        coordinator.updateStatus()
+        check(coordinator.attentionPrompt == nil, "Signing back in removes the prompt")
+
+        coordinator.localSaveError = "Changes could not be saved on this device: disk full"
+        coordinator.updateStatus()
+        check(coordinator.attentionPrompt == .saveFailed, "A local save failure stays visible")
+        coordinator.localSaveError = nil
+        coordinator.updateStatus()
+        check(coordinator.attentionPrompt == nil, "Clearing the save failure removes the prompt")
     }
 }
