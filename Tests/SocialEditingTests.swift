@@ -108,6 +108,31 @@ private struct SocialEditingTests {
         let beforeDelete = SocialSessionEditorSnapshot(newSocial)
         context.delete(newSocial)
         check(!beforeDelete.matches(newSocial), "A deleted backing social cannot be saved by an open draft")
+
+        check(TimetableTextScale.pointSize(base: 10, scale: .large) == 10,
+              "Standard text size keeps the timetable's base size")
+        check(TimetableTextScale.pointSize(base: 10, scale: .xxxLarge) == 13,
+              "The largest standard text size caps timetable text at 13pt")
+        check(TimetableTextScale.pointSize(base: 10, scale: .accessibility) == 13,
+              "Accessibility text sizes use the same 13pt timetable cap")
+        let smallerBase = TimetableTextScale.pointSize(base: 8, scale: .xxxLarge)
+        check(smallerBase > 8 && smallerBase < 13,
+              "A smaller timetable label grows with Dynamic Type and stays under 13pt")
+
+        let afterBusyHour = TimetableFreeSlot.next(
+            nowMinutes: 17 * 60,
+            today: 3,
+            blocks: [TimetableBlock(day: 3, startMinutes: 17 * 60, endMinutes: 18 * 60)]
+        )
+        check(afterBusyHour.day == 3 && afterBusyHour.startMinutes == 18 * 60 && afterBusyHour.endMinutes == 19 * 60,
+              "The next free slot skips a busy hour on the same day")
+        let nextHalfHour = TimetableFreeSlot.next(nowMinutes: 9 * 60 + 10, today: 3, blocks: [])
+        check(nextHalfHour.day == 3 && nextHalfHour.startMinutes == 9 * 60 + 30 && nextHalfHour.endMinutes == 10 * 60 + 30,
+              "Today's free slot starts at the next half hour")
+        let nextWeek = TimetableFreeSlot.next(nowMinutes: 22 * 60 + 40, today: 7, blocks: [])
+        check(nextWeek.day == 1 && nextWeek.startMinutes == 16 * 60 && nextWeek.endMinutes == 17 * 60,
+              "A day with no remaining grid time moves to Monday afternoon")
+
         print("\(checks) social editing regression checks passed")
     }
 }

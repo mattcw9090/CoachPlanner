@@ -114,7 +114,37 @@ struct StudentListView: View {
         let summary = studentSummary
 
         NavigationStack {
-            Group {
+            VStack(spacing: 0) {
+                WeekRangeControls(weekStart: selectedWeekStart) { offset in
+                    let next = Calendar.current.date(byAdding: .day, value: offset * 7, to: selectedWeekStart) ?? selectedWeekStart
+                    weekStartTimestamp = Self.monday(of: next).timeIntervalSince1970
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+
+                studentList(summary)
+            }
+            .background(AppStyle.background)
+            .navigationTitle("My Students")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        editor = StudentEditor()
+                    } label: {
+                        Label("Add Student", systemImage: "plus")
+                    }
+                }
+            }
+            .sheet(item: $editor) { editor in
+                StudentEditorView(editor: editor)
+            }
+            .attentionPromptInset()
+        }
+    }
+
+    private func studentList(_ summary: StudentSummary) -> some View {
+        Group {
                 if students.isEmpty {
                     ContentUnavailableView {
                         Label("No Students Yet", systemImage: "figure.badminton")
@@ -129,7 +159,7 @@ struct StudentListView: View {
                 } else {
                     List {
                         Section {
-                            VStack(alignment: .leading, spacing: 8) {
+                            ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: 8) {
                                     ForEach(GenderFilter.allCases) { option in
                                         FilterChip(
@@ -140,9 +170,6 @@ struct StudentListView: View {
                                             genderFilter = genderFilter == option ? nil : option
                                         }
                                     }
-                                }
-
-                                HStack(spacing: 8) {
                                     ForEach(AllocationFilter.allCases) { option in
                                         FilterChip(
                                             title: option.rawValue,
@@ -153,6 +180,7 @@ struct StudentListView: View {
                                         }
                                     }
                                 }
+                                .padding(.vertical, 2)
                             }
                             .listRowBackground(Color.clear)
                             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 4, trailing: 0))
@@ -184,23 +212,8 @@ struct StudentListView: View {
                         }
                     }
                 }
-            }
-            .navigationTitle("My Students")
-            .scrollContentBackground(.hidden)
-            .background(AppStyle.background)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        editor = StudentEditor()
-                    } label: {
-                        Label("Add Student", systemImage: "plus")
-                    }
-                }
-            }
-            .sheet(item: $editor) { editor in
-                StudentEditorView(editor: editor)
-            }
         }
+        .scrollContentBackground(.hidden)
     }
 
     private func deleteStudents(at offsets: IndexSet, from filteredStudents: [Student]) {
@@ -270,15 +283,8 @@ private struct StudentRow: View {
                 Text(student.name)
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(.primary)
-
-                HStack(spacing: 5) {
-                    Image(systemName: student.contactPreferenceValue.iconName)
-                        .font(.caption2)
-                    Text("\(student.contactPreferenceValue.rawValue): \(student.displayContactDetail)")
-                        .font(.caption)
-                        .lineLimit(1)
-                }
-                .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer()
@@ -323,7 +329,7 @@ private struct FilterChip: View {
                     .background(Capsule().fill(badgeBackground))
             }
             .foregroundStyle(isSelected ? .white : .primary)
-            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: AppStyle.radius)

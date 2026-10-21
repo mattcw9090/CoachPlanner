@@ -318,6 +318,56 @@ struct SessionEditorView: View {
                     }
                 }
 
+                Section {
+                    Picker("Status", selection: Binding(
+                        get: { status },
+                        set: { newValue in
+                            status = newValue
+                            applySessionStatusToSingleStudent(newValue)
+                            commitLiveStatus()
+                        }
+                    )) {
+                        ForEach(SessionStatus.allCases) { option in
+                            HStack {
+                                Image(systemName: option.iconName)
+                                    .foregroundStyle(option.color)
+                                Text(option.rawValue)
+                            }
+                            .tag(option)
+                        }
+                    }
+                    .disabled(locksSessionStatus)
+                } header: {
+                    Text("Status")
+                } footer: {
+                    if locksSessionStatus && status == .unscheduled {
+                        Text("This stays unscheduled until the availability message is sent.")
+                    } else if locksSessionStatus {
+                        Text("Session status follows the students. It is confirmed only when every student has accepted.")
+                    } else if isEditing {
+                        Text("A status change is saved immediately.")
+                    }
+                }
+
+                Section {
+                    Toggle("Court Booked", isOn: $isCourtBooked)
+
+                    if isCourtBooked {
+                        TextField("Court number", text: $courtNumber)
+                            .keyboardType(.numberPad)
+                            .textInputAutocapitalization(.never)
+                    }
+                } header: {
+                    Text("Court")
+                } footer: {
+                    if isCourtBooked && trimmedCourtNumber.isEmpty {
+                        Text("Court number is required when a court has been booked.")
+                            .foregroundStyle(.red)
+                    } else {
+                        Text("Court number is saved with Save.")
+                    }
+                }
+
                 if isEditing && !selectedStudentsList.isEmpty {
                     Section {
                         ForEach(selectedStudentsList) { student in
@@ -354,46 +404,6 @@ struct SessionEditorView: View {
                 }
 
                 Section {
-                    Picker("Venue", selection: Binding(
-                        get: { venue },
-                        set: { newValue in
-                            venue = newValue
-                            hasUserAdjustedVenue = true
-                        }
-                    )) {
-                        ForEach(Venue.allCases) { option in
-                            Text(option.rawValue).tag(option)
-                        }
-                    }
-
-                    Picker("Status", selection: Binding(
-                        get: { status },
-                        set: { newValue in
-                            status = newValue
-                            applySessionStatusToSingleStudent(newValue)
-                        }
-                    )) {
-                        ForEach(SessionStatus.allCases) { option in
-                            HStack {
-                                Image(systemName: option.iconName)
-                                    .foregroundStyle(option.color)
-                                Text(option.rawValue)
-                            }
-                            .tag(option)
-                        }
-                    }
-                    .disabled(locksSessionStatus)
-                } header: {
-                    Text("Session Details")
-                } footer: {
-                    if locksSessionStatus && status == .unscheduled {
-                        Text("This stays unscheduled until the availability message is sent.")
-                    } else if locksSessionStatus {
-                        Text("Session status follows the students. It is confirmed only when every student has accepted.")
-                    }
-                }
-
-                Section {
                     TextField("Add description", text: $sessionDescription, axis: .vertical)
                         .lineLimit(3...8)
                 } header: {
@@ -403,14 +413,6 @@ struct SessionEditorView: View {
                 }
 
                 Section {
-                    Toggle("Court Booked", isOn: $isCourtBooked)
-
-                    if isCourtBooked {
-                        TextField("Court number", text: $courtNumber)
-                            .keyboardType(.numberPad)
-                            .textInputAutocapitalization(.never)
-                    }
-
                     HStack {
                         Text("Session Fee")
                         Spacer()
@@ -424,12 +426,9 @@ struct SessionEditorView: View {
                         }
                     }
                 } header: {
-                    Text("Booking & Fee")
+                    Text("Fee")
                 } footer: {
-                    if isCourtBooked && trimmedCourtNumber.isEmpty {
-                        Text("Court number is required when a court has been booked.")
-                            .foregroundStyle(.red)
-                    } else if !isSessionFeeValid {
+                    if !isSessionFeeValid {
                         Text("Session fee is required and must be greater than zero.")
                             .foregroundStyle(.red)
                     }
@@ -464,6 +463,18 @@ struct SessionEditorView: View {
                                 hasUserAdjustedEnd = true
                             }
                         ))
+                    }
+
+                    Picker("Venue", selection: Binding(
+                        get: { venue },
+                        set: { newValue in
+                            venue = newValue
+                            hasUserAdjustedVenue = true
+                        }
+                    )) {
+                        ForEach(Venue.allCases) { option in
+                            Text(option.rawValue).tag(option)
+                        }
                     }
                 } header: {
                     Text("Schedule")
@@ -641,6 +652,7 @@ struct SessionEditorView: View {
             respondedAtByStudentID[id] = .now
         }
         refreshSessionStatusFromStudents()
+        commitLiveStatus()
     }
 
     private func refreshSessionStatusFromStudents() {
@@ -686,6 +698,7 @@ struct SessionEditorView: View {
                 respondedAtByStudentID[student.persistentModelID] = nil
             }
             refreshSessionStatusFromStudents()
+            commitLiveStatus()
         }
         let editingID = editor.session?.persistentModelID
         for session in existingSessions {
@@ -815,6 +828,35 @@ struct SessionEditorView: View {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let prefix = trimmed.hasPrefix("+") ? "+" : ""
         return prefix + trimmed.filter(\.isNumber)
+    }
+
+    /// Writes the status showing in this editor. Time, venue, court, and fee stay in the draft until Save.
+    private func commitLiveStatus() {
+        guard let session = editor.session else { return }
+        let persistedStudents = session.studentList
+        if persistedStudents.count <= 1 {
+            session.updateStatus(status, in: modelContext)
+        } else {
+            for student in persistedStudents {
+                guard let reply = studentStatuses[student.persistentModelID] else { continue }
+                session.setStudentStatus(
+                    student,
+                    to: reply,
+                    respondedAt: respondedAtByStudentID[student.persistentModelID],
+                    in: modelContext
+                )
+            }
+            if status == .unscheduled {
+                if session.statusValue != .unscheduled {
+                    session.updateStatus(.unscheduled, in: modelContext)
+                }
+            } else if session.statusValue == .unscheduled {
+                session.noteAvailabilityRequested(in: modelContext)
+            } else {
+                session.applyDerivedStatus(in: modelContext)
+            }
+        }
+        try? modelContext.save()
     }
 
     private func save() {

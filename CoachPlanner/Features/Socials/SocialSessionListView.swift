@@ -11,17 +11,15 @@ struct SocialSessionListView: View {
             SortDescriptor(\SocialSession.startTime)
         ]
     ) private var socialSessions: [SocialSession]
-    @Binding var weekStart: Date
+    @AppStorage("weekStartTimestamp") private var weekStartTimestamp: Double = 0
     @State private var editor: SocialSessionEditor?
     @State private var copyNotice: SocialCopyNotice?
 
-    private var weekEnd: Date {
-        Calendar.current.date(byAdding: .day, value: 6, to: weekStart) ?? weekStart
-    }
-
-    private var weekRangeText: String {
-        let formatter = Date.FormatStyle.dateTime.month(.abbreviated).day()
-        return "\(weekStart.formatted(formatter)) - \(weekEnd.formatted(formatter))"
+    private var weekStart: Date {
+        if weekStartTimestamp == 0 {
+            return Self.monday(of: .now)
+        }
+        return Self.monday(of: Date(timeIntervalSince1970: weekStartTimestamp))
     }
 
     private var sessionsForWeek: [SocialSession] {
@@ -30,40 +28,15 @@ struct SocialSessionListView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Socials Week")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Text(weekRangeText)
-                                .font(.title3.weight(.semibold))
-                        }
-
-                        Spacer()
-
-                        HStack(spacing: 8) {
-                            Button {
-                                moveWeek(by: -1)
-                            } label: {
-                                Image(systemName: "chevron.left")
-                            }
-                            .buttonStyle(.bordered)
-
-                            Button {
-                                moveWeek(by: 1)
-                            } label: {
-                                Image(systemName: "chevron.right")
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
-                    .padding(.vertical, 6)
+            VStack(spacing: 0) {
+                WeekRangeControls(weekStart: weekStart) { offset in
+                    moveWeek(by: offset)
                 }
-                .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 8, trailing: 0))
-                .listRowBackground(Color.clear)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
 
+                List {
                 if sessionsForWeek.isEmpty {
                     ContentUnavailableView {
                         Label("No Socials Planned", systemImage: "figure.badminton")
@@ -82,12 +55,22 @@ struct SocialSessionListView: View {
                         if !daySessions.isEmpty {
                             Section(day.name) {
                                 ForEach(daySessions) { session in
-                                    Button {
-                                        editor = SocialSessionEditor(session: session, weekStart: weekStart)
-                                    } label: {
-                                        SocialSessionRow(session: session)
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Button {
+                                            editor = SocialSessionEditor(session: session, weekStart: weekStart)
+                                        } label: {
+                                            SocialSessionRow(session: session)
+                                        }
+                                        .buttonStyle(.plain)
+
+                                        Button {
+                                            copyNameList(for: session)
+                                        } label: {
+                                            Label("Copy names", systemImage: "doc.on.doc")
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
                                     }
-                                    .buttonStyle(.plain)
                                     .swipeActions(edge: .leading, allowsFullSwipe: true) {
                                         Button {
                                             copyNameList(for: session)
@@ -119,10 +102,11 @@ struct SocialSessionListView: View {
                         }
                     }
                 }
+                }
+                .scrollContentBackground(.hidden)
             }
-            .navigationTitle("Socials")
-            .scrollContentBackground(.hidden)
             .background(AppStyle.background)
+            .navigationTitle("Socials")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -142,12 +126,13 @@ struct SocialSessionListView: View {
                     dismissButton: .default(Text("OK"))
                 )
             }
+            .attentionPromptInset()
         }
     }
 
     private func moveWeek(by offset: Int) {
         let nextWeek = Calendar.current.date(byAdding: .day, value: offset * 7, to: weekStart) ?? weekStart
-        weekStart = Self.monday(of: nextWeek)
+        weekStartTimestamp = Self.monday(of: nextWeek).timeIntervalSince1970
     }
 
     private func deleteSessions(at offsets: IndexSet, from sessions: [SocialSession]) {
@@ -229,6 +214,14 @@ private struct SocialCopyNotice: Identifiable {
 private struct SocialSessionRow: View {
     let session: SocialSession
 
+    private var confirmedCount: Int {
+        session.attendanceList.filter { $0.statusValue == .confirmed }.count
+    }
+
+    private var pendingCount: Int {
+        session.attendanceList.filter { $0.statusValue == .pending }.count
+    }
+
     private var attendanceCount: Int {
         session.attendanceList.isEmpty ? session.studentList.count : session.attendanceList.count
     }
@@ -261,22 +254,25 @@ private struct SocialSessionRow: View {
                     Text(session.title)
                         .font(.headline)
                         .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     Text("\(timeRangeText(start: session.startTime, end: session.endTime)) · \(session.venue)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("\(confirmedCount) confirmed · \(pendingCount) pending")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 VStack(alignment: .trailing, spacing: 6) {
-                    Text("\(attendanceCount)")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.purple)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(Color.purple.opacity(0.14)))
-
                     if session.statusValue == .finished {
                         Text("Finished")
                             .font(.caption2.weight(.bold))
@@ -989,99 +985,7 @@ struct SocialSessionEditorView: View {
         .padding(.top, 8)
     }
 
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Session name", text: $title)
-
-                    Picker("Day", selection: $dayOfWeek) {
-                        ForEach(Weekday.allCases) { day in
-                            Text(day.name).tag(day)
-                        }
-                    }
-
-                    Picker("Venue", selection: $venue) {
-                        ForEach(Venue.allCases) { venue in
-                            Text(venue.rawValue).tag(venue)
-                        }
-                    }
-
-                    Picker("Status", selection: $sessionStatus) {
-                        ForEach(SocialSessionStatus.allCases) { status in
-                            Text(status.rawValue).tag(status)
-                        }
-                    }
-
-                    LabeledContent("Start Time") {
-                        HalfHourTimePicker(selection: $startTime)
-                    }
-
-                    LabeledContent("End Time") {
-                        HalfHourTimePicker(selection: $endTime)
-                    }
-
-                    Toggle("Courts Booked", isOn: $areCourtsBooked.animation())
-
-                    if areCourtsBooked {
-                        TextField("Court numbers, e.g. 1, 2, 5", text: $courtNumbers)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    }
-                } header: {
-                    Text("Socials Details")
-                } footer: {
-                    if !isTimeValid {
-                        Text("End time must be after start time.")
-                            .foregroundStyle(.red)
-                    } else if !isUsingSelectedCourtBooking {
-                        Text("Use a time inside the selected vacant court booking, keeping its venue and court number.")
-                            .foregroundStyle(.red)
-                    } else if let overlap = overlappingSession {
-                        Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(start: overlap.startTime, end: overlap.endTime)) at \(overlap.venue).")
-                            .foregroundStyle(.red)
-                    } else if sessionStatus == .finished && !areAllParticipantsConfirmed {
-                        Text(selectedParticipantCount == 0 ? "Add at least one confirmed person before marking socials as finished." : "Everyone must be confirmed before marking socials as finished.")
-                            .foregroundStyle(.red)
-                    } else if shuttlecockCost < 0 || courtCost < 0 {
-                        Text("Costs cannot be negative.")
-                            .foregroundStyle(.red)
-                    }
-                }
-
-                if sessionStatus == .finished {
-                    Section {
-                        HStack {
-                            Text("Shuttlecocks")
-                            Spacer()
-                            TextField("0.00", text: $shuttlecockCostText)
-                                .keyboardType(.decimalPad)
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 110)
-                        }
-
-                        HStack {
-                            Text("Courts")
-                            Spacer()
-                            TextField("0.00", text: $courtCostText)
-                                .keyboardType(.decimalPad)
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 110)
-                        }
-
-                        HStack {
-                            Text("Split")
-                            Spacer()
-                            Text(areAllParticipantsConfirmed ? "\(currencyText(costPerPerson)) each" : "Confirm everyone first")
-                                .foregroundStyle(.secondary)
-                        }
-                    } header: {
-                        Text("Finished Costs")
-                    } footer: {
-                        Text("Everyone must be confirmed before the final split is saved.")
-                    }
-                }
-
+    private var nameListSection: some View {
                 Section {
                     SocialAttendanceSummary(statuses: selectedParticipants.map { status(for: $0) })
 
@@ -1113,7 +1017,7 @@ struct SocialSessionEditorView: View {
                                         SocialStatusMenu(
                                             status: status(for: student),
                                             onChange: { newStatus in
-                                                selectedStatusByStudentID[student.persistentModelID] = newStatus
+                                                setStudentAttendanceStatus(student, to: newStatus)
                                             }
                                         )
                                     }
@@ -1122,7 +1026,7 @@ struct SocialSessionEditorView: View {
                                         SocialPaymentMenu(
                                             status: paymentStatus(for: student),
                                             onChange: { newStatus in
-                                                paymentStatusByStudentID[student.persistentModelID] = newStatus
+                                                setStudentPaymentStatus(student, to: newStatus)
                                             }
                                         )
                                     }
@@ -1194,7 +1098,7 @@ struct SocialSessionEditorView: View {
                                         SocialStatusMenu(
                                             status: status(for: outsider),
                                             onChange: { newStatus in
-                                                selectedStatusByOutsiderID[outsider.persistentModelID] = newStatus
+                                                setOutsiderAttendanceStatus(outsider, to: newStatus)
                                             }
                                         )
                                     }
@@ -1203,7 +1107,7 @@ struct SocialSessionEditorView: View {
                                         SocialPaymentMenu(
                                             status: paymentStatus(for: outsider),
                                             onChange: { newStatus in
-                                                paymentStatusByOutsiderID[outsider.persistentModelID] = newStatus
+                                                setOutsiderPaymentStatus(outsider, to: newStatus)
                                             }
                                         )
                                     }
@@ -1258,14 +1162,130 @@ struct SocialSessionEditorView: View {
                 } header: {
                     Text("Name List")
                 } footer: {
-                    if !selectedStudents.isEmpty || !selectedOutsiders.isEmpty {
-                        Text(
-                            isFinishedSettlementReady
-                                ? "Swipe right to request payment, or swipe left to remove or hide."
-                                : "Swipe right to ask, or swipe left to remove or hide."
-                        )
+                    VStack(alignment: .leading, spacing: 4) {
+                        if isEditing {
+                            Text("A status change is saved immediately.")
+                        }
+                        if !selectedStudents.isEmpty || !selectedOutsiders.isEmpty {
+                            Text(
+                                isFinishedSettlementReady
+                                    ? "Swipe right to request payment, or swipe left to remove or hide."
+                                    : "Swipe right to ask, or swipe left to remove or hide."
+                            )
+                        }
                     }
                 }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                nameListSection
+
+                Section {
+                    Toggle("Courts Booked", isOn: $areCourtsBooked.animation())
+
+                    if areCourtsBooked {
+                        TextField("Court numbers, e.g. 1, 2, 5", text: $courtNumbers)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                } header: {
+                    Text("Court")
+                } footer: {
+                    Text("Court number is saved with Save.")
+                }
+
+                Section {
+                    TextField("Session name", text: $title)
+
+                    Picker("Day", selection: $dayOfWeek) {
+                        ForEach(Weekday.allCases) { day in
+                            Text(day.name).tag(day)
+                        }
+                    }
+
+                    Picker("Venue", selection: $venue) {
+                        ForEach(Venue.allCases) { venue in
+                            Text(venue.rawValue).tag(venue)
+                        }
+                    }
+
+                    Picker("Status", selection: $sessionStatus) {
+                        ForEach(SocialSessionStatus.allCases) { status in
+                            Text(status.rawValue).tag(status)
+                        }
+                    }
+                    .onChange(of: sessionStatus) { _, _ in
+                        commitLiveSessionStatus()
+                    }
+
+                    LabeledContent("Start Time") {
+                        HalfHourTimePicker(selection: $startTime)
+                    }
+
+                    LabeledContent("End Time") {
+                        HalfHourTimePicker(selection: $endTime)
+                    }
+                } header: {
+                    Text("Socials Details")
+                } footer: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if isEditing {
+                            Text("A status change is saved immediately.")
+                        }
+                        if !isTimeValid {
+                            Text("End time must be after start time.")
+                                .foregroundStyle(.red)
+                        } else if !isUsingSelectedCourtBooking {
+                            Text("Use a time inside the selected vacant court booking, keeping its venue and court number.")
+                                .foregroundStyle(.red)
+                        } else if let overlap = overlappingSession {
+                            Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(start: overlap.startTime, end: overlap.endTime)) at \(overlap.venue).")
+                                .foregroundStyle(.red)
+                        } else if sessionStatus == .finished && !areAllParticipantsConfirmed {
+                            Text(selectedParticipantCount == 0 ? "Add at least one confirmed person before marking socials as finished." : "Everyone must be confirmed before marking socials as finished.")
+                                .foregroundStyle(.red)
+                        } else if shuttlecockCost < 0 || courtCost < 0 {
+                            Text("Costs cannot be negative.")
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
+
+                if sessionStatus == .finished {
+                    Section {
+                        HStack {
+                            Text("Shuttlecocks")
+                            Spacer()
+                            TextField("0.00", text: $shuttlecockCostText)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 110)
+                        }
+
+                        HStack {
+                            Text("Courts")
+                            Spacer()
+                            TextField("0.00", text: $courtCostText)
+                                .keyboardType(.decimalPad)
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 110)
+                        }
+
+                        HStack {
+                            Text("Split")
+                            Spacer()
+                            Text(areAllParticipantsConfirmed ? "\(currencyText(costPerPerson)) each" : "Confirm everyone first")
+                                .foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text("Finished Costs")
+                    } footer: {
+                        Text("Everyone must be confirmed before the final split is saved.")
+                    }
+                }
+
 
                 Section {
                     Picker("People", selection: $addPeoplePage) {
@@ -1401,6 +1421,82 @@ struct SocialSessionEditorView: View {
         hiddenOutsiderIDs.remove(outsider.persistentModelID)
         outsiderSearch = ""
         UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func setStudentAttendanceStatus(_ student: Student, to status: SessionStatus) {
+        selectedStatusByStudentID[student.persistentModelID] = status
+        commitStoredStatus(student: student, status: status)
+    }
+
+    private func setOutsiderAttendanceStatus(_ outsider: Outsider, to status: SessionStatus) {
+        selectedStatusByOutsiderID[outsider.persistentModelID] = status
+        commitStoredStatus(outsider: outsider, status: status)
+    }
+
+    private func setStudentPaymentStatus(_ student: Student, to status: SocialPaymentStatus) {
+        paymentStatusByStudentID[student.persistentModelID] = status
+        commitStoredStatus(student: student, paymentStatus: status)
+    }
+
+    private func setOutsiderPaymentStatus(_ outsider: Outsider, to status: SocialPaymentStatus) {
+        paymentStatusByOutsiderID[outsider.persistentModelID] = status
+        commitStoredStatus(outsider: outsider, paymentStatus: status)
+    }
+
+    private func commitLiveSessionStatus() {
+        commitStoredStatus()
+    }
+
+    /// Writes attendance, payment, and Planned/Finished for an existing social. Time, venue, court, and cost stay in the draft until Save.
+    private func commitStoredStatus(
+        student: Student? = nil,
+        outsider: Outsider? = nil,
+        status: SessionStatus? = nil,
+        paymentStatus: SocialPaymentStatus? = nil
+    ) {
+        guard let session = editor.session else { return }
+        guard originalSessionSnapshot?.matches(session, ignoringDeletedOutsiders: locallyDeletedOutsiderIDs) == true else { return }
+
+        var changed = false
+        if let record = storedAttendance(student: student, outsider: outsider) {
+            if let status, record.status != status.rawValue {
+                record.status = status.rawValue
+                changed = true
+            }
+            if let paymentStatus, record.paymentStatus != paymentStatus.rawValue {
+                record.paymentStatus = paymentStatus.rawValue
+                changed = true
+            }
+        }
+
+        let storedSessionStatus: SocialSessionStatus = (sessionStatus == .finished && !areAllParticipantsConfirmed) ? .planned : sessionStatus
+        if session.status != storedSessionStatus.rawValue {
+            session.status = storedSessionStatus.rawValue
+            changed = true
+        }
+
+        guard changed else { return }
+        do {
+            try modelContext.save()
+            originalSessionSnapshot = SocialSessionEditorSnapshot(session)
+        } catch {
+            modelContext.rollback()
+            contactNotice = SocialContactNotice(
+                title: "Couldn't Save Status",
+                message: "The status change wasn't saved. Please try again."
+            )
+        }
+    }
+
+    private func storedAttendance(student: Student?, outsider: Outsider?) -> SocialAttendance? {
+        guard let session = editor.session else { return nil }
+        if let student {
+            return session.attendanceList.first { $0.student?.persistentModelID == student.persistentModelID }
+        }
+        if let outsider {
+            return session.attendanceList.first { $0.outsider?.persistentModelID == outsider.persistentModelID }
+        }
+        return nil
     }
 
     private func save() {
@@ -2223,8 +2319,6 @@ private struct OutsiderEditorView: View {
 }
 
 #Preview {
-    @Previewable @State var weekStart = SocialSessionListView.monday(of: .now)
-
-    SocialSessionListView(weekStart: $weekStart)
+    SocialSessionListView()
         .modelContainer(for: [Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self, CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self], inMemory: true)
 }

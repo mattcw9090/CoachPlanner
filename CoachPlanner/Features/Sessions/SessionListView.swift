@@ -5,6 +5,7 @@ import UIKit
 struct SessionListView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.openURL) private var openURL
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Query(
         sort: [
             SortDescriptor(\CoachingSession.dayOfWeek),
@@ -327,16 +328,40 @@ struct SessionListView: View {
 
         NavigationStack {
             VStack(spacing: 0) {
-                weekSummaryStrip(summary)
-                    .padding(.horizontal, calendarHorizontalPadding)
-                    .padding(.top, 8)
-                    .padding(.bottom, 10)
+                WeekRangeControls(weekStart: weekStart) { offset in
+                    let next = Calendar.current.date(byAdding: .day, value: offset * 7, to: weekStart) ?? weekStart
+                    setWeekStart(next)
+                }
+                .padding(.horizontal, calendarHorizontalPadding)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
 
-                weekPager(summary)
+                if weekIsEmpty {
+                    ContentUnavailableView {
+                        Label("Nothing planned", systemImage: "calendar")
+                    } description: {
+                        Text("Add a coaching session, a court booking, or a social for this week.")
+                    } actions: {
+                        addBlockMenu
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    weekSummaryLine(summary)
+                        .padding(.horizontal, calendarHorizontalPadding)
+                        .padding(.bottom, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    weekPager(summary)
+                }
             }
             .background(AppStyle.background)
             .navigationTitle("Sessions")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    addBlockMenu
+                }
+
                 ToolbarItem(placement: .topBarTrailing) {
                     sessionShareMenu(summary)
                 }
@@ -345,6 +370,7 @@ struct SessionListView: View {
                     moveToNextWeekButton
                 }
             }
+            .attentionPromptInset()
             .confirmationDialog(
                 "Move this week's sessions to next week?",
                 isPresented: $isResetConfirmationPresented,
@@ -417,9 +443,110 @@ struct SessionListView: View {
         Button(role: .destructive) {
             isResetConfirmationPresented = true
         } label: {
-            Label("Move to Next Week", systemImage: "arrow.forward")
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.forward")
+                Text("Move week")
+            }
         }
+        .accessibilityLabel("Move week")
         .disabled(sessionsForWeek.isEmpty || isMovingSessions)
+    }
+
+    private enum NewBlockKind {
+        case coaching, court, socials
+    }
+
+    private var addBlockMenu: some View {
+        Menu {
+            Button {
+                presentNewBlock(.coaching)
+            } label: {
+                Label("Coaching", systemImage: "person.2.fill")
+            }
+
+            Button {
+                presentNewBlock(.court)
+            } label: {
+                Label("Court", systemImage: "sportscourt.fill")
+            }
+
+            Button {
+                presentNewBlock(.socials)
+            } label: {
+                Label("Socials", systemImage: "figure.badminton")
+            }
+        } label: {
+            Label("Add", systemImage: "plus")
+        }
+    }
+
+    private var weekIsEmpty: Bool {
+        sessionsForWeek.isEmpty && courtBookingsForWeek.isEmpty && socialSessionsForWeek.isEmpty
+    }
+
+    private func presentNewBlock(_ kind: NewBlockKind) {
+        let slot = nextFreeSlot()
+        switch kind {
+        case .coaching:
+            editor = SessionEditor(
+                preselectedDay: slot.day,
+                preselectedStartTime: slot.start,
+                preselectedEndTime: slot.end,
+                weekStart: weekStart
+            )
+        case .court:
+            courtBookingEditor = CourtBookingEditor(
+                weekStart: weekStart,
+                preselectedDay: slot.day,
+                preselectedStartTime: slot.start,
+                preselectedEndTime: slot.end
+            )
+        case .socials:
+            socialSessionEditor = SocialSessionEditor(
+                weekStart: weekStart,
+                preselectedDay: slot.day,
+                preselectedStartTime: slot.start,
+                preselectedEndTime: slot.end
+            )
+        }
+    }
+
+    private func nextFreeSlot() -> (day: Weekday, start: Date, end: Date) {
+        let now = Date()
+        let parts = Calendar.current.dateComponents([.hour, .minute], from: now)
+        let nowMinutes = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+        let today = Weekday.allCases.first { isToday($0, in: weekStart) }
+        var blocks: [TimetableBlock] = []
+        for session in sessionsForWeek {
+            blocks.append(TimetableBlock(
+                day: session.dayOfWeek,
+                startMinutes: minutesOfDay(session.startTime),
+                endMinutes: minutesOfDay(session.endTime)
+            ))
+        }
+        for booking in courtBookingsForWeek {
+            blocks.append(TimetableBlock(
+                day: booking.dayOfWeek,
+                startMinutes: minutesOfDay(booking.startTime),
+                endMinutes: minutesOfDay(booking.endTime)
+            ))
+        }
+        for social in socialSessionsForWeek {
+            blocks.append(TimetableBlock(
+                day: social.dayOfWeek,
+                startMinutes: minutesOfDay(social.startTime),
+                endMinutes: minutesOfDay(social.endTime)
+            ))
+        }
+        let slot = TimetableFreeSlot.next(
+            dayStartHour: dayStartHour,
+            dayEndHour: dayEndHour,
+            nowMinutes: nowMinutes,
+            today: today?.rawValue,
+            blocks: blocks
+        )
+        let day = Weekday(rawValue: slot.day) ?? .monday
+        return (day, time(for: slot.startMinutes), time(for: slot.endMinutes))
     }
 
     private func weekPager(_ summary: ScheduleSummary) -> some View {
@@ -462,41 +589,47 @@ struct SessionListView: View {
             dayHeaderRow(for: targetWeekStart)
                 .padding(.horizontal, calendarHorizontalPadding)
 
-            ScrollView(.vertical) {
-                grid(summary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, calendarHorizontalPadding)
-                    .padding(.bottom, 28)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    grid(summary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, calendarHorizontalPadding)
+                        .padding(.bottom, 28)
+                }
+                .scrollDisabled(
+                    isWeekVerticalScrollLocked ||
+                        sessionDrag != nil ||
+                        draftSelection != nil
+                )
+                .onAppear {
+                    scrollToCurrentHour(proxy)
+                }
+                .onChange(of: targetWeekStart) { _, _ in
+                    scrollToCurrentHour(proxy)
+                }
             }
-            .scrollDisabled(
-                isWeekVerticalScrollLocked ||
-                    sessionDrag != nil ||
-                    draftSelection != nil
-            )
         }
         .allowsHitTesting(isInteractive)
     }
 
-    private func weekSummaryStrip(_ summary: ScheduleSummary) -> some View {
-        HStack(spacing: 8) {
-            MetricTile(
-                title: "Sessions",
-                value: "\(sessionsForWeek.count)",
-                systemImage: "calendar",
-                tint: .blue
-            )
-            MetricTile(
-                title: "Confirmed",
-                value: "\(summary.confirmedSessionCount)",
-                systemImage: "checkmark.circle.fill",
-                tint: .green
-            )
-            MetricTile(
-                title: "Fees",
-                value: summary.totalSessionFees.formatted(.currency(code: AppStyle.currencyCode).precision(.fractionLength(0...2))),
-                systemImage: "dollarsign.circle.fill",
-                tint: .purple
-            )
+    private func weekSummaryLine(_ summary: ScheduleSummary) -> some View {
+        let sessionCount = sessionsForWeek.count
+        let sessionWord = sessionCount == 1 ? "session" : "sessions"
+        let fees = summary.totalSessionFees.formatted(
+            .currency(code: AppStyle.currencyCode).precision(.fractionLength(0...2))
+        )
+        return Text("\(sessionCount) \(sessionWord) · \(summary.confirmedSessionCount) confirmed · \(fees)")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func scrollToCurrentHour(_ proxy: ScrollViewProxy) {
+        let hour = Calendar.current.component(.hour, from: .now)
+        let target = min(max(hour, dayStartHour), dayEndHour - 1)
+        DispatchQueue.main.async {
+            proxy.scrollTo(target, anchor: .top)
         }
     }
 
@@ -795,14 +928,16 @@ struct SessionListView: View {
     }
 
     private var timeAxis: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.clear.frame(width: timeAxisWidth, height: totalGridHeight)
+        VStack(spacing: 0) {
             ForEach(visibleHours, id: \.self) { hour in
                 Text(hourLabel(hour))
-                    .font(AppStyle.timeGridFont(size: 10, weight: .medium))
+                    .font(AppStyle.timeGridFont(size: 10, weight: .medium, dynamicTypeSize: dynamicTypeSize))
                     .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                     .padding(.trailing, 6)
-                    .offset(y: CGFloat(hour - dayStartHour) * hourHeight - 7)
+                    .padding(.top, 2)
+                    .frame(height: hourHeight, alignment: .top)
+                    .id(hour)
             }
         }
         .frame(width: timeAxisWidth)
@@ -2341,6 +2476,7 @@ private struct SessionBlock: View {
     let session: CoachingSession
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var color: Color {
         session.displayStatus.color
@@ -2415,32 +2551,32 @@ private struct SessionBlock: View {
                 }
             } else {
                 Text(studentNames.isEmpty ? "No students" : studentNames)
-                    .font(AppStyle.timeGridFont(size: 10, weight: .bold))
+                    .font(AppStyle.timeGridFont(size: 10, weight: .bold, dynamicTypeSize: dynamicTypeSize))
                     .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.75)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 if let confirmationBadge {
                     Text(confirmationBadge)
-                        .font(AppStyle.timeGridFont(size: 8, weight: .bold))
+                        .font(AppStyle.timeGridFont(size: 8, weight: .bold, dynamicTypeSize: dynamicTypeSize))
                         .foregroundStyle(color)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
             Text(session.venue)
-                .font(AppStyle.timeGridFont(size: 9, weight: .medium))
+                .font(AppStyle.timeGridFont(size: 9, weight: .medium, dynamicTypeSize: dynamicTypeSize))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
 
             if !sessionMetadata.isEmpty {
                 Text(sessionMetadata)
-                    .font(AppStyle.timeGridFont(size: 8, weight: .semibold))
+                    .font(AppStyle.timeGridFont(size: 8, weight: .semibold, dynamicTypeSize: dynamicTypeSize))
                     .foregroundStyle(color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.leading, 6)
@@ -2466,17 +2602,17 @@ private struct SessionBlock: View {
 
     private func compactStudentNameLine(_ student: Student) -> some View {
         Text(student.name)
-            .font(AppStyle.timeGridFont(size: 8, weight: .semibold))
+            .font(AppStyle.timeGridFont(size: 8, weight: .semibold, dynamicTypeSize: dynamicTypeSize))
             .foregroundStyle(.primary)
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .truncationMode(.tail)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 private struct CourtBookingBlock: View {
     let booking: CourtBooking
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var courtNumber: String {
         booking.courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2485,16 +2621,16 @@ private struct CourtBookingBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(booking.venue)
-                .font(AppStyle.timeGridFont(size: 10, weight: .bold))
+                .font(AppStyle.timeGridFont(size: 10, weight: .bold, dynamicTypeSize: dynamicTypeSize))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
-                .minimumScaleFactor(0.75)
+                .fixedSize(horizontal: false, vertical: true)
 
             Text("Court \(courtNumber)")
-                .font(AppStyle.timeGridFont(size: 9, weight: .semibold))
+                .font(AppStyle.timeGridFont(size: 9, weight: .semibold, dynamicTypeSize: dynamicTypeSize))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.leading, 6)
         .padding(.trailing, 3)
@@ -2519,6 +2655,7 @@ private struct CourtBookingBlock: View {
 
 private struct SocialSessionBlock: View {
     let session: SocialSession
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var courtSummary: String {
         guard session.areCourtsBooked else { return "" }
@@ -2531,23 +2668,23 @@ private struct SocialSessionBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(session.title)
-                .font(AppStyle.timeGridFont(size: 10, weight: .bold))
+                .font(AppStyle.timeGridFont(size: 10, weight: .bold, dynamicTypeSize: dynamicTypeSize))
                 .foregroundStyle(.primary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.75)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
 
             Text(session.venue)
-                .font(AppStyle.timeGridFont(size: 9, weight: .medium))
+                .font(AppStyle.timeGridFont(size: 9, weight: .medium, dynamicTypeSize: dynamicTypeSize))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
 
             if !courtSummary.isEmpty {
                 Text(courtSummary)
-                    .font(AppStyle.timeGridFont(size: 8, weight: .semibold))
+                    .font(AppStyle.timeGridFont(size: 8, weight: .semibold, dynamicTypeSize: dynamicTypeSize))
                     .foregroundStyle(.purple)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.leading, 6)

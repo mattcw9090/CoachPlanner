@@ -53,6 +53,7 @@ struct AppSettingsView: View {
             }
             .background(AppStyle.background.ignoresSafeArea())
             .navigationTitle("Settings")
+            .attentionPromptInset()
         }
         .background(
             PhoneContactPickerPresenter(

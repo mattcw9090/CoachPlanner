@@ -51,8 +51,11 @@ enum AppStyle {
     static let separator = Color(.separator)
     static let radius: CGFloat = 10
 
-    static func timeGridFont(size: CGFloat, weight: Font.Weight) -> Font {
-        .system(size: size, weight: weight)
+    static func timeGridFont(size: CGFloat, weight: Font.Weight, dynamicTypeSize: DynamicTypeSize) -> Font {
+        .system(
+            size: TimetableTextScale.pointSize(base: size, scale: TimetableTextScale(dynamicTypeSize)),
+            weight: weight
+        )
     }
 
     static var currencyCode: String {
@@ -68,44 +71,62 @@ enum AppStyle {
     }
 }
 
-struct MetricTile: View {
-    let title: String
-    let value: String
-    let systemImage: String
-    var tint: Color = .accentColor
+extension TimetableTextScale {
+    init(_ size: DynamicTypeSize) {
+        switch size {
+        case .xSmall: self = .xSmall
+        case .small: self = .small
+        case .medium: self = .medium
+        case .large: self = .large
+        case .xLarge: self = .xLarge
+        case .xxLarge: self = .xxLarge
+        case .xxxLarge: self = .xxxLarge
+        default: self = .accessibility
+        }
+    }
+}
+
+/// The date range and previous/next controls shared by Students, Sessions, and Socials.
+struct WeekRangeControls: View {
+    let weekStart: Date
+    let onMove: (Int) -> Void
+
+    private var weekEnd: Date {
+        Calendar.current.date(byAdding: .day, value: 6, to: weekStart) ?? weekStart
+    }
+
+    private var weekRangeText: String {
+        let formatter = Date.FormatStyle.dateTime.month(.abbreviated).day()
+        return "\(weekStart.formatted(formatter)) – \(weekEnd.formatted(formatter))"
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 24, height: 24)
-                .background(Circle().fill(tint.opacity(0.14)))
+        HStack(alignment: .center, spacing: 12) {
+            Text(weekRangeText)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(value)
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+            Spacer(minLength: 8)
 
-                Text(title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+            HStack(spacing: 8) {
+                Button {
+                    onMove(-1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Previous week")
+
+                Button {
+                    onMove(1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                }
+                .buttonStyle(.bordered)
+                .accessibilityLabel("Next week")
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: AppStyle.radius)
-                .fill(AppStyle.surface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: AppStyle.radius)
-                .stroke(AppStyle.separator.opacity(0.16), lineWidth: 0.5)
-        )
     }
 }

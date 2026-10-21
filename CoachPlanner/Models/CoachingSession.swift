@@ -37,9 +37,23 @@ enum SessionStatus: String, CaseIterable, Identifiable, Codable {
     var color: Color {
         switch self {
         case .unscheduled: return .red
-        case .pending: return .yellow
+        case .pending: return Self.pendingAmber
         case .confirmed: return .green
         }
+    }
+
+    /// Darker amber on a light background, and a lighter amber in Dark Mode, so Pending stays readable in both.
+    private static var pendingAmber: Color {
+        #if canImport(UIKit)
+        Color(uiColor: UIColor { traits in
+            if traits.userInterfaceStyle == .dark {
+                return UIColor(red: 1, green: 0.76, blue: 0.32, alpha: 1)
+            }
+            return UIColor(red: 0.56, green: 0.32, blue: 0.02, alpha: 1)
+        })
+        #else
+        Color(red: 0.56, green: 0.32, blue: 0.02)
+        #endif
     }
 
     var iconName: String {
@@ -430,5 +444,75 @@ final class CourtBooking: SyncTimestamped {
 
     var venueValue: Venue {
         Venue(rawValue: venue) ?? .pbaMalaga
+    }
+}
+
+/// How far timetable block text grows with the system text size. Accessibility sizes stay at the same cap as the largest standard size.
+enum TimetableTextScale: Equatable {
+    case xSmall, small, medium, large, xLarge, xxLarge, xxxLarge, accessibility
+
+    var multiplier: CGFloat {
+        switch self {
+        case .xSmall: return 0.82
+        case .small: return 0.9
+        case .medium: return 0.95
+        case .large: return 1
+        case .xLarge: return 1.12
+        case .xxLarge: return 1.23
+        case .xxxLarge, .accessibility: return 1.35
+        }
+    }
+
+    static func pointSize(base: CGFloat, scale: TimetableTextScale) -> CGFloat {
+        min(base * scale.multiplier, 13)
+    }
+}
+
+struct TimetableBlock: Equatable {
+    var day: Int
+    var startMinutes: Int
+    var endMinutes: Int
+}
+
+/// The next free hour on the coaching grid. Today starts at the next half hour; any other day starts in the afternoon.
+enum TimetableFreeSlot {
+    static func next(
+        dayStartHour: Int = 6,
+        dayEndHour: Int = 23,
+        durationMinutes: Int = 60,
+        nowMinutes: Int,
+        today: Int?,
+        blocks: [TimetableBlock],
+        otherDayStart: Int = 16 * 60,
+        fallbackStart: Int = 17 * 60
+    ) -> (day: Int, startMinutes: Int, endMinutes: Int) {
+        let orderedDays = [1, 2, 3, 4, 5, 6, 7]
+        let days: [Int]
+        if let today, let index = orderedDays.firstIndex(of: today) {
+            days = Array(orderedDays[index...]) + Array(orderedDays[..<index])
+        } else {
+            days = orderedDays
+        }
+
+        let latestStart = dayEndHour * 60 - durationMinutes
+        for day in days {
+            var minutes = day == today
+                ? max(dayStartHour * 60, ((max(nowMinutes, 0) + 29) / 30) * 30)
+                : otherDayStart
+            minutes = max(dayStartHour * 60, minutes)
+            while minutes <= latestStart {
+                let end = minutes + durationMinutes
+                let blocked = blocks.contains { block in
+                    block.day == day && minutes < block.endMinutes && end > block.startMinutes
+                }
+                if !blocked {
+                    return (day, minutes, end)
+                }
+                minutes += 30
+            }
+        }
+
+        let fallbackDay = today ?? orderedDays[0]
+        return (fallbackDay, fallbackStart, fallbackStart + durationMinutes)
     }
 }
