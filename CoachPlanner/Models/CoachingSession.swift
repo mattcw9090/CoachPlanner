@@ -251,10 +251,15 @@ final class CoachingSession: SyncTimestamped {
         let record = confirmationRecord(for: student) ?? SessionStudentConfirmation(student: student)
         if record.modelContext == nil {
             context.insert(record)
+        }
+        // The student's inverse relationship inserts this row as soon as the
+        // student is already in the context. Attach it to this session whenever
+        // that link is still missing.
+        if record.session?.persistentModelID != persistentModelID {
             record.session = self
-            if !confirmationList.contains(where: { $0.persistentModelID == record.persistentModelID }) {
-                confirmationList = confirmationList + [record]
-            }
+        }
+        if !confirmationList.contains(where: { $0.persistentModelID == record.persistentModelID }) {
+            confirmationList = confirmationList + [record]
         }
         record.student = student
         record.status = status.rawValue
