@@ -38,9 +38,6 @@ struct SessionListView: View {
     @State private var selectedCourtBooking: CourtBooking?
     @State private var isResetConfirmationPresented = false
     @State private var isMovingSessions = false
-    @State private var isBulkCourtSelectionEnabled = false
-    @State private var bulkSessionSelection: Set<PersistentIdentifier> = []
-    @State private var isMassCourtBookingSheetPresented = false
     @State private var weekDragTranslation: CGFloat = 0
     @State private var weekDragAxis: WeekDragAxis?
     @State private var isWeekCommitInProgress = false
@@ -72,29 +69,6 @@ struct SessionListView: View {
         socialSessions.filter {
             Calendar.current.isDate(Self.monday(of: $0.weekStart), inSameDayAs: Self.monday(of: weekStart))
         }
-    }
-
-    private var unbookedSessionsForWeek: [CoachingSession] {
-        sessionsForWeek.filter(isCourtUnbooked)
-    }
-
-    private var isBulkSelectionModeEnabled: Bool {
-        isBulkCourtSelectionEnabled
-    }
-
-    private var eligibleBulkSessions: [CoachingSession] {
-        isBulkCourtSelectionEnabled ? unbookedSessionsForWeek : []
-    }
-
-    private var selectedBulkSessions: [CoachingSession] {
-        eligibleBulkSessions.filter {
-            bulkSessionSelection.contains($0.persistentModelID)
-        }
-    }
-
-    private var areAllEligibleBulkSessionsSelected: Bool {
-        !eligibleBulkSessions.isEmpty &&
-            selectedBulkSessions.count == eligibleBulkSessions.count
     }
 
     private var scheduleSummary: ScheduleSummary {
@@ -152,7 +126,6 @@ struct SessionListView: View {
         pendingDraftSelection = nil
         draftSelection = nil
         selectedCourtBooking = nil
-        cancelBulkSelection()
         weekStartTimestamp = Self.monday(of: date).timeIntervalSince1970
     }
 
@@ -180,7 +153,6 @@ struct SessionListView: View {
         draftSelection == nil &&
         selectedCourtBooking == nil &&
         sessionDrag == nil &&
-        !isBulkSelectionModeEnabled &&
         !isWeekCommitInProgress
     }
 
@@ -363,21 +335,10 @@ struct SessionListView: View {
                 weekPager(summary)
             }
             .background(AppStyle.background)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if isBulkSelectionModeEnabled {
-                    bulkSelectionBar
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            .animation(.snappy(duration: 0.24), value: isBulkSelectionModeEnabled)
             .navigationTitle("Sessions")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     sessionShareMenu(summary)
-                }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    bulkCourtSelectionButton
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
@@ -405,13 +366,6 @@ struct SessionListView: View {
             }
             .sheet(item: $socialSessionEditor) { editor in
                 SocialSessionEditorView(editor: editor)
-            }
-            .sheet(isPresented: $isMassCourtBookingSheetPresented) {
-                MassCourtBookingSheet(selectedCount: selectedBulkSessions.count) { courtNumber in
-                    applyMassCourtBooking(courtNumber: courtNumber)
-                }
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
             }
             .sheet(item: $fileExport) { item in
                 ICSShareSheet(url: item.url)
@@ -457,26 +411,6 @@ struct SessionListView: View {
         } label: {
             Label("Share", systemImage: "square.and.arrow.up")
         }
-        .disabled(isBulkSelectionModeEnabled)
-    }
-
-    @ViewBuilder
-    private var bulkCourtSelectionButton: some View {
-        if isBulkSelectionModeEnabled {
-            Button {
-                cancelBulkSelection()
-            } label: {
-                Label("Cancel Bulk Selection", systemImage: "xmark.circle")
-            }
-            .tint(.blue)
-        } else {
-            Button {
-                beginBulkCourtSelection()
-            } label: {
-                Label("Book Courts", systemImage: "sportscourt")
-            }
-            .disabled(unbookedSessionsForWeek.isEmpty)
-        }
     }
 
     private var moveToNextWeekButton: some View {
@@ -485,7 +419,7 @@ struct SessionListView: View {
         } label: {
             Label("Move to Next Week", systemImage: "arrow.forward")
         }
-        .disabled(sessionsForWeek.isEmpty || isBulkSelectionModeEnabled || isMovingSessions)
+        .disabled(sessionsForWeek.isEmpty || isMovingSessions)
     }
 
     private func weekPager(_ summary: ScheduleSummary) -> some View {
@@ -660,8 +594,7 @@ struct SessionListView: View {
                             summary: summary
                         ) {
                             handleSessionTap(session)
-                        } else if !isBulkSelectionModeEnabled,
-                                  let social = socialSessionAtGridLocation(
+                        } else if let social = socialSessionAtGridLocation(
                                     at: location,
                                     gridWidth: proxy.size.width,
                                     summary: summary
@@ -673,8 +606,7 @@ struct SessionListView: View {
                         }
                     },
                     onDoubleTap: { location in
-                        guard !isBulkSelectionModeEnabled,
-                              let session = sessionAtGridLocation(
+                        guard let session = sessionAtGridLocation(
                                 at: location,
                                 gridWidth: proxy.size.width,
                                 summary: summary
@@ -916,12 +848,7 @@ struct SessionListView: View {
 
             ForEach(summary.sessions(for: day)) { session in
                 let isDragging = sessionDrag?.session.persistentModelID == session.persistentModelID
-                SessionBlock(
-                    session: session,
-                    isBulkSelectionModeEnabled: isBulkSelectionModeEnabled,
-                    isBulkSelectionEligible: isEligibleForBulkSelection(session),
-                    isBulkSelectionSelected: bulkSessionSelection.contains(session.persistentModelID)
-                )
+                SessionBlock(session: session)
                     .frame(height: blockHeight(for: session))
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: session))
@@ -934,7 +861,6 @@ struct SessionListView: View {
                     .padding(.horizontal, 2)
                     .offset(y: yOffset(for: booking))
                     .onTapGesture {
-                        guard !isBulkSelectionModeEnabled else { return }
                         pendingDraftSelection = nil
                         selectedCourtBooking = booking
                     }
@@ -999,98 +925,8 @@ struct SessionListView: View {
         )
     }
 
-    private var bulkSelectionBar: some View {
-        HStack(spacing: 10) {
-            Text("\(selectedBulkSessions.count) selected")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
-
-            Spacer(minLength: 8)
-
-            Button(areAllEligibleBulkSessionsSelected ? "Clear" : "Select All") {
-                toggleAllBulkSelections()
-            }
-            .buttonStyle(.bordered)
-
-            Button {
-                isMassCourtBookingSheetPresented = true
-            } label: {
-                Label("Book", systemImage: "checkmark.circle.fill")
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(selectedBulkSessions.isEmpty)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.bar)
-        .overlay(alignment: .top) {
-            Divider()
-        }
-    }
-
     private func handleSessionTap(_ session: CoachingSession) {
-        if isBulkSelectionModeEnabled {
-            toggleBulkSelection(for: session)
-            return
-        }
-
         editor = SessionEditor(session: session, weekStart: weekStart)
-    }
-
-    private func beginBulkCourtSelection() {
-        pendingDraftSelection = nil
-        draftSelection = nil
-        selectedCourtBooking = nil
-        sessionDrag = nil
-        bulkSessionSelection.removeAll()
-        isBulkCourtSelectionEnabled = true
-    }
-
-    private func cancelBulkSelection() {
-        isBulkCourtSelectionEnabled = false
-        bulkSessionSelection.removeAll()
-        isMassCourtBookingSheetPresented = false
-    }
-
-    private func toggleBulkSelection(for session: CoachingSession) {
-        guard isEligibleForBulkSelection(session),
-              belongsToVisibleWeek(session.weekStart) else { return }
-
-        let id = session.persistentModelID
-        if bulkSessionSelection.contains(id) {
-            bulkSessionSelection.remove(id)
-        } else {
-            bulkSessionSelection.insert(id)
-        }
-        UISelectionFeedbackGenerator().selectionChanged()
-    }
-
-    private func toggleAllBulkSelections() {
-        if areAllEligibleBulkSessionsSelected {
-            bulkSessionSelection.removeAll()
-        } else {
-            bulkSessionSelection = Set(
-                eligibleBulkSessions.map(\.persistentModelID)
-            )
-        }
-        UISelectionFeedbackGenerator().selectionChanged()
-    }
-
-    private func applyMassCourtBooking(courtNumber: String) {
-        let trimmedCourtNumber = courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isBulkCourtSelectionEnabled,
-              !trimmedCourtNumber.isEmpty else { return }
-
-        for session in selectedBulkSessions {
-            session.courtNumber = trimmedCourtNumber
-        }
-
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-        cancelBulkSelection()
-    }
-
-    private func isEligibleForBulkSelection(_ session: CoachingSession) -> Bool {
-        isBulkCourtSelectionEnabled && isCourtUnbooked(session)
     }
 
     private func advanceStatus(of session: CoachingSession) {
@@ -1116,8 +952,7 @@ struct SessionListView: View {
     }
 
     private var canBeginGridSelection: Bool {
-        !isBulkSelectionModeEnabled &&
-            pendingDraftSelection == nil &&
+        pendingDraftSelection == nil &&
             selectedCourtBooking == nil &&
             sessionDrag == nil &&
             !isWeekCommitInProgress
@@ -1125,7 +960,6 @@ struct SessionListView: View {
 
     private func canDragSession(_ session: CoachingSession) -> Bool {
         isCourtUnbooked(session) &&
-            !isBulkSelectionModeEnabled &&
             pendingDraftSelection == nil &&
             draftSelection == nil &&
             selectedCourtBooking == nil &&
@@ -1963,60 +1797,6 @@ private struct TRSCourtRequestSlot {
     let courtCount: Int
 }
 
-private struct MassCourtBookingSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    let selectedCount: Int
-    let onBook: (String) -> Void
-
-    @State private var courtNumber = ""
-    @FocusState private var isCourtNumberFocused: Bool
-
-    private var trimmedCourtNumber: String {
-        courtNumber.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Court number", text: $courtNumber)
-                        .keyboardType(.numberPad)
-                        .textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled()
-                        .focused($isCourtNumberFocused)
-                } header: {
-                    Text("Court Number")
-                } footer: {
-                    Text("This court number will be assigned to all \(selectedCount) selected \(selectedCount == 1 ? "session" : "sessions").")
-                }
-            }
-            .navigationTitle("Book Courts")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                }
-
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Book") {
-                        onBook(trimmedCourtNumber)
-                        dismiss()
-                    }
-                    .disabled(trimmedCourtNumber.isEmpty)
-                }
-            }
-            .onAppear {
-                DispatchQueue.main.async {
-                    isCourtNumberFocused = true
-                }
-            }
-        }
-    }
-}
-
 private enum WeekDragAxis {
     case horizontal
     case vertical
@@ -2559,9 +2339,6 @@ private struct DraftTypeButton: View {
 
 private struct SessionBlock: View {
     let session: CoachingSession
-    var isBulkSelectionModeEnabled = false
-    var isBulkSelectionEligible = false
-    var isBulkSelectionSelected = false
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -2613,41 +2390,23 @@ private struct SessionBlock: View {
     }
 
     private var strokeOpacity: Double {
-        if isBulkSelectionSelected { return 0.95 }
-        return isCourtBooked ? 0.36 : 0.68
+        isCourtBooked ? 0.36 : 0.68
     }
 
     private var strokeWidth: CGFloat {
-        isBulkSelectionSelected ? 2.4 : (isCourtBooked ? 0.75 : 1.1)
+        isCourtBooked ? 0.75 : 1.1
     }
 
     private var strokeColor: Color {
-        if isBulkSelectionSelected { return .blue }
-        return color
+        color
     }
 
     private var shadowColor: Color {
-        if isBulkSelectionSelected { return Color.blue.opacity(0.28) }
-        return isCourtBooked ? .clear : color.opacity(0.14)
-    }
-
-    private var isModeLocked: Bool {
-        isBulkSelectionModeEnabled && !isBulkSelectionEligible
+        isCourtBooked ? .clear : color.opacity(0.14)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: usesCompactStudentRows ? 2 : 3) {
-            if isBulkSelectionModeEnabled {
-                Label(
-                    isBulkSelectionSelected ? "Selected" : (isBulkSelectionEligible ? "Tap to select" : "Already booked"),
-                    systemImage: isBulkSelectionSelected ? "checkmark.circle.fill" : (isBulkSelectionEligible ? "circle" : "lock.fill")
-                )
-                .font(AppStyle.timeGridFont(size: 8, weight: .bold))
-                .foregroundStyle(isBulkSelectionEligible ? Color.blue : Color.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            }
-
             if usesCompactStudentRows {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(sortedStudents) { student in
@@ -2703,7 +2462,6 @@ private struct SessionBlock: View {
         )
         .shadow(color: shadowColor, radius: 5, x: 0, y: 2)
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .opacity(isModeLocked ? 0.48 : 1)
     }
 
     private func compactStudentNameLine(_ student: Student) -> some View {
