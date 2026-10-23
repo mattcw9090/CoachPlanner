@@ -62,7 +62,7 @@ struct RootTabView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var automaticSync = SupabaseAutoSync.shared
-    @State private var section: Section = .students
+    @State private var section: Section = CoachPlannerApp.isSampleSocialSheetLaunch ? .socials : .students
     @State private var isConflictReviewPresented = false
 
     private enum Section: Hashable {
@@ -80,9 +80,11 @@ struct RootTabView: View {
                 }
             }
             .onAppear {
+                guard !CoachPlannerApp.isSampleSocialSheetLaunch else { return }
                 automaticSync.attach(to: modelContext, active: scenePhase == .active)
             }
             .onChange(of: scenePhase) { _, newPhase in
+                guard !CoachPlannerApp.isSampleSocialSheetLaunch else { return }
                 automaticSync.setActive(newPhase == .active)
             }
             .sheet(isPresented: $isConflictReviewPresented) {

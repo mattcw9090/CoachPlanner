@@ -17,6 +17,13 @@ struct CoachPlannerApp: App {
         .modelContainer(modelContainer)
     }
 
+    /// Opens New Socials on an in-memory sample roster. Normal launches ignore it and keep the iPhone store.
+    static let sampleSocialSheetArgument = "-CoachPlannerSampleSocialSheet"
+
+    static var isSampleSocialSheetLaunch: Bool {
+        ProcessInfo.processInfo.arguments.contains(sampleSocialSheetArgument)
+    }
+
     static let modelTypes: [any PersistentModel.Type] = [
         Student.self,
         StudentHiddenWeek.self,
@@ -37,13 +44,20 @@ struct CoachPlannerApp: App {
     private static func makeContainer() -> ModelContainer {
         do {
             let config = makeConfiguration()
-            return try ModelContainer(for: schema, configurations: [config])
+            let container = try ModelContainer(for: schema, configurations: [config])
+            if isSampleSocialSheetLaunch {
+                seedSampleSocialRoster(in: container)
+            }
+            return container
         } catch {
             fatalError("Could not open the CoachPlanner store: \(error)")
         }
     }
 
     private static func makeConfiguration() -> ModelConfiguration {
+        if isSampleSocialSheetLaunch {
+            return ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        }
         // Preserve the exact store URL already used by the installed iPhone app.
         let legacyLocalConfiguration = ModelConfiguration(
             schema: schema,
@@ -55,5 +69,27 @@ struct CoachPlannerApp: App {
             url: legacyLocalConfiguration.url,
             cloudKitDatabase: .none
         )
+    }
+
+    private static func seedSampleSocialRoster(in container: ModelContainer) {
+        let context = ModelContext(container)
+        let studentNames = [
+            "Alex Chen", "Priya Shah", "Jordan Lee", "Sam Patel",
+            "Riley Nguyen", "Morgan Blake", "Taylor Brooks", "Jamie Ortiz"
+        ]
+        for name in studentNames {
+            context.insert(Student(name: name, gender: "", contactPreference: .sms, contactDetail: ""))
+        }
+        let hidden = Student(name: "Casey Brooks", gender: "", contactPreference: .sms, contactDetail: "")
+        hidden.isHidden = true
+        context.insert(hidden)
+        for name in ["Matt Chew", "Noah Grant", "Avery Kim"] {
+            context.insert(Outsider(name: name, gender: "", contactPreference: .sms, contactDetail: ""))
+        }
+        do {
+            try context.save()
+        } catch {
+            fatalError("Could not seed the sample social roster: \(error)")
+        }
     }
 }

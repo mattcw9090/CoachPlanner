@@ -119,6 +119,9 @@ struct SocialSessionListView: View {
             .sheet(item: $editor) { editor in
                 SocialSessionEditorView(editor: editor)
             }
+            .onAppear {
+                presentSampleSocialSheetIfNeeded()
+            }
             .alert(item: $copyNotice) { notice in
                 Alert(
                     title: Text("Name List Copied"),
@@ -128,6 +131,11 @@ struct SocialSessionListView: View {
             }
             .attentionPromptInset()
         }
+    }
+
+    private func presentSampleSocialSheetIfNeeded() {
+        guard CoachPlannerApp.isSampleSocialSheetLaunch, editor == nil else { return }
+        editor = SocialSessionEditor(weekStart: weekStart)
     }
 
     private func moveWeek(by offset: Int) {
@@ -583,6 +591,11 @@ struct SocialSessionEditorView: View {
     @State private var isOutsiderManagerPresented = false
     @State private var contactNotice: SocialContactNotice?
     @State private var isSavingSocial = false
+    @State private var peopleSearch = ""
+    @State private var peopleEditMode: EditMode = .inactive
+    @State private var peoplePendingRemoval: Set<PersistentIdentifier> = []
+    @State private var isAddingRemovedPeople = false
+    @State private var didSeedNewSocialPeople = false
 
     private var isEditing: Bool { editor.session != nil }
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1178,149 +1191,251 @@ struct SocialSessionEditorView: View {
                 }
     }
 
+    private var courtSection: some View {
+        Section {
+            Toggle("Courts Booked", isOn: $areCourtsBooked.animation())
+
+            if areCourtsBooked {
+                TextField("Court numbers, e.g. 1, 2, 5", text: $courtNumbers)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+        } header: {
+            Text("Court")
+        } footer: {
+            Text("Court number is saved with Save.")
+        }
+    }
+
+    private var socialDetailsSection: some View {
+        Section {
+            TextField("Session name", text: $title)
+
+            Picker("Day", selection: $dayOfWeek) {
+                ForEach(Weekday.allCases) { day in
+                    Text(day.name).tag(day)
+                }
+            }
+
+            Picker("Venue", selection: $venue) {
+                ForEach(Venue.allCases) { venue in
+                    Text(venue.rawValue).tag(venue)
+                }
+            }
+
+            Picker("Status", selection: $sessionStatus) {
+                ForEach(SocialSessionStatus.allCases) { status in
+                    Text(status.rawValue).tag(status)
+                }
+            }
+            .onChange(of: sessionStatus) { _, _ in
+                commitLiveSessionStatus()
+            }
+
+            LabeledContent("Start Time") {
+                HalfHourTimePicker(selection: $startTime)
+            }
+
+            LabeledContent("End Time") {
+                HalfHourTimePicker(selection: $endTime)
+            }
+        } header: {
+            Text("Socials Details")
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                if isEditing {
+                    Text("A status change is saved immediately.")
+                }
+                if !isTimeValid {
+                    Text("End time must be after start time.")
+                        .foregroundStyle(.red)
+                } else if !isUsingSelectedCourtBooking {
+                    Text("Use a time inside the selected vacant court booking, keeping its venue and court number.")
+                        .foregroundStyle(.red)
+                } else if let overlap = overlappingSession {
+                    Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(start: overlap.startTime, end: overlap.endTime)) at \(overlap.venue).")
+                        .foregroundStyle(.red)
+                } else if sessionStatus == .finished && !areAllParticipantsConfirmed {
+                    Text(selectedParticipantCount == 0 ? "Add at least one confirmed person before marking socials as finished." : "Everyone must be confirmed before marking socials as finished.")
+                        .foregroundStyle(.red)
+                } else if shuttlecockCost < 0 || courtCost < 0 {
+                    Text("Costs cannot be negative.")
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+    }
+
+    private var finishedCostsSection: some View {
+        Section {
+            HStack {
+                Text("Shuttlecocks")
+                Spacer()
+                TextField("0.00", text: $shuttlecockCostText)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 110)
+            }
+
+            HStack {
+                Text("Courts")
+                Spacer()
+                TextField("0.00", text: $courtCostText)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 110)
+            }
+
+            HStack {
+                Text("Split")
+                Spacer()
+                Text(areAllParticipantsConfirmed ? "\(currencyText(costPerPerson)) each" : "Confirm everyone first")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Finished Costs")
+        } footer: {
+            Text("Everyone must be confirmed before the final split is saved.")
+        }
+    }
+
+    private var editingForm: some View {
+        Form {
+            nameListSection
+            courtSection
+            socialDetailsSection
+            if sessionStatus == .finished {
+                finishedCostsSection
+            }
+
+            Section {
+                Picker("People", selection: $addPeoplePage) {
+                    ForEach(SocialPeoplePage.allCases) { page in
+                        Text(page.title).tag(page)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                TabView(selection: $addPeoplePage) {
+                    addStudentsPage
+                        .tag(SocialPeoplePage.students)
+
+                    addOutsidersPage
+                        .tag(SocialPeoplePage.outsiders)
+                }
+                .tabViewStyle(.page(indexDisplayMode: .automatic))
+                .frame(minHeight: 320)
+            } header: {
+                Text("Add People")
+            } footer: {
+                Text(
+                    addPeoplePage == .outsiders
+                        ? "Swipe right to return to students. Use the options menu to manage outsiders."
+                        : "Swipe sideways to switch between students and outsiders."
+                )
+            }
+
+            Section {
+                Button("Delete Socials Session", role: .destructive) {
+                    deleteSession()
+                }
+            }
+        }
+    }
+
+    private var newSocialPeopleCountText: String {
+        let count = newSocialRoster.count
+        return count == 1 ? "1 person" : "\(count) people"
+    }
+
+    private var newSocialRoster: [SocialParticipant] {
+        var people = selectedParticipants
+        let shown = Set(people.map(\.id))
+        for outsider in outsiders where AddSocialSessionRequest.isOwner(outsider.name) && !shown.contains(outsider.persistentModelID) {
+            people.append(.outsider(outsider))
+        }
+        return people
+    }
+
+    private var filteredNewSocialParticipants: [SocialParticipant] {
+        let trimmed = peopleSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        return newSocialRoster
+            .filter { trimmed.isEmpty || $0.name.localizedCaseInsensitiveContains(trimmed) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var addBackStudents: [Student] {
+        students
+            .filter { selectedStatusByStudentID[$0.persistentModelID] == nil }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var addBackOutsiders: [Outsider] {
+        outsiders
+            .filter { selectedStatusByOutsiderID[$0.persistentModelID] == nil && !AddSocialSessionRequest.isOwner($0.name) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var removablePeoplePendingRemoval: Set<PersistentIdentifier> {
+        let ownerIDs = Set(outsiders.filter { AddSocialSessionRequest.isOwner($0.name) }.map(\.persistentModelID))
+        return peoplePendingRemoval.subtracting(ownerIDs)
+    }
+
+    private var newSocialList: some View {
+        List(selection: $peoplePendingRemoval) {
+            Section {
+                ForEach(filteredNewSocialParticipants) { participant in
+                    newSocialPersonRow(participant)
+                        .tag(participant.id)
+                }
+                Button {
+                    isAddingRemovedPeople = true
+                } label: {
+                    Label("Add people", systemImage: "plus")
+                }
+                .selectionDisabled(true)
+            } header: {
+                Text(newSocialPeopleCountText)
+            }
+
+            courtSection
+            socialDetailsSection
+            if sessionStatus == .finished {
+                finishedCostsSection
+            }
+        }
+        .listStyle(.insetGrouped)
+        .searchable(text: $peopleSearch, prompt: "Search people")
+        .toolbar {
+            ToolbarItem(placement: .bottomBar) {
+                EditButton()
+            }
+            if peopleEditMode == .active {
+                ToolbarItem(placement: .bottomBar) {
+                    Button("Delete", role: .destructive) {
+                        deleteSelectedNewSocialPeople()
+                    }
+                    .disabled(removablePeoplePendingRemoval.isEmpty)
+                }
+            }
+        }
+        .sheet(isPresented: $isAddingRemovedPeople) {
+            AddSocialPeopleBackSheet(
+                students: addBackStudents,
+                outsiders: addBackOutsiders,
+                onAddStudent: addStudentToSocial,
+                onAddOutsider: addOutsiderBack
+            )
+        }
+    }
+
     var body: some View {
         NavigationStack {
-            Form {
-                nameListSection
-
-                Section {
-                    Toggle("Courts Booked", isOn: $areCourtsBooked.animation())
-
-                    if areCourtsBooked {
-                        TextField("Court numbers, e.g. 1, 2, 5", text: $courtNumbers)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    }
-                } header: {
-                    Text("Court")
-                } footer: {
-                    Text("Court number is saved with Save.")
-                }
-
-                Section {
-                    TextField("Session name", text: $title)
-
-                    Picker("Day", selection: $dayOfWeek) {
-                        ForEach(Weekday.allCases) { day in
-                            Text(day.name).tag(day)
-                        }
-                    }
-
-                    Picker("Venue", selection: $venue) {
-                        ForEach(Venue.allCases) { venue in
-                            Text(venue.rawValue).tag(venue)
-                        }
-                    }
-
-                    Picker("Status", selection: $sessionStatus) {
-                        ForEach(SocialSessionStatus.allCases) { status in
-                            Text(status.rawValue).tag(status)
-                        }
-                    }
-                    .onChange(of: sessionStatus) { _, _ in
-                        commitLiveSessionStatus()
-                    }
-
-                    LabeledContent("Start Time") {
-                        HalfHourTimePicker(selection: $startTime)
-                    }
-
-                    LabeledContent("End Time") {
-                        HalfHourTimePicker(selection: $endTime)
-                    }
-                } header: {
-                    Text("Socials Details")
-                } footer: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if isEditing {
-                            Text("A status change is saved immediately.")
-                        }
-                        if !isTimeValid {
-                            Text("End time must be after start time.")
-                                .foregroundStyle(.red)
-                        } else if !isUsingSelectedCourtBooking {
-                            Text("Use a time inside the selected vacant court booking, keeping its venue and court number.")
-                                .foregroundStyle(.red)
-                        } else if let overlap = overlappingSession {
-                            Text("Overlaps with \(overlap.weekday.name) \(timeRangeText(start: overlap.startTime, end: overlap.endTime)) at \(overlap.venue).")
-                                .foregroundStyle(.red)
-                        } else if sessionStatus == .finished && !areAllParticipantsConfirmed {
-                            Text(selectedParticipantCount == 0 ? "Add at least one confirmed person before marking socials as finished." : "Everyone must be confirmed before marking socials as finished.")
-                                .foregroundStyle(.red)
-                        } else if shuttlecockCost < 0 || courtCost < 0 {
-                            Text("Costs cannot be negative.")
-                                .foregroundStyle(.red)
-                        }
-                    }
-                }
-
-                if sessionStatus == .finished {
-                    Section {
-                        HStack {
-                            Text("Shuttlecocks")
-                            Spacer()
-                            TextField("0.00", text: $shuttlecockCostText)
-                                .keyboardType(.decimalPad)
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 110)
-                        }
-
-                        HStack {
-                            Text("Courts")
-                            Spacer()
-                            TextField("0.00", text: $courtCostText)
-                                .keyboardType(.decimalPad)
-                                .multilineTextAlignment(.trailing)
-                                .frame(maxWidth: 110)
-                        }
-
-                        HStack {
-                            Text("Split")
-                            Spacer()
-                            Text(areAllParticipantsConfirmed ? "\(currencyText(costPerPerson)) each" : "Confirm everyone first")
-                                .foregroundStyle(.secondary)
-                        }
-                    } header: {
-                        Text("Finished Costs")
-                    } footer: {
-                        Text("Everyone must be confirmed before the final split is saved.")
-                    }
-                }
-
-
-                Section {
-                    Picker("People", selection: $addPeoplePage) {
-                        ForEach(SocialPeoplePage.allCases) { page in
-                            Text(page.title).tag(page)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-
-                    TabView(selection: $addPeoplePage) {
-                        addStudentsPage
-                            .tag(SocialPeoplePage.students)
-
-                        addOutsidersPage
-                            .tag(SocialPeoplePage.outsiders)
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .automatic))
-                    .frame(minHeight: 320)
-                } header: {
-                    Text("Add People")
-                } footer: {
-                    Text(
-                        addPeoplePage == .outsiders
-                            ? "Swipe right to return to students. Use the options menu to manage outsiders."
-                            : "Swipe sideways to switch between students and outsiders."
-                    )
-                }
-
+            Group {
                 if isEditing {
-                    Section {
-                        Button("Delete Socials Session", role: .destructive) {
-                            deleteSession()
-                        }
-                    }
+                    editingForm
+                } else {
+                    newSocialList
                 }
             }
             .navigationTitle(isEditing ? "Edit Socials" : "New Socials")
@@ -1357,7 +1472,23 @@ struct SocialSessionEditorView: View {
             .sheet(isPresented: $isOutsiderManagerPresented) {
                 OutsiderManagerView(onDelete: deleteOutsider)
             }
+            .onAppear {
+                seedNewSocialPeopleIfNeeded()
+            }
+            .onChange(of: students.count) { _, _ in
+                seedNewSocialPeopleIfNeeded()
+            }
+            .onChange(of: outsiders.count) { _, _ in
+                seedNewSocialPeopleIfNeeded()
+            }
+            .onChange(of: peopleEditMode) { _, mode in
+                if mode != .active {
+                    peoplePendingRemoval.removeAll()
+                }
+            }
         }
+        .environment(\.editMode, $peopleEditMode)
+        .presentationDetents([.large])
         .presentationContentInteraction(.scrolls)
         .interactiveDismissDisabled()
     }
@@ -1368,6 +1499,125 @@ struct SocialSessionEditorView: View {
         paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
         outsiderSearch = ""
         addPeoplePage = .outsiders
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    private func seedNewSocialPeopleIfNeeded() {
+        guard editor.session == nil, !didSeedNewSocialPeople else { return }
+        let people = newSocialPeople()
+        guard !people.isEmpty else { return }
+        didSeedNewSocialPeople = true
+        let starting = AddSocialSessionRequest.startingIDs(people: people)
+        for student in students where starting.contains(student.syncID) {
+            guard selectedStatusByStudentID[student.persistentModelID] == nil else { continue }
+            selectedStatusByStudentID[student.persistentModelID] = .unscheduled
+            paymentStatusByStudentID[student.persistentModelID] = .unpaid
+        }
+        for outsider in outsiders where starting.contains(outsider.syncID) {
+            guard selectedStatusByOutsiderID[outsider.persistentModelID] == nil else { continue }
+            let status: SessionStatus = AddSocialSessionRequest.isOwner(outsider.name) ? .confirmed : .unscheduled
+            selectedStatusByOutsiderID[outsider.persistentModelID] = status
+            paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
+        }
+    }
+
+    private func isNewSocialOwner(_ participant: SocialParticipant) -> Bool {
+        if case .outsider(let outsider) = participant {
+            return AddSocialSessionRequest.isOwner(outsider.name)
+        }
+        return false
+    }
+
+    private func newSocialKindLabel(_ participant: SocialParticipant) -> String {
+        switch participant {
+        case .student: return "Student"
+        case .outsider: return "Outsider"
+        }
+    }
+
+    @ViewBuilder
+    private func newSocialPersonRow(_ participant: SocialParticipant) -> some View {
+        let owner = isNewSocialOwner(participant)
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(participant.name)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                Text(newSocialKindLabel(participant))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if owner {
+                Text("Confirmed")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(SessionStatus.confirmed.color)
+            } else if isFinishedSettlementReady {
+                switch participant {
+                case .student(let student):
+                    SocialPaymentMenu(status: paymentStatus(for: student)) { newStatus in
+                        setStudentPaymentStatus(student, to: newStatus)
+                    }
+                case .outsider(let outsider):
+                    SocialPaymentMenu(status: paymentStatus(for: outsider)) { newStatus in
+                        setOutsiderPaymentStatus(outsider, to: newStatus)
+                    }
+                }
+            } else {
+                switch participant {
+                case .student(let student):
+                    SocialStatusMenu(status: status(for: student)) { newStatus in
+                        setStudentAttendanceStatus(student, to: newStatus)
+                    }
+                case .outsider(let outsider):
+                    SocialStatusMenu(status: status(for: outsider)) { newStatus in
+                        setOutsiderAttendanceStatus(outsider, to: newStatus)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .deleteDisabled(owner)
+        .selectionDisabled(owner)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            if !owner {
+                Button(role: .destructive) {
+                    removeNewSocialParticipant(participant)
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func removeNewSocialParticipant(_ participant: SocialParticipant) {
+        switch participant {
+        case .student(let student):
+            removeStudentFromSocial(student)
+        case .outsider(let outsider):
+            guard !AddSocialSessionRequest.isOwner(outsider.name) else { return }
+            removeOutsiderFromSocial(outsider)
+        }
+    }
+
+    private func deleteSelectedNewSocialPeople() {
+        let ids = removablePeoplePendingRemoval
+        peoplePendingRemoval = []
+        for student in students where ids.contains(student.persistentModelID) {
+            removeStudentFromSocial(student)
+        }
+        for outsider in outsiders where ids.contains(outsider.persistentModelID) {
+            removeOutsiderFromSocial(outsider)
+        }
+    }
+
+    private func addOutsiderBack(_ outsider: Outsider) {
+        hiddenOutsiderIDs.remove(outsider.persistentModelID)
+        selectedStatusByOutsiderID[outsider.persistentModelID] = sessionStatus == .finished ? .confirmed : .unscheduled
+        paymentStatusByOutsiderID[outsider.persistentModelID] = .unpaid
         UISelectionFeedbackGenerator().selectionChanged()
     }
 
@@ -1633,12 +1883,10 @@ struct SocialSessionEditorView: View {
             + outsiders.map { AddSocialPerson(id: $0.syncID, isStudent: false, name: $0.name, isHidden: false) }
     }
 
-    private func newSocialChoice() -> AddSocialPeopleChoice {
-        let selectedIDs = Set(students.filter { selectedStatusByStudentID[$0.persistentModelID] != nil }.map(\.syncID))
+    private func newSocialParticipantIDs() -> [UUID] {
+        let remaining = Set(students.filter { selectedStatusByStudentID[$0.persistentModelID] != nil }.map(\.syncID))
             .union(outsiders.filter { selectedStatusByOutsiderID[$0.persistentModelID] != nil }.map(\.syncID))
-        let excludedIDs = Set(students.filter { hiddenStudentIDs.contains($0.persistentModelID) }.map(\.syncID))
-            .union(outsiders.filter { hiddenOutsiderIDs.contains($0.persistentModelID) }.map(\.syncID))
-        return AddSocialSessionRequest.choice(people: newSocialPeople(), selectedIDs: selectedIDs, excludedIDs: excludedIDs)
+        return AddSocialSessionRequest.participantIDs(people: newSocialPeople(), remainingIDs: remaining)
     }
 
     private func newSocialParameters() -> AddSocialSessionParameters {
@@ -1649,13 +1897,13 @@ struct SocialSessionEditorView: View {
             startTime: startTime,
             endTime: endTime,
             venue: venue.rawValue,
-            choice: newSocialChoice()
+            participantIDs: newSocialParticipantIDs()
         )
     }
 
     private func insertLocalSocial() -> SocialSession {
         let people = newSocialPeople()
-        let rows = AddSocialSessionRequest.attendance(people: people, choice: newSocialChoice())
+        let rows = AddSocialSessionRequest.attendance(people: people, participantIDs: Set(newSocialParticipantIDs()))
         var studentsByID: [UUID: Student] = [:]
         for student in students { studentsByID[student.syncID] = student }
         var outsidersByID: [UUID: Outsider] = [:]
@@ -2481,6 +2729,82 @@ private struct OutsiderEditorView: View {
         }
 
         return groups.joined(separator: " ")
+    }
+}
+
+private struct AddSocialPeopleBackSheet: View {
+    let students: [Student]
+    let outsiders: [Outsider]
+    let onAddStudent: (Student) -> Void
+    let onAddOutsider: (Outsider) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var search = ""
+
+    private struct Row: Identifiable {
+        let id: PersistentIdentifier
+        let name: String
+        let label: String
+        let add: () -> Void
+    }
+
+    private var rows: [Row] {
+        let trimmed = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let studentRows = students.map { student in
+            Row(
+                id: student.persistentModelID,
+                name: student.name,
+                label: student.isHidden ? "Hidden student" : "Student",
+                add: { onAddStudent(student) }
+            )
+        }
+        let outsiderRows = outsiders.map { outsider in
+            Row(
+                id: outsider.persistentModelID,
+                name: outsider.name,
+                label: "Outsider",
+                add: { onAddOutsider(outsider) }
+            )
+        }
+        return (studentRows + outsiderRows)
+            .filter { trimmed.isEmpty || $0.name.localizedCaseInsensitiveContains(trimmed) }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if students.isEmpty && outsiders.isEmpty {
+                    ContentUnavailableView(
+                        "No One to Add",
+                        systemImage: "person.crop.circle.badge.checkmark",
+                        description: Text("Removed people and hidden students show up here.")
+                    )
+                } else if rows.isEmpty {
+                    ContentUnavailableView.search(text: search)
+                } else {
+                    List(rows) { row in
+                        Button(action: row.add) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.name)
+                                    .foregroundStyle(.primary)
+                                Text(row.label)
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Add People")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $search, prompt: "Search people")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }
 

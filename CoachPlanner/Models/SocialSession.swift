@@ -321,13 +321,6 @@ struct AddSocialPerson: Equatable {
     var isHidden: Bool
 }
 
-enum AddSocialPeopleChoice: Equatable {
-    /// Live non-hidden students and every live outsider.
-    case everyone
-    /// Only these ids. Matt Chew is still included by the attendance plan.
-    case explicit(Set<UUID>)
-}
-
 struct AddSocialAttendanceRow: Equatable {
     var id: UUID
     var isStudent: Bool
@@ -365,44 +358,38 @@ enum AddSocialSessionRequest {
         name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "matt chew"
     }
 
-    /// An untouched add form includes everyone. A name-list selection is that list.
-    /// Hiding someone, without adding anyone, keeps everyone else.
-    static func choice(people: [AddSocialPerson], selectedIDs: Set<UUID>, excludedIDs: Set<UUID>) -> AddSocialPeopleChoice {
-        if !selectedIDs.isEmpty { return .explicit(selectedIDs) }
-        if excludedIDs.isEmpty { return .everyone }
-        let included = people.compactMap { person -> UUID? in
-            if excludedIDs.contains(person.id) { return nil }
+    /// Live non-hidden students and every live outsider. Hidden students stay off until added back.
+    static func startingIDs(people: [AddSocialPerson]) -> Set<UUID> {
+        Set(people.compactMap { person in
             if person.isStudent && person.isHidden { return nil }
             return person.id
+        })
+    }
+
+    /// The rows still on the add list. Matt Chew is always included.
+    static func participantIDs(people: [AddSocialPerson], remainingIDs: Set<UUID>) -> [UUID] {
+        var ids = remainingIDs
+        for person in people where !person.isStudent && isOwner(person.name) {
+            ids.insert(person.id)
         }
-        return .explicit(Set(included))
+        return ids.sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
     }
 
     /// Same attendance the database function inserts: Matt Chew is Confirmed, everyone else is unpaid and unscheduled.
     static func attendance(
         people: [AddSocialPerson],
-        choice: AddSocialPeopleChoice,
+        participantIDs: Set<UUID>,
         attendanceStatus: String = "Unscheduled"
     ) -> [AddSocialAttendanceRow] {
-        let includeEveryone: Bool
-        let explicit: Set<UUID>
-        switch choice {
-        case .everyone:
-            includeEveryone = true
-            explicit = []
-        case .explicit(let ids):
-            includeEveryone = false
-            explicit = ids
-        }
         var seen = Set<UUID>()
         var rows: [AddSocialAttendanceRow] = []
         for person in people {
             guard seen.insert(person.id).inserted else { continue }
             let included: Bool
             if person.isStudent {
-                included = (includeEveryone && !person.isHidden) || explicit.contains(person.id)
+                included = participantIDs.contains(person.id)
             } else {
-                included = includeEveryone || isOwner(person.name) || explicit.contains(person.id)
+                included = isOwner(person.name) || participantIDs.contains(person.id)
             }
             guard included else { continue }
             let status = (!person.isStudent && isOwner(person.name)) ? "Confirmed" : attendanceStatus
@@ -420,29 +407,19 @@ enum AddSocialSessionRequest {
         startTime: Date,
         endTime: Date,
         venue: String,
-        choice: AddSocialPeopleChoice,
+        participantIDs: [UUID],
         attendanceStatus: String = "Unscheduled"
     ) -> AddSocialSessionParameters {
         let calendar = perthCalendar
         let day = calendar.date(byAdding: .day, value: max(dayOfWeek - 1, 0), to: weekStart) ?? weekStart
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let includeEveryone: Bool
-        let ids: [UUID]
-        switch choice {
-        case .everyone:
-            includeEveryone = true
-            ids = []
-        case .explicit(let raw):
-            includeEveryone = false
-            ids = raw.sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
-        }
         return AddSocialSessionParameters(
             date: perthDateFormatter.string(from: day),
             startLocal: clockText(startTime, calendar: calendar),
             endLocal: clockText(endTime, calendar: calendar),
             venue: venue,
-            includeEveryone: includeEveryone,
-            participantIDs: ids,
+            includeEveryone: false,
+            participantIDs: participantIDs,
             title: trimmed.isEmpty ? "Badminton Socials" : trimmed,
             attendanceStatus: attendanceStatus
         )

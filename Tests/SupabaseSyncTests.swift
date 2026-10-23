@@ -2161,26 +2161,40 @@ private extension SupabaseCloud {
         await cloud.syncStudentsAndOutsiders(in: context)
         check(cloud.lastError == nil, "add-social fixtures upload the roster before the RPC")
 
+        let roster = [
+            AddSocialPerson(id: alice.syncID, isStudent: true, name: alice.name, isHidden: false),
+            AddSocialPerson(id: hidden.syncID, isStudent: true, name: hidden.name, isHidden: true),
+            AddSocialPerson(id: casey.syncID, isStudent: false, name: casey.name, isHidden: false),
+            AddSocialPerson(id: matt.syncID, isStudent: false, name: matt.name, isHidden: false)
+        ]
+        let remainingIDs = AddSocialSessionRequest.participantIDs(
+            people: roster, remainingIDs: AddSocialSessionRequest.startingIDs(people: roster)
+        )
+        check(Set(remainingIDs) == [alice.syncID, casey.syncID, matt.syncID],
+              "the remaining add list includes Matt Chew and leaves out hidden students")
         let everyone = AddSocialSessionRequest.parameters(
             title: "  Friday Hit  ", weekStart: week, dayOfWeek: Weekday.friday.rawValue,
-            startTime: start, endTime: end, venue: Venue.apex.rawValue, choice: .everyone
+            startTime: start, endTime: end, venue: Venue.apex.rawValue, participantIDs: remainingIDs
         )
         check(everyone.date == "2026-10-23" && everyone.startLocal == "19:00:00" && everyone.endLocal == "21:00:00",
               "add-social parameters use the Perth social date and clock times")
-        check(everyone.venue == "Apex" && everyone.title == "Friday Hit" && everyone.includeEveryone && everyone.participantIDs.isEmpty
-              && everyone.attendanceStatus == "Unscheduled",
-              "an empty people selection maps to everyone, the trimmed title, and Unscheduled")
-        check(everyone.jsonObject()["p_participant_ids"] is NSNull, "everyone omits participant ids")
+        check(everyone.venue == "Apex" && everyone.title == "Friday Hit" && !everyone.includeEveryone
+              && everyone.participantIDs == remainingIDs && everyone.attendanceStatus == "Unscheduled",
+              "the remaining list maps to participant ids, the trimmed title, and Unscheduled")
+        check((everyone.jsonObject()["p_participant_ids"] as? [String]) == remainingIDs.map(\.uuidString),
+              "the remaining list is sent as p_participant_ids")
 
         server.clearRequests()
         let created = try await cloud.addSocialSession(everyone, in: context)
         let request = server.addSocialRequests.first
+        let postedIDs = (request?["p_participant_ids"] as? [String])?.map { $0.lowercased() }.sorted()
         check(server.addSocialRequests.count == 1 && request?["p_date"] as? String == "2026-10-23"
               && request?["p_start_local"] as? String == "19:00:00" && request?["p_end_local"] as? String == "21:00:00"
               && request?["p_venue"] as? String == "Apex" && request?["p_title"] as? String == "Friday Hit"
-              && request?["p_include_everyone"] as? Bool == true && request?["p_participant_ids"] is NSNull
+              && request?["p_include_everyone"] as? Bool == false
+              && postedIDs == remainingIDs.map { $0.uuidString.lowercased() }.sorted()
               && request?["p_attendance_status"] as? String == "Unscheduled",
-              "the RPC body matches the add-form parameter mapping")
+              "the RPC body matches the remaining-list parameter mapping")
         check(server.requests.contains { $0.method == "POST" && $0.table == "add_social_session" }
               && !server.requests.contains { $0.table == "sync_coachplanner_social" },
               "creating a social posts add_social_session and does not upload a local copy")
@@ -2205,12 +2219,13 @@ private extension SupabaseCloud {
               && !server.writes.contains { $0.table == "sync_coachplanner_social" || $0.table == "social_sessions" },
               "the next pull keeps the RPC social and does not upload a second copy")
 
+        let explicitIDs = AddSocialSessionRequest.participantIDs(people: roster, remainingIDs: [hidden.syncID])
         let explicit = AddSocialSessionRequest.parameters(
             title: "Chosen", weekStart: week, dayOfWeek: Weekday.saturday.rawValue,
-            startTime: start, endTime: end, venue: Venue.trs.rawValue, choice: .explicit([hidden.syncID])
+            startTime: start, endTime: end, venue: Venue.trs.rawValue, participantIDs: explicitIDs
         )
-        check(!explicit.includeEveryone && explicit.participantIDs == [hidden.syncID] && explicit.date == "2026-10-24",
-              "a selected person maps to participant ids instead of everyone")
+        check(!explicit.includeEveryone && Set(explicit.participantIDs) == [hidden.syncID, matt.syncID] && explicit.date == "2026-10-24",
+              "adding a hidden student back sends that id and still includes Matt Chew")
         server.clearRequests()
         server.lock.withLock { server.loseNextPOSTResponse = true }
         do {

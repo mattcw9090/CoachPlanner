@@ -143,22 +143,29 @@ private struct SocialEditingTests {
             AddSocialPerson(id: caseyID, isStudent: false, name: "Casey", isHidden: false),
             AddSocialPerson(id: mattID, isStudent: false, name: " Matt Chew ", isHidden: false)
         ]
-        check(AddSocialSessionRequest.choice(people: people, selectedIDs: [], excludedIDs: []) == .everyone,
-              "an untouched add form includes everyone")
-        let everyoneRows = AddSocialSessionRequest.attendance(people: people, choice: .everyone)
-        check(Set(everyoneRows.map(\.id)) == [aliceID, caseyID, mattID]
-              && everyoneRows.first { $0.id == mattID }?.status == "Confirmed"
-              && everyoneRows.filter { $0.id != mattID }.allSatisfy { $0.status == "Unscheduled" && $0.paymentStatus == "Unpaid" },
-              "everyone skips hidden students, confirms Matt Chew, and leaves the others unpaid")
-        let selected = AddSocialSessionRequest.choice(people: people, selectedIDs: [bobID], excludedIDs: [])
-        let selectedRows = AddSocialSessionRequest.attendance(people: people, choice: selected)
-        check(Set(selectedRows.map(\.id)) == [bobID, mattID]
-              && selectedRows.first { $0.id == bobID }?.status == "Unscheduled"
-              && selectedRows.first { $0.id == mattID }?.status == "Confirmed",
-              "a selected hidden student is included and Matt Chew is still confirmed")
-        let hiddenOnly = AddSocialSessionRequest.choice(people: people, selectedIDs: [], excludedIDs: [aliceID])
-        check(hiddenOnly == .explicit([caseyID, mattID]),
-              "hiding one person keeps everyone else as an explicit list")
+        let starting = AddSocialSessionRequest.startingIDs(people: people)
+        check(starting == [aliceID, caseyID, mattID],
+              "the add list starts with every visible student and every outsider")
+        let startingIDs = AddSocialSessionRequest.participantIDs(people: people, remainingIDs: starting)
+        check(startingIDs == [aliceID, caseyID, mattID].sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() },
+              "the starting list is the participant id list")
+        let startingRows = AddSocialSessionRequest.attendance(people: people, participantIDs: Set(startingIDs))
+        check(Set(startingRows.map(\.id)) == [aliceID, caseyID, mattID]
+              && startingRows.first { $0.id == mattID }?.status == "Confirmed"
+              && startingRows.filter { $0.id != mattID }.allSatisfy { $0.status == "Unscheduled" && $0.paymentStatus == "Unpaid" },
+              "the starting list skips hidden students, confirms Matt Chew, and leaves the others unpaid")
+        let removedAlice = AddSocialSessionRequest.participantIDs(people: people, remainingIDs: [caseyID])
+        check(removedAlice == [caseyID, mattID].sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() },
+              "removing a person keeps the remaining list and still includes Matt Chew")
+        let omittedMatt = AddSocialSessionRequest.participantIDs(people: people, remainingIDs: [aliceID])
+        check(Set(omittedMatt) == [aliceID, mattID],
+              "Matt Chew stays in the participant ids when his row is missing from the remaining list")
+        let addedBack = AddSocialSessionRequest.participantIDs(people: people, remainingIDs: [aliceID, bobID, caseyID, mattID])
+        let addedBackRows = AddSocialSessionRequest.attendance(people: people, participantIDs: Set(addedBack))
+        check(Set(addedBackRows.map(\.id)) == [aliceID, bobID, caseyID, mattID]
+              && addedBackRows.first { $0.id == bobID }?.status == "Unscheduled"
+              && addedBackRows.first { $0.id == mattID }?.status == "Confirmed",
+              "a hidden student added back is included and Matt Chew stays confirmed")
         var perth = Calendar(identifier: .gregorian)
         perth.timeZone = TimeZone(identifier: "Australia/Perth")!
         let week = perth.date(from: DateComponents(year: 2026, month: 10, day: 19))!
@@ -166,22 +173,24 @@ private struct SocialEditingTests {
         let late = perth.date(bySettingHour: 21, minute: 30, second: 0, of: week)!
         let mapped = AddSocialSessionRequest.parameters(
             title: "  Friday Hit ", weekStart: week, dayOfWeek: Weekday.friday.rawValue,
-            startTime: evening, endTime: late, venue: "Apex", choice: .everyone
+            startTime: evening, endTime: late, venue: "Apex", participantIDs: startingIDs
         )
         check(mapped.date == "2026-10-23" && mapped.startLocal == "19:00:00" && mapped.endLocal == "21:30:00"
-              && mapped.venue == "Apex" && mapped.title == "Friday Hit" && mapped.includeEveryone
-              && mapped.participantIDs.isEmpty && mapped.attendanceStatus == "Unscheduled"
-              && mapped.jsonObject()["p_include_everyone"] as? Bool == true
-              && mapped.jsonObject()["p_participant_ids"] is NSNull,
-              "the add form maps Perth date, clock times, venue, and title for everyone")
+              && mapped.venue == "Apex" && mapped.title == "Friday Hit" && !mapped.includeEveryone
+              && mapped.participantIDs == startingIDs && mapped.attendanceStatus == "Unscheduled"
+              && mapped.jsonObject()["p_include_everyone"] as? Bool == false
+              && (mapped.jsonObject()["p_participant_ids"] as? [String]) == startingIDs.map(\.uuidString),
+              "the remaining list maps to participant ids with everyone turned off")
         let explicit = AddSocialSessionRequest.parameters(
             title: "   ", weekStart: week, dayOfWeek: Weekday.saturday.rawValue,
-            startTime: evening, endTime: late, venue: "TRS", choice: .explicit([bobID, aliceID])
+            startTime: evening, endTime: late, venue: "TRS",
+            participantIDs: AddSocialSessionRequest.participantIDs(people: people, remainingIDs: [bobID, aliceID])
         )
+        let explicitIDs = [aliceID, bobID, mattID].sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
         check(explicit.date == "2026-10-24" && explicit.title == "Badminton Socials" && !explicit.includeEveryone
-              && explicit.participantIDs == [aliceID, bobID].sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
+              && explicit.participantIDs == explicitIDs
               && (explicit.jsonObject()["p_participant_ids"] as? [String]) == explicit.participantIDs.map(\.uuidString),
-              "selected people map to sorted participant ids and a blank title uses the default")
+              "the saved ids are the remaining people plus Matt Chew, and a blank title uses the default")
 
         print("\(checks) social editing regression checks passed")
     }
