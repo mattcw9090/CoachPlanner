@@ -312,3 +312,160 @@ struct SocialSessionEditorSnapshot: Equatable {
         return nil
     }
 }
+
+/// People the new-social form can offer to `public.add_social_session`.
+struct AddSocialPerson: Equatable {
+    var id: UUID
+    var isStudent: Bool
+    var name: String
+    var isHidden: Bool
+}
+
+enum AddSocialPeopleChoice: Equatable {
+    /// Live non-hidden students and every live outsider.
+    case everyone
+    /// Only these ids. Matt Chew is still included by the attendance plan.
+    case explicit(Set<UUID>)
+}
+
+struct AddSocialAttendanceRow: Equatable {
+    var id: UUID
+    var isStudent: Bool
+    var status: String
+    var paymentStatus: String
+}
+
+struct AddSocialSessionParameters: Equatable {
+    var date: String
+    var startLocal: String
+    var endLocal: String
+    var venue: String
+    var includeEveryone: Bool
+    var participantIDs: [UUID]
+    var title: String
+    var attendanceStatus: String
+
+    func jsonObject() -> [String: Any] {
+        [
+            "p_date": date,
+            "p_start_local": startLocal,
+            "p_end_local": endLocal,
+            "p_venue": venue,
+            "p_include_everyone": includeEveryone,
+            "p_participant_ids": includeEveryone ? NSNull() : participantIDs.map(\.uuidString),
+            "p_title": title,
+            "p_attendance_status": attendanceStatus
+        ]
+    }
+}
+
+/// Maps the add form onto `add_social_session` and the matching offline attendance rows.
+enum AddSocialSessionRequest {
+    static func isOwner(_ name: String) -> Bool {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "matt chew"
+    }
+
+    /// An untouched add form includes everyone. A name-list selection is that list.
+    /// Hiding someone, without adding anyone, keeps everyone else.
+    static func choice(people: [AddSocialPerson], selectedIDs: Set<UUID>, excludedIDs: Set<UUID>) -> AddSocialPeopleChoice {
+        if !selectedIDs.isEmpty { return .explicit(selectedIDs) }
+        if excludedIDs.isEmpty { return .everyone }
+        let included = people.compactMap { person -> UUID? in
+            if excludedIDs.contains(person.id) { return nil }
+            if person.isStudent && person.isHidden { return nil }
+            return person.id
+        }
+        return .explicit(Set(included))
+    }
+
+    /// Same attendance the database function inserts: Matt Chew is Confirmed, everyone else is unpaid and unscheduled.
+    static func attendance(
+        people: [AddSocialPerson],
+        choice: AddSocialPeopleChoice,
+        attendanceStatus: String = "Unscheduled"
+    ) -> [AddSocialAttendanceRow] {
+        let includeEveryone: Bool
+        let explicit: Set<UUID>
+        switch choice {
+        case .everyone:
+            includeEveryone = true
+            explicit = []
+        case .explicit(let ids):
+            includeEveryone = false
+            explicit = ids
+        }
+        var seen = Set<UUID>()
+        var rows: [AddSocialAttendanceRow] = []
+        for person in people {
+            guard seen.insert(person.id).inserted else { continue }
+            let included: Bool
+            if person.isStudent {
+                included = (includeEveryone && !person.isHidden) || explicit.contains(person.id)
+            } else {
+                included = includeEveryone || isOwner(person.name) || explicit.contains(person.id)
+            }
+            guard included else { continue }
+            let status = (!person.isStudent && isOwner(person.name)) ? "Confirmed" : attendanceStatus
+            rows.append(AddSocialAttendanceRow(
+                id: person.id, isStudent: person.isStudent, status: status, paymentStatus: "Unpaid"
+            ))
+        }
+        return rows
+    }
+
+    static func parameters(
+        title: String,
+        weekStart: Date,
+        dayOfWeek: Int,
+        startTime: Date,
+        endTime: Date,
+        venue: String,
+        choice: AddSocialPeopleChoice,
+        attendanceStatus: String = "Unscheduled"
+    ) -> AddSocialSessionParameters {
+        let calendar = perthCalendar
+        let day = calendar.date(byAdding: .day, value: max(dayOfWeek - 1, 0), to: weekStart) ?? weekStart
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let includeEveryone: Bool
+        let ids: [UUID]
+        switch choice {
+        case .everyone:
+            includeEveryone = true
+            ids = []
+        case .explicit(let raw):
+            includeEveryone = false
+            ids = raw.sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
+        }
+        return AddSocialSessionParameters(
+            date: perthDateFormatter.string(from: day),
+            startLocal: clockText(startTime, calendar: calendar),
+            endLocal: clockText(endTime, calendar: calendar),
+            venue: venue,
+            includeEveryone: includeEveryone,
+            participantIDs: ids,
+            title: trimmed.isEmpty ? "Badminton Socials" : trimmed,
+            attendanceStatus: attendanceStatus
+        )
+    }
+
+    private static let perthCalendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Australia/Perth")!
+        calendar.locale = Locale(identifier: "en_US_POSIX")
+        return calendar
+    }()
+
+    private static let perthDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = perthCalendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = perthCalendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static func clockText(_ time: Date, calendar: Calendar) -> String {
+        let parts = calendar.dateComponents([.hour, .minute, .second], from: time)
+        return String(format: "%02d:%02d:%02d", parts.hour ?? 0, parts.minute ?? 0, parts.second ?? 0)
+    }
+}

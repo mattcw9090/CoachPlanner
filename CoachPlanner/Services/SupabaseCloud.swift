@@ -3098,6 +3098,104 @@ final class SupabaseCloud: ObservableObject {
         return moved
     }
 
+    /// Creates one social through public.add_social_session, then merges that social into the local store.
+    /// Does not insert a local social first, and does not record a sync error.
+    func addSocialSession(_ parameters: AddSocialSessionParameters, in context: ModelContext) async throws -> UUID {
+        let token = try await realtimeAccessToken()
+        let data = try await send(
+            url: SupabaseConfiguration.projectURL.appendingPathComponent("rest/v1/rpc/add_social_session"),
+            method: "POST",
+            body: try JSONSerialization.data(withJSONObject: parameters.jsonObject()),
+            token: token
+        )
+        guard let id = try? JSONDecoder().decode(UUID.self, from: data) else {
+            throw SupabaseCloudError.invalidResponse
+        }
+        do {
+            try await mergeAddedSocial(id: id, in: context, token: token)
+        } catch {
+            throw AddSocialSessionRefreshError()
+        }
+        return id
+    }
+
+    /// Pulls the social the RPC just returned and stores it under that id, already acknowledged.
+    private func mergeAddedSocial(id: UUID, in context: ModelContext, token: String) async throws {
+        let snapshots = try await fetchSocialSnapshots(token: token)
+        guard let snapshot = snapshots.first(where: { $0.id == id }), snapshot.record.deletedAt == nil else {
+            throw SupabaseCloudError.invalidResponse
+        }
+        let localStudents = try context.fetch(FetchDescriptor<Student>()).filter { !$0.isDeleted }
+        let localOutsiders = try context.fetch(FetchDescriptor<Outsider>()).filter { !$0.isDeleted }
+        let studentsByID = localStudents.reduce(into: [UUID: Student]()) { $0[$1.syncID] = $1 }
+        let outsidersByID = localOutsiders.reduce(into: [UUID: Outsider]()) { $0[$1.syncID] = $1 }
+        let studentIDs = Set(snapshot.relationships.students.map(\.studentID))
+        _ = try validateSocialDependencies(
+            studentIDs: studentIDs,
+            hiddenPeople: snapshot.relationships.hiddenPeople,
+            attendances: snapshot.relationships.attendances,
+            studentsByID: studentsByID,
+            outsidersByID: outsidersByID
+        )
+        let locals = try context.fetch(FetchDescriptor<SocialSession>()).filter { $0.syncID == id && !$0.isDeleted }
+        guard locals.count <= 1 else { throw SupabaseCloudError.invalidResponse }
+
+        SyncTimestamping.isApplyingRemoteChange = true
+        defer { SyncTimestamping.isApplyingRemoteChange = false }
+        let ledgerKey = SupabaseSyncLedger.key(for: id)
+        let previousLedger = syncLedger.socialSessions[ledgerKey]
+        if let existing = locals.first {
+            let dirty = existing.lastSyncedAt.map { existing.updatedAt > $0 } ?? true
+            if !dirty {
+                try applyCloudRelationships(
+                    to: existing,
+                    studentIDs: studentIDs,
+                    hiddenPeople: snapshot.relationships.hiddenPeople,
+                    attendances: snapshot.relationships.attendances,
+                    studentsByID: studentsByID,
+                    outsidersByID: outsidersByID,
+                    in: context,
+                    parentTimestamp: snapshot.record.updatedAt
+                )
+                apply(snapshot.record, to: existing)
+                syncLedger.socialSessions[ledgerKey] = snapshot.record.updatedAt
+            }
+        } else {
+            let students = try validateSocialDependencies(
+                studentIDs: studentIDs,
+                hiddenPeople: snapshot.relationships.hiddenPeople,
+                attendances: snapshot.relationships.attendances,
+                studentsByID: studentsByID,
+                outsidersByID: outsidersByID
+            )
+            let social = makeLocalSocialSession(from: snapshot.record, students: students)
+            context.insert(social)
+            try applyCloudRelationships(
+                to: social,
+                studentIDs: studentIDs,
+                hiddenPeople: snapshot.relationships.hiddenPeople,
+                attendances: snapshot.relationships.attendances,
+                studentsByID: studentsByID,
+                outsidersByID: outsidersByID,
+                in: context,
+                parentTimestamp: snapshot.record.updatedAt
+            )
+            syncLedger.socialSessions[ledgerKey] = snapshot.record.updatedAt
+        }
+        do {
+            try saveSyncChanges(in: context)
+        } catch {
+            context.rollback()
+            if let previousLedger {
+                syncLedger.socialSessions[ledgerKey] = previousLedger
+            } else {
+                syncLedger.socialSessions.removeValue(forKey: ledgerKey)
+            }
+            throw error
+        }
+        syncLedger.save(to: defaults)
+    }
+
     private func send(
         url: URL,
         method: String,
@@ -3863,6 +3961,8 @@ private enum ConflictResolutionError: LocalizedError {
         }
     }
 }
+
+struct AddSocialSessionRefreshError: Error {}
 
 private enum SupabaseCloudError: LocalizedError {
     case notSignedIn

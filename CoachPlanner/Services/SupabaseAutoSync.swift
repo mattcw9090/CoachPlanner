@@ -32,6 +32,25 @@ struct CloudSyncOutbox {
     }
 }
 
+enum AddSocialSessionFailure: Error, Equatable {
+    case offline
+    case signedOut
+    case failed(String)
+
+    var alertTitle: String { "Couldn't Add Socials" }
+
+    var alertMessage: String {
+        switch self {
+        case .offline:
+            return "This phone is offline, so the social was saved on this phone and will sync later."
+        case .signedOut:
+            return "Sign in to add the social online. It was saved on this phone and will sync later."
+        case .failed(let message):
+            return message
+        }
+    }
+}
+
 enum MoveCoachingWeekFailure: Error, Equatable {
     case offline
     case signedOut
@@ -122,7 +141,10 @@ final class SupabaseAutoSync: ObservableObject {
     private var timer: Timer?
     private var capturedSave = CloudSyncScope()
     private var isActive = false
-    private var isOnline = true
+    private(set) var isOnline = true
+
+    /// The latest path-monitor result. A call that fails after it starts is still reported as that failure.
+    var hasNetworkConnection: Bool { isOnline }
     private var isRunning = false
     private var fullSyncRequested = false
     private var manualSyncRequested = false
@@ -266,6 +288,85 @@ final class SupabaseAutoSync: ObservableObject {
         guard cloud.lastError == nil else { return .failure(.refreshFailed) }
         await settleOutbox(in: context)
         return .success(moved)
+    }
+
+    /// Online create goes through public.add_social_session. Offline and signed-out are decided by the caller
+    /// before this runs; a failed call stays an error and is not turned into a sync prompt.
+    func addSocialSession(
+        _ parameters: AddSocialSessionParameters,
+        in context: ModelContext,
+        afterMerge: @MainActor (UUID) throws -> Void = { _ in }
+    ) async -> Result<UUID, AddSocialSessionFailure> {
+        guard cloud.isSignedIn else { return .failure(.signedOut) }
+        guard isOnline else { return .failure(.offline) }
+        let deadline = Date().addingTimeInterval(30)
+        while isRunning || cloud.isSyncing || moveInProgress {
+            if Date() >= deadline {
+                return .failure(.failed("The social was not added. Sync is still running. Try again in a moment."))
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard cloud.isSignedIn else { return .failure(.signedOut) }
+            guard isOnline else { return .failure(.offline) }
+        }
+        isRunning = true
+        updateStatus()
+        defer {
+            isRunning = false
+            updateStatus()
+        }
+        let id: UUID
+        do {
+            id = try await cloud.addSocialSession(parameters, in: context)
+        } catch {
+            return .failure(.failed(Self.addSocialMessage(for: error)))
+        }
+        do {
+            try afterMerge(id)
+        } catch {
+            return .failure(.failed("The social was added online, but the details on this phone could not be saved. It will show up after the next sync."))
+        }
+        return .success(id)
+    }
+
+    private static func addSocialMessage(for error: Error) -> String {
+        if error is AddSocialSessionRefreshError {
+            return "The social was added online, but this phone could not load it yet. It will show up after the next sync, and it was not saved again on this phone."
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotConnectToHost,
+                 .cannotFindHost, .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff:
+                return "The connection failed while adding the social, so it was not saved on this phone. Try again when you're back online."
+            default:
+                break
+            }
+        }
+        let text = error.localizedDescription
+        if let message = serverMessage(in: text) { return message }
+        if isConnectivityText(text) {
+            return "The connection failed while adding the social, so it was not saved on this phone. Try again when you're back online."
+        }
+        return "The social could not be added. \(text)"
+    }
+
+    private static func serverMessage(in text: String) -> String? {
+        guard let start = text.firstIndex(of: "{"),
+              let data = String(text[start...]).data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = json["message"] as? String,
+              !message.isEmpty else { return nil }
+        return message
+    }
+
+    private static func isConnectivityText(_ message: String) -> Bool {
+        let text = message.lowercased()
+        return text.contains("internet connection")
+            || text.contains("appears to be offline")
+            || text.contains("network connection was lost")
+            || text.contains("not connected to the internet")
+            || text.contains("timed out")
+            || text.contains("could not connect")
+            || text.contains("cannot connect")
     }
 
     private func requestRecovery() {

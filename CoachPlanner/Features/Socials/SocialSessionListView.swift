@@ -582,6 +582,7 @@ struct SocialSessionEditorView: View {
     @State private var outsiderEditor: OutsiderEditor?
     @State private var isOutsiderManagerPresented = false
     @State private var contactNotice: SocialContactNotice?
+    @State private var isSavingSocial = false
 
     private var isEditing: Bool { editor.session != nil }
     private var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -994,7 +995,7 @@ struct SocialSessionEditorView: View {
                         .autocorrectionDisabled()
 
                     if selectedStudents.isEmpty && selectedOutsiders.isEmpty {
-                        Text("No people selected")
+                        Text(newSocialPeopleSummary)
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(selectedParticipants) { participant in
@@ -1330,6 +1331,7 @@ struct SocialSessionEditorView: View {
                         dismiss()
                     }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(isSavingSocial)
                 }
 
                 ToolbarItem(placement: .confirmationAction) {
@@ -1337,7 +1339,7 @@ struct SocialSessionEditorView: View {
                         save()
                     }
                     .keyboardShortcut("s", modifiers: .command)
-                    .disabled(!canSave)
+                    .disabled(!canSave || isSavingSocial)
                 }
             }
             .alert(item: $contactNotice) { notice in
@@ -1499,7 +1501,16 @@ struct SocialSessionEditorView: View {
         return nil
     }
 
+    private var newSocialPeopleSummary: String {
+        guard !isEditing else { return "No people selected" }
+        if hiddenStudentIDs.isEmpty && hiddenOutsiderIDs.isEmpty {
+            return "Everyone is included unless you add specific people."
+        }
+        return "Hidden people are left out. Everyone else is included."
+    }
+
     private func save() {
+        guard !isSavingSocial else { return }
         if let session = editor.session,
            originalSessionSnapshot?.matches(session, ignoringDeletedOutsiders: locallyDeletedOutsiderIDs) != true {
             contactNotice = SocialContactNotice(
@@ -1508,6 +1519,15 @@ struct SocialSessionEditorView: View {
             )
             return
         }
+        if editor.session != nil {
+            saveExistingSocial()
+        } else {
+            saveNewSocial()
+        }
+    }
+
+    private func saveExistingSocial() {
+        guard let session = editor.session else { return }
         let selected = students.filter { selectedStatusByStudentID[$0.persistentModelID] != nil }
         let selectedOutsiders = outsiders.filter { selectedStatusByOutsiderID[$0.persistentModelID] != nil }
         let excludedStudents = students.filter {
@@ -1521,46 +1541,26 @@ struct SocialSessionEditorView: View {
         let attendanceEdits = attendanceEdits(for: selected, outsiders: selectedOutsiders)
         let hiddenPeople = excludedStudents.map(SocialEditorPerson.student) + excludedOutsiders.map(SocialEditorPerson.outsider)
 
-        if let session = editor.session {
-            if session.title != trimmedTitle { session.title = trimmedTitle }
-            if session.weekStart != editor.weekStart { session.weekStart = editor.weekStart }
-            if session.dayOfWeek != dayOfWeek.rawValue { session.dayOfWeek = dayOfWeek.rawValue }
-            if session.startTime != startTime { session.startTime = startTime }
-            if session.endTime != endTime { session.endTime = endTime }
-            if session.venue != venue.rawValue { session.venue = venue.rawValue }
-            if session.status != sessionStatus.rawValue { session.status = sessionStatus.rawValue }
-            if session.areCourtsBooked != areCourtsBooked { session.areCourtsBooked = areCourtsBooked }
-            let savedCourtNumbers = areCourtsBooked ? trimmedCourtNumbers : ""
-            let savedShuttlecockCost = sessionStatus == .finished ? shuttlecockCost : 0
-            let savedCourtCost = sessionStatus == .finished ? courtCost : 0
-            if session.courtNumbers != savedCourtNumbers { session.courtNumbers = savedCourtNumbers }
-            if session.shuttlecockCost != savedShuttlecockCost { session.shuttlecockCost = savedShuttlecockCost }
-            if session.courtCost != savedCourtCost { session.courtCost = savedCourtCost }
-            if Set(session.studentList.map(\.syncID)) != Set(selected.map(\.syncID)) || session.studentList.count != selected.count {
-                session.studentList = selected
-            }
-            if !session.legacyHiddenStudentList.isEmpty { session.legacyHiddenStudentList = [] }
-            if !session.legacyHiddenOutsiderList.isEmpty { session.legacyHiddenOutsiderList = [] }
-            session.applyEditorRelationships(attendance: attendanceEdits, hidden: hiddenPeople, in: modelContext)
-        } else {
-            let session = SocialSession(
-                title: trimmedTitle,
-                weekStart: editor.weekStart,
-                dayOfWeek: dayOfWeek,
-                startTime: startTime,
-                endTime: endTime,
-                venue: venue,
-                status: sessionStatus,
-                areCourtsBooked: areCourtsBooked,
-                courtNumbers: areCourtsBooked ? trimmedCourtNumbers : "",
-                shuttlecockCost: sessionStatus == .finished ? shuttlecockCost : 0,
-                courtCost: sessionStatus == .finished ? courtCost : 0,
-                students: selected
-            )
-            modelContext.insert(session)
-            session.applyEditorRelationships(attendance: attendanceEdits, hidden: hiddenPeople, in: modelContext)
-            consumeCourtBookingIfNeeded()
+        if session.title != trimmedTitle { session.title = trimmedTitle }
+        if session.weekStart != editor.weekStart { session.weekStart = editor.weekStart }
+        if session.dayOfWeek != dayOfWeek.rawValue { session.dayOfWeek = dayOfWeek.rawValue }
+        if session.startTime != startTime { session.startTime = startTime }
+        if session.endTime != endTime { session.endTime = endTime }
+        if session.venue != venue.rawValue { session.venue = venue.rawValue }
+        if session.status != sessionStatus.rawValue { session.status = sessionStatus.rawValue }
+        if session.areCourtsBooked != areCourtsBooked { session.areCourtsBooked = areCourtsBooked }
+        let savedCourtNumbers = areCourtsBooked ? trimmedCourtNumbers : ""
+        let savedShuttlecockCost = sessionStatus == .finished ? shuttlecockCost : 0
+        let savedCourtCost = sessionStatus == .finished ? courtCost : 0
+        if session.courtNumbers != savedCourtNumbers { session.courtNumbers = savedCourtNumbers }
+        if session.shuttlecockCost != savedShuttlecockCost { session.shuttlecockCost = savedShuttlecockCost }
+        if session.courtCost != savedCourtCost { session.courtCost = savedCourtCost }
+        if Set(session.studentList.map(\.syncID)) != Set(selected.map(\.syncID)) || session.studentList.count != selected.count {
+            session.studentList = selected
         }
+        if !session.legacyHiddenStudentList.isEmpty { session.legacyHiddenStudentList = [] }
+        if !session.legacyHiddenOutsiderList.isEmpty { session.legacyHiddenOutsiderList = [] }
+        session.applyEditorRelationships(attendance: attendanceEdits, hidden: hiddenPeople, in: modelContext)
 
         do {
             if modelContext.hasChanges {
@@ -1573,6 +1573,172 @@ struct SocialSessionEditorView: View {
                 title: "Couldn't Save Socials",
                 message: "Your changes weren't saved. Please try again."
             )
+        }
+    }
+
+    private func saveNewSocial() {
+        let parameters = newSocialParameters()
+        if SupabaseCloud.shared.isSignedIn && SupabaseAutoSync.shared.hasNetworkConnection {
+            isSavingSocial = true
+            Task {
+                defer { isSavingSocial = false }
+                let outcome = await SupabaseAutoSync.shared.addSocialSession(parameters, in: modelContext) { id in
+                    guard let session = try modelContext.fetch(FetchDescriptor<SocialSession>()).first(where: { $0.syncID == id && !$0.isDeleted }) else {
+                        throw AddSocialSessionRefreshError()
+                    }
+                    applyNewSocialAdjustments(to: session)
+                    consumeCourtBookingIfNeeded()
+                    do {
+                        if modelContext.hasChanges {
+                            try modelContext.save()
+                        }
+                    } catch {
+                        modelContext.rollback()
+                        throw error
+                    }
+                }
+                switch outcome {
+                case .success:
+                    dismiss()
+                case .failure(.offline), .failure(.signedOut):
+                    saveNewSocialLocally()
+                case .failure(.failed(let message)):
+                    contactNotice = SocialContactNotice(title: "Couldn't Add Socials", message: message)
+                }
+            }
+            return
+        }
+        saveNewSocialLocally()
+    }
+
+    private func saveNewSocialLocally() {
+        _ = insertLocalSocial()
+        consumeCourtBookingIfNeeded()
+        do {
+            if modelContext.hasChanges {
+                try modelContext.save()
+            }
+            dismiss()
+        } catch {
+            modelContext.rollback()
+            contactNotice = SocialContactNotice(
+                title: "Couldn't Save Socials",
+                message: "Your changes weren't saved. Please try again."
+            )
+        }
+    }
+
+    private func newSocialPeople() -> [AddSocialPerson] {
+        students.map { AddSocialPerson(id: $0.syncID, isStudent: true, name: $0.name, isHidden: $0.isHidden) }
+            + outsiders.map { AddSocialPerson(id: $0.syncID, isStudent: false, name: $0.name, isHidden: false) }
+    }
+
+    private func newSocialChoice() -> AddSocialPeopleChoice {
+        let selectedIDs = Set(students.filter { selectedStatusByStudentID[$0.persistentModelID] != nil }.map(\.syncID))
+            .union(outsiders.filter { selectedStatusByOutsiderID[$0.persistentModelID] != nil }.map(\.syncID))
+        let excludedIDs = Set(students.filter { hiddenStudentIDs.contains($0.persistentModelID) }.map(\.syncID))
+            .union(outsiders.filter { hiddenOutsiderIDs.contains($0.persistentModelID) }.map(\.syncID))
+        return AddSocialSessionRequest.choice(people: newSocialPeople(), selectedIDs: selectedIDs, excludedIDs: excludedIDs)
+    }
+
+    private func newSocialParameters() -> AddSocialSessionParameters {
+        AddSocialSessionRequest.parameters(
+            title: trimmedTitle,
+            weekStart: editor.weekStart,
+            dayOfWeek: dayOfWeek.rawValue,
+            startTime: startTime,
+            endTime: endTime,
+            venue: venue.rawValue,
+            choice: newSocialChoice()
+        )
+    }
+
+    private func insertLocalSocial() -> SocialSession {
+        let people = newSocialPeople()
+        let rows = AddSocialSessionRequest.attendance(people: people, choice: newSocialChoice())
+        var studentsByID: [UUID: Student] = [:]
+        for student in students { studentsByID[student.syncID] = student }
+        var outsidersByID: [UUID: Outsider] = [:]
+        for outsider in outsiders { outsidersByID[outsider.syncID] = outsider }
+        let linkedStudents = rows.filter(\.isStudent).compactMap { studentsByID[$0.id] }
+        let session = SocialSession(
+            title: trimmedTitle,
+            weekStart: editor.weekStart,
+            dayOfWeek: dayOfWeek,
+            startTime: startTime,
+            endTime: endTime,
+            venue: venue,
+            status: sessionStatus,
+            areCourtsBooked: areCourtsBooked,
+            courtNumbers: areCourtsBooked ? trimmedCourtNumbers : "",
+            shuttlecockCost: sessionStatus == .finished ? shuttlecockCost : 0,
+            courtCost: sessionStatus == .finished ? courtCost : 0,
+            students: linkedStudents
+        )
+        modelContext.insert(session)
+        var attendances: [SocialAttendance] = []
+        for row in rows {
+            let student = row.isStudent ? studentsByID[row.id] : nil
+            let outsider = row.isStudent ? nil : outsidersByID[row.id]
+            guard student != nil || outsider != nil else { continue }
+            let attendance = SocialAttendance(
+                student: student,
+                outsider: outsider,
+                status: SessionStatus(rawValue: row.status) ?? .unscheduled,
+                paymentStatus: .unpaid
+            )
+            modelContext.insert(attendance)
+            attendance.session = session
+            attendances.append(attendance)
+        }
+        session.attendanceList = attendances
+        applyExplicitAttendance(to: session)
+        return session
+    }
+
+    /// Court, cost, and per-person choices from the form. Clock time is left alone when it already matches,
+    /// so a merged RPC social is not uploaded again as a second copy.
+    private func applyNewSocialAdjustments(to session: SocialSession) {
+        if session.title != trimmedTitle { session.title = trimmedTitle }
+        if !Calendar.current.isDate(session.weekStart, inSameDayAs: editor.weekStart) { session.weekStart = editor.weekStart }
+        if session.dayOfWeek != dayOfWeek.rawValue { session.dayOfWeek = dayOfWeek.rawValue }
+        if minutesOfDay(session.startTime) != minutesOfDay(startTime) { session.startTime = startTime }
+        if minutesOfDay(session.endTime) != minutesOfDay(endTime) { session.endTime = endTime }
+        if session.venue != venue.rawValue { session.venue = venue.rawValue }
+        if session.status != sessionStatus.rawValue { session.status = sessionStatus.rawValue }
+        if session.areCourtsBooked != areCourtsBooked { session.areCourtsBooked = areCourtsBooked }
+        let savedCourtNumbers = areCourtsBooked ? trimmedCourtNumbers : ""
+        let savedShuttlecockCost = sessionStatus == .finished ? shuttlecockCost : 0
+        let savedCourtCost = sessionStatus == .finished ? courtCost : 0
+        if session.courtNumbers != savedCourtNumbers { session.courtNumbers = savedCourtNumbers }
+        if session.shuttlecockCost != savedShuttlecockCost { session.shuttlecockCost = savedShuttlecockCost }
+        if session.courtCost != savedCourtCost { session.courtCost = savedCourtCost }
+        applyExplicitAttendance(to: session)
+    }
+
+    private func applyExplicitAttendance(to session: SocialSession) {
+        for attendance in session.attendanceList {
+            if let outsider = attendance.outsider, AddSocialSessionRequest.isOwner(outsider.name) {
+                if attendance.status != SessionStatus.confirmed.rawValue {
+                    attendance.status = SessionStatus.confirmed.rawValue
+                }
+                if let payment = paymentStatusByOutsiderID[outsider.persistentModelID],
+                   attendance.paymentStatus != payment.rawValue {
+                    attendance.paymentStatus = payment.rawValue
+                }
+                continue
+            }
+            if let student = attendance.student, let status = selectedStatusByStudentID[student.persistentModelID] {
+                let stored: SessionStatus = sessionStatus == .finished ? .confirmed : status
+                if attendance.status != stored.rawValue { attendance.status = stored.rawValue }
+                let payment = paymentStatusByStudentID[student.persistentModelID] ?? .unpaid
+                if attendance.paymentStatus != payment.rawValue { attendance.paymentStatus = payment.rawValue }
+            } else if let outsider = attendance.outsider, let status = selectedStatusByOutsiderID[outsider.persistentModelID] {
+                let stored: SessionStatus = sessionStatus == .finished ? .confirmed : status
+                if attendance.status != stored.rawValue { attendance.status = stored.rawValue }
+                let payment = paymentStatusByOutsiderID[outsider.persistentModelID] ?? .unpaid
+                if attendance.paymentStatus != payment.rawValue { attendance.paymentStatus = payment.rawValue }
+            }
         }
     }
 

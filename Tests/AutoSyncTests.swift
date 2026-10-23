@@ -589,5 +589,35 @@ private extension SupabaseAutoSync {
         coordinator.localSaveError = nil
         coordinator.updateStatus()
         check(coordinator.attentionPrompt == nil, "Clearing the save failure removes the prompt")
+
+        let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
+                             CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
+        let modelConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        let addContext = ModelContext(try ModelContainer(for: schema, configurations: [modelConfig]))
+        addContext.autosaveEnabled = false
+        SyncMockProtocol.server.lock.withLock {
+            SyncMockProtocol.server.tables["workspaces"] = [["id": SupabaseConfiguration.workspaceID.uuidString]]
+            SyncMockProtocol.server.failTable = nil
+            SyncMockProtocol.server.loseNextPOSTResponse = false
+        }
+        let badVenue = AddSocialSessionParameters(
+            date: "2026-10-23", startLocal: "19:00:00", endLocal: "21:00:00", venue: "Nowhere",
+            includeEveryone: true, participantIDs: [], title: "Badminton Socials", attendanceStatus: "Unscheduled"
+        )
+        let refused = await coordinator.addSocialSession(badVenue, in: addContext)
+        guard case .failure(.failed(let message)) = refused else {
+            preconditionFailure("Expected a venue error, got \(refused)")
+        }
+        coordinator.updateStatus()
+        let addedSocials = try addContext.fetch(FetchDescriptor<SocialSession>())
+        check(message.contains("p_venue") && coordinator.attentionPrompt == nil && cloud.lastError == nil && addedSocials.isEmpty,
+              "a rejected add tells Matthew on the form and does not raise a sync prompt or save a local copy")
+        coordinator.isOnline = false
+        let offline = await coordinator.addSocialSession(badVenue, in: addContext)
+        guard case .failure(.offline) = offline else {
+            preconditionFailure("Expected an offline add to stay local, got \(offline)")
+        }
+        check(coordinator.attentionPrompt == nil, "offline add does not raise a sync prompt")
+        coordinator.isOnline = true
     }
 }

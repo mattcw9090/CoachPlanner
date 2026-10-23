@@ -133,6 +133,56 @@ private struct SocialEditingTests {
         check(nextWeek.day == 1 && nextWeek.startMinutes == 16 * 60 && nextWeek.endMinutes == 17 * 60,
               "A day with no remaining grid time moves to Monday afternoon")
 
+        let aliceID = alice.syncID
+        let bobID = bob.syncID
+        let caseyID = casey.syncID
+        let mattID = UUID()
+        let people = [
+            AddSocialPerson(id: aliceID, isStudent: true, name: "Alice", isHidden: false),
+            AddSocialPerson(id: bobID, isStudent: true, name: "Bob", isHidden: true),
+            AddSocialPerson(id: caseyID, isStudent: false, name: "Casey", isHidden: false),
+            AddSocialPerson(id: mattID, isStudent: false, name: " Matt Chew ", isHidden: false)
+        ]
+        check(AddSocialSessionRequest.choice(people: people, selectedIDs: [], excludedIDs: []) == .everyone,
+              "an untouched add form includes everyone")
+        let everyoneRows = AddSocialSessionRequest.attendance(people: people, choice: .everyone)
+        check(Set(everyoneRows.map(\.id)) == [aliceID, caseyID, mattID]
+              && everyoneRows.first { $0.id == mattID }?.status == "Confirmed"
+              && everyoneRows.filter { $0.id != mattID }.allSatisfy { $0.status == "Unscheduled" && $0.paymentStatus == "Unpaid" },
+              "everyone skips hidden students, confirms Matt Chew, and leaves the others unpaid")
+        let selected = AddSocialSessionRequest.choice(people: people, selectedIDs: [bobID], excludedIDs: [])
+        let selectedRows = AddSocialSessionRequest.attendance(people: people, choice: selected)
+        check(Set(selectedRows.map(\.id)) == [bobID, mattID]
+              && selectedRows.first { $0.id == bobID }?.status == "Unscheduled"
+              && selectedRows.first { $0.id == mattID }?.status == "Confirmed",
+              "a selected hidden student is included and Matt Chew is still confirmed")
+        let hiddenOnly = AddSocialSessionRequest.choice(people: people, selectedIDs: [], excludedIDs: [aliceID])
+        check(hiddenOnly == .explicit([caseyID, mattID]),
+              "hiding one person keeps everyone else as an explicit list")
+        var perth = Calendar(identifier: .gregorian)
+        perth.timeZone = TimeZone(identifier: "Australia/Perth")!
+        let week = perth.date(from: DateComponents(year: 2026, month: 10, day: 19))!
+        let evening = perth.date(bySettingHour: 19, minute: 0, second: 0, of: week)!
+        let late = perth.date(bySettingHour: 21, minute: 30, second: 0, of: week)!
+        let mapped = AddSocialSessionRequest.parameters(
+            title: "  Friday Hit ", weekStart: week, dayOfWeek: Weekday.friday.rawValue,
+            startTime: evening, endTime: late, venue: "Apex", choice: .everyone
+        )
+        check(mapped.date == "2026-10-23" && mapped.startLocal == "19:00:00" && mapped.endLocal == "21:30:00"
+              && mapped.venue == "Apex" && mapped.title == "Friday Hit" && mapped.includeEveryone
+              && mapped.participantIDs.isEmpty && mapped.attendanceStatus == "Unscheduled"
+              && mapped.jsonObject()["p_include_everyone"] as? Bool == true
+              && mapped.jsonObject()["p_participant_ids"] is NSNull,
+              "the add form maps Perth date, clock times, venue, and title for everyone")
+        let explicit = AddSocialSessionRequest.parameters(
+            title: "   ", weekStart: week, dayOfWeek: Weekday.saturday.rawValue,
+            startTime: evening, endTime: late, venue: "TRS", choice: .explicit([bobID, aliceID])
+        )
+        check(explicit.date == "2026-10-24" && explicit.title == "Badminton Socials" && !explicit.includeEveryone
+              && explicit.participantIDs == [aliceID, bobID].sorted { $0.uuidString.lowercased() < $1.uuidString.lowercased() }
+              && (explicit.jsonObject()["p_participant_ids"] as? [String]) == explicit.participantIDs.map(\.uuidString),
+              "selected people map to sorted participant ids and a blank title uses the default")
+
         print("\(checks) social editing regression checks passed")
     }
 }

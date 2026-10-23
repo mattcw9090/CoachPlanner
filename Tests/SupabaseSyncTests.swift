@@ -20,6 +20,7 @@ private final class SyncMockServer: @unchecked Sendable {
     var rejectNextPatch = false
     var failResetWeek = false
     var resetWeekRequests: [[String: Any]] = []
+    var addSocialRequests: [[String: Any]] = []
     var activeRequests = 0
     var peakRequests = 0
     private var tick = 0.0
@@ -42,7 +43,7 @@ private final class SyncMockServer: @unchecked Sendable {
             }
         }
     }
-    func clearRequests() { lock.withLock { requests = []; requestURLs = []; peakRequests = 0; resetWeekRequests = [] } }
+    func clearRequests() { lock.withLock { requests = []; requestURLs = []; peakRequests = 0; resetWeekRequests = []; addSocialRequests = [] } }
     var writes: [(method: String, table: String)] { lock.withLock { requests.filter { $0.method != "GET" } } }
 
     func edit(_ table: String, id: UUID, fields: [String: Any]) {
@@ -139,6 +140,9 @@ private final class SyncMockServer: @unchecked Sendable {
                 }
                 if table == "reset_coaching_week" {
                     return try resetCoachingWeek(body as! [String: Any])
+                }
+                if table == "add_social_session" {
+                    return try addSocialSession(body as! [String: Any])
                 }
                 if method == "POST" {
                     result = (body as? [[String: Any]]) ?? [body as! [String: Any]]
@@ -329,6 +333,145 @@ private final class SyncMockServer: @unchecked Sendable {
         }
         tables["coaching_sessions"] = sessions
         return (200, Data(String(moved).utf8), [:])
+    }
+
+    /// In-memory stand-in for public.add_social_session. Never called against Supabase.
+    private func addSocialSession(_ body: [String: Any]) throws -> (Int, Data, [String: String]) {
+        addSocialRequests.append(body)
+        let venue = body["p_venue"] as? String ?? ""
+        let allowed = ["PBA Malaga", "PBA Canningvale", "Apex", "TRS"]
+        guard allowed.contains(venue) else {
+            let payload = ["code": "22023", "message": "p_venue must be one of PBA Malaga, PBA Canningvale, Apex, TRS; got \(venue)"]
+            return (400, try JSONSerialization.data(withJSONObject: payload), [:])
+        }
+        guard let date = body["p_date"] as? String,
+              let startLocal = body["p_start_local"] as? String,
+              let endLocal = body["p_end_local"] as? String else {
+            return (400, Data(#"{"code":"22023","message":"p_date, p_start_local and p_end_local are required."}"#.utf8), [:])
+        }
+        if startLocal == endLocal {
+            return (400, Data(#"{"code":"22023","message":"Start and end time must differ."}"#.utf8), [:])
+        }
+        let attendanceStatus = body["p_attendance_status"] as? String ?? "Unscheduled"
+        guard ["Unscheduled", "Pending", "Confirmed"].contains(attendanceStatus) else {
+            return (400, Data(#"{"code":"22023","message":"Invalid p_attendance_status"}"#.utf8), [:])
+        }
+        let includeEveryone = (body["p_include_everyone"] as? Bool) ?? true
+        let participantIDs = Set((body["p_participant_ids"] as? [String] ?? []).map { $0.lowercased() })
+        let titleRaw = (body["p_title"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = titleRaw.isEmpty ? "Badminton Socials" : titleRaw
+
+        var perth = Calendar(identifier: .gregorian)
+        perth.timeZone = TimeZone(identifier: "Australia/Perth")!
+        perth.locale = Locale(identifier: "en_US_POSIX")
+        let wallClock = DateFormatter()
+        wallClock.calendar = perth
+        wallClock.locale = Locale(identifier: "en_US_POSIX")
+        wallClock.timeZone = perth.timeZone
+        wallClock.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        guard let startDate = wallClock.date(from: "\(date) \(startLocal)"),
+              var endDate = wallClock.date(from: "\(date) \(endLocal)") else {
+            return (400, Data(#"{"code":"22023","message":"p_date, p_start_local and p_end_local are required."}"#.utf8), [:])
+        }
+        if endLocal < startLocal { endDate = endDate.addingTimeInterval(24 * 3600) }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        iso.timeZone = TimeZone(secondsFromGMT: 0)
+        let startISO = iso.string(from: startDate)
+        let endISO = iso.string(from: endDate)
+        func isLive(_ row: [String: Any]) -> Bool { !(row["deleted_at"] is String) }
+        if let existing = (tables["social_sessions"] ?? []).first(where: {
+            ($0["venue"] as? String) == venue && ($0["start_time"] as? String) == startISO && isLive($0)
+        }), let existingID = existing["id"] as? String {
+            return (200, Data("\"\(existingID)\"".utf8), [:])
+        }
+
+        func hidden(_ row: [String: Any]) -> Bool {
+            (row["is_hidden"] as? Bool) == true || ((row["is_hidden"] as? NSNumber)?.boolValue == true)
+        }
+        let liveStudents = (tables["students"] ?? []).filter(isLive)
+        let liveOutsiders = (tables["outsiders"] ?? []).filter(isLive)
+        let known = Set(liveStudents.compactMap { ($0["id"] as? String)?.lowercased() })
+            .union(liveOutsiders.compactMap { ($0["id"] as? String)?.lowercased() })
+        let unknown = participantIDs.subtracting(known)
+        if !unknown.isEmpty {
+            let payload = ["code": "23503", "message": "Unknown, deleted or foreign participant ids: \(unknown.sorted().joined(separator: ", "))"]
+            return (400, try JSONSerialization.data(withJSONObject: payload), [:])
+        }
+        let owners = liveOutsiders.filter {
+            (($0["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "matt chew"
+        }
+        guard owners.count == 1, let ownerID = owners[0]["id"] as? String else {
+            let payload = ["code": "P0002", "message": "Expected exactly one live outsider named 'Matt Chew' in this workspace, found \(owners.count). Add or fix that outsider first."]
+            return (400, try JSONSerialization.data(withJSONObject: payload), [:])
+        }
+
+        let weekday = perth.component(.weekday, from: startDate)
+        let isoWeekday = weekday == 1 ? 7 : weekday - 1
+        let weekDate = perth.date(byAdding: .day, value: -(isoWeekday - 1), to: perth.startOfDay(for: startDate)) ?? startDate
+        let dateOnly = DateFormatter()
+        dateOnly.calendar = perth
+        dateOnly.locale = Locale(identifier: "en_US_POSIX")
+        dateOnly.timeZone = perth.timeZone
+        dateOnly.dateFormat = "yyyy-MM-dd"
+        let created = timestamp()
+        let sessionID = UUID().uuidString
+        let session: [String: Any] = [
+            "id": sessionID,
+            "workspace_id": SupabaseConfiguration.workspaceID.uuidString,
+            "title": title,
+            "week_start": dateOnly.string(from: weekDate),
+            "day_of_week": isoWeekday,
+            "start_time": startISO,
+            "end_time": endISO,
+            "venue": venue,
+            "status": "Planned",
+            "are_courts_booked": false,
+            "court_numbers": "",
+            "shuttlecock_cost": 0,
+            "court_cost": 0,
+            "created_at": created,
+            "updated_at": created,
+            "deleted_at": NSNull()
+        ]
+        tables["social_sessions", default: []].append(session)
+
+        var attendance: [[String: Any]] = []
+        var links: [[String: Any]] = []
+        for student in liveStudents {
+            guard let id = student["id"] as? String else { continue }
+            let included = (includeEveryone && !hidden(student)) || participantIDs.contains(id.lowercased())
+            guard included else { continue }
+            attendance.append([
+                "id": UUID().uuidString,
+                "social_session_id": sessionID,
+                "student_id": id,
+                "outsider_id": NSNull(),
+                "status": attendanceStatus,
+                "payment_status": "Unpaid",
+                "created_at": created,
+                "updated_at": created
+            ])
+            links.append(["session_id": sessionID, "student_id": id])
+        }
+        for outsider in liveOutsiders {
+            guard let id = outsider["id"] as? String else { continue }
+            let included = includeEveryone || id.lowercased() == ownerID.lowercased() || participantIDs.contains(id.lowercased())
+            guard included else { continue }
+            attendance.append([
+                "id": UUID().uuidString,
+                "social_session_id": sessionID,
+                "student_id": NSNull(),
+                "outsider_id": id,
+                "status": id.lowercased() == ownerID.lowercased() ? "Confirmed" : attendanceStatus,
+                "payment_status": "Unpaid",
+                "created_at": created,
+                "updated_at": created
+            ])
+        }
+        tables["social_attendance", default: []].append(contentsOf: attendance)
+        tables["social_session_students", default: []].append(contentsOf: links)
+        return (200, Data("\"\(sessionID)\"".utf8), [:])
     }
 
     private func syncSocial(_ body: [String: Any]) throws -> (Int, Data, [String: String]) {
@@ -619,6 +762,7 @@ private extension SupabaseCloud {
         try await runPersonRestorationTests(session: session)
         try await runAtomicSocialTests(session: session)
         try await runStudentStatusTests(session: session)
+        try await runAddSocialSessionTests(session: session)
         print("All Supabase sync regression checks passed. No live cloud or app data used.")
     }
 
@@ -1966,5 +2110,150 @@ private extension SupabaseCloud {
         check(cloud.lastError == nil && unscheduledSolo?["status"] as? String == "Unscheduled" &&
               unscheduledSam?["status"] as? String == "Pending" && soloSession.confirmationBadgeText == nil,
               "setting a one-student session back to unscheduled uploads a pending reply")
+    }
+
+    static func runAddSocialSessionTests(session: URLSession) async throws {
+        func check(_ condition: @autoclosure () -> Bool, _ message: String) {
+            precondition(condition(), message)
+            print("PASS: \(message)")
+        }
+        let server = SyncMockProtocol.server
+        let suite = "CoachPlanner.AddSocial.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        func makeContext() throws -> ModelContext {
+            let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
+                                 CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
+            let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+            let context = ModelContext(try ModelContainer(for: schema, configurations: [configuration]))
+            context.autosaveEnabled = false
+            return context
+        }
+        server.lock.withLock {
+            server.tables = ["workspaces": [["id": SupabaseConfiguration.workspaceID.uuidString]]]
+            server.pageLimit = 500
+            server.failLaterPage = false
+            server.failTable = nil
+            server.failPOSTCountdown = nil
+            server.loseNextPOSTResponse = false
+            server.failLegacySocialReads = false
+            server.afterResponse = nil
+            server.addSocialRequests = []
+        }
+        let cloud = SupabaseCloud(urlSession: session, defaults: defaults, restoreSession: false)
+        cloud.accessToken = "e30.eyJleHAiOjQxMDI0NDQ4MDB9.fixture"
+        let context = try makeContext()
+        var perth = Calendar(identifier: .gregorian)
+        perth.timeZone = TimeZone(identifier: "Australia/Perth")!
+        let week = dateOnlyFormatter.date(from: "2026-10-19")!
+        let start = perth.date(bySettingHour: 19, minute: 0, second: 0, of: week)!
+        let end = perth.date(bySettingHour: 21, minute: 0, second: 0, of: week)!
+        let alice = Student(name: "Alice", gender: "", contactPreference: .sms, contactDetail: "")
+        let hidden = Student(name: "Hidden Bob", gender: "", contactPreference: .sms, contactDetail: "")
+        hidden.isHidden = true
+        let casey = Outsider(name: "Casey", gender: "", contactPreference: .sms, contactDetail: "")
+        let matt = Outsider(name: " Matt Chew ", gender: "", contactPreference: .sms, contactDetail: "")
+        context.insert(alice)
+        context.insert(hidden)
+        context.insert(casey)
+        context.insert(matt)
+        try context.save()
+        await cloud.syncStudentsAndOutsiders(in: context)
+        check(cloud.lastError == nil, "add-social fixtures upload the roster before the RPC")
+
+        let everyone = AddSocialSessionRequest.parameters(
+            title: "  Friday Hit  ", weekStart: week, dayOfWeek: Weekday.friday.rawValue,
+            startTime: start, endTime: end, venue: Venue.apex.rawValue, choice: .everyone
+        )
+        check(everyone.date == "2026-10-23" && everyone.startLocal == "19:00:00" && everyone.endLocal == "21:00:00",
+              "add-social parameters use the Perth social date and clock times")
+        check(everyone.venue == "Apex" && everyone.title == "Friday Hit" && everyone.includeEveryone && everyone.participantIDs.isEmpty
+              && everyone.attendanceStatus == "Unscheduled",
+              "an empty people selection maps to everyone, the trimmed title, and Unscheduled")
+        check(everyone.jsonObject()["p_participant_ids"] is NSNull, "everyone omits participant ids")
+
+        server.clearRequests()
+        let created = try await cloud.addSocialSession(everyone, in: context)
+        let request = server.addSocialRequests.first
+        check(server.addSocialRequests.count == 1 && request?["p_date"] as? String == "2026-10-23"
+              && request?["p_start_local"] as? String == "19:00:00" && request?["p_end_local"] as? String == "21:00:00"
+              && request?["p_venue"] as? String == "Apex" && request?["p_title"] as? String == "Friday Hit"
+              && request?["p_include_everyone"] as? Bool == true && request?["p_participant_ids"] is NSNull
+              && request?["p_attendance_status"] as? String == "Unscheduled",
+              "the RPC body matches the add-form parameter mapping")
+        check(server.requests.contains { $0.method == "POST" && $0.table == "add_social_session" }
+              && !server.requests.contains { $0.table == "sync_coachplanner_social" },
+              "creating a social posts add_social_session and does not upload a local copy")
+        let socials = try context.fetch(FetchDescriptor<SocialSession>())
+        let social = socials.first { $0.syncID == created }
+        let attendanceIDs = Set(social?.attendanceList.compactMap { $0.student?.syncID ?? $0.outsider?.syncID } ?? [])
+        let mattAttendance = social?.attendanceList.first { $0.outsider?.syncID == matt.syncID }
+        check(cloud.lastError == nil && socials.count == 1 && social?.syncID == created && social?.lastSyncedAt != nil
+              && social?.title == "Friday Hit" && social?.status == "Planned" && social?.areCourtsBooked == false
+              && social?.courtNumbers == "" && social?.studentList.map(\.syncID) == [alice.syncID]
+              && attendanceIDs == [alice.syncID, casey.syncID, matt.syncID]
+              && mattAttendance?.status == "Confirmed" && mattAttendance?.paymentStatus == "Unpaid"
+              && social?.attendanceList.filter { $0.outsider?.syncID != matt.syncID }.allSatisfy { $0.status == "Unscheduled" && $0.paymentStatus == "Unpaid" } == true
+              && social?.hiddenPersonList.isEmpty == true,
+              "the returned social merges once, skips hidden students, and confirms Matt Chew")
+
+        server.clearRequests()
+        await cloud.syncAll(in: context)
+        let afterPull = try context.fetch(FetchDescriptor<SocialSession>())
+        check(cloud.lastError == nil && cloud.conflicts.isEmpty && afterPull.count == 1 && afterPull[0].syncID == created
+              && server.rows("social_sessions").filter { !($0["deleted_at"] is String) }.count == 1
+              && !server.writes.contains { $0.table == "sync_coachplanner_social" || $0.table == "social_sessions" },
+              "the next pull keeps the RPC social and does not upload a second copy")
+
+        let explicit = AddSocialSessionRequest.parameters(
+            title: "Chosen", weekStart: week, dayOfWeek: Weekday.saturday.rawValue,
+            startTime: start, endTime: end, venue: Venue.trs.rawValue, choice: .explicit([hidden.syncID])
+        )
+        check(!explicit.includeEveryone && explicit.participantIDs == [hidden.syncID] && explicit.date == "2026-10-24",
+              "a selected person maps to participant ids instead of everyone")
+        server.clearRequests()
+        server.lock.withLock { server.loseNextPOSTResponse = true }
+        do {
+            _ = try await cloud.addSocialSession(explicit, in: context)
+            preconditionFailure("A lost add response must fail")
+        } catch {
+            check((error is AddSocialSessionRefreshError) == false, "a lost response fails before the merge")
+        }
+        let afterLost = try context.fetch(FetchDescriptor<SocialSession>())
+        check(cloud.lastError == nil && afterLost.count == 1
+              && server.rows("social_sessions").filter { !($0["deleted_at"] is String) }.count == 2,
+              "a lost add response leaves the cloud row and does not insert a local duplicate")
+        server.clearRequests()
+        let retried = try await cloud.addSocialSession(explicit, in: context)
+        let afterRetry = try context.fetch(FetchDescriptor<SocialSession>())
+        let chosen = afterRetry.first { $0.syncID == retried }
+        let chosenIDs = Set(chosen?.attendanceList.compactMap { $0.student?.syncID ?? $0.outsider?.syncID } ?? [])
+        check(chosen?.syncID == retried && chosenIDs == [hidden.syncID, matt.syncID]
+              && chosen?.attendanceList.first { $0.student?.syncID == hidden.syncID }?.status == "Unscheduled"
+              && afterRetry.count == 2
+              && server.rows("social_sessions").filter { !($0["deleted_at"] is String) }.count == 2,
+              "retrying a lost add merges the existing social instead of creating another")
+        server.clearRequests()
+        await cloud.syncAll(in: context)
+        let afterSecondPull = try context.fetch(FetchDescriptor<SocialSession>())
+        check(cloud.lastError == nil && cloud.conflicts.isEmpty && afterSecondPull.count == 2
+              && !server.writes.contains { $0.table == "sync_coachplanner_social" || $0.table == "social_sessions" },
+              "a retried add stays one social on the next pull")
+
+        let badVenue = AddSocialSessionParameters(
+            date: everyone.date, startLocal: everyone.startLocal, endLocal: everyone.endLocal,
+            venue: "Nowhere", includeEveryone: true, participantIDs: [], title: "Friday Hit", attendanceStatus: "Unscheduled"
+        )
+        server.clearRequests()
+        do {
+            _ = try await cloud.addSocialSession(badVenue, in: context)
+            preconditionFailure("A bad venue must fail")
+        } catch {
+            check(error.localizedDescription.contains("p_venue"), "a bad venue returns the database error")
+        }
+        let afterRejection = try context.fetch(FetchDescriptor<SocialSession>())
+        check(cloud.lastError == nil && afterRejection.count == 2
+              && server.rows("social_sessions").filter { !($0["deleted_at"] is String) }.count == 2,
+              "a rejected add does not create a local social or a sync error")
     }
 }
