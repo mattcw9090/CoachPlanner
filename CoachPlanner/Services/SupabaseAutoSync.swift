@@ -2,6 +2,9 @@ import Combine
 import Foundation
 import Network
 import SwiftData
+#if os(iOS)
+import UIKit
+#endif
 
 /// Keeps edits made during a request separate from that request's acknowledgement.
 /// Persisting the union also makes an interrupted upload safe to retry after launch.
@@ -139,6 +142,10 @@ final class SupabaseAutoSync: ObservableObject {
     private weak var context: ModelContext?
     private var observations = Set<AnyCancellable>()
     private var timer: Timer?
+    private var debounceTask: Task<Void, Never>?
+    #if os(iOS)
+    private var backgroundTask = UIBackgroundTaskIdentifier.invalid
+    #endif
     private var capturedSave = CloudSyncScope()
     private var isActive = false
     private(set) var isOnline = true
@@ -218,11 +225,22 @@ final class SupabaseAutoSync: ObservableObject {
 
     func setActive(_ active: Bool) {
         let resumed = active && !isActive
+        let suspending = !active && isActive
         isActive = active
-        if resumed { requestRecovery() }
-        if !active {
+        if resumed {
+            // A fresh open downloads remote changes. Pending local edits go with that pass.
+            debounceTask?.cancel()
+            requestRecovery()
+            endBackgroundTask()
+            startUploadIfDue(at: Date(), immediate: true)
+        }
+        if suspending {
+            // Leave the debounce behind and upload what is already saved before iOS suspends the app.
+            debounceTask?.cancel()
             flushLocalChanges()
+            beginBackgroundTaskIfNeeded()
             stopRealtime()
+            startUploadIfDue(at: Date(), immediate: true, pendingOnly: true)
         }
         updateStatus()
     }
@@ -378,7 +396,15 @@ final class SupabaseAutoSync: ObservableObject {
     private func networkChanged(_ connected: Bool) {
         let reconnected = connected && !isOnline
         isOnline = connected
-        if reconnected { requestRecovery() }
+        if reconnected {
+            requestRecovery()
+            // Foreground recovery is picked up by the timer. A suspended-but-alive app
+            // retries the pending queue without waiting for the next open.
+            if !isActive {
+                beginBackgroundTaskIfNeeded()
+                startUploadIfDue(at: Date(), immediate: true, pendingOnly: true)
+            }
+        }
         if !connected { stopRealtime() }
         updateStatus()
     }
@@ -414,9 +440,26 @@ final class SupabaseAutoSync: ObservableObject {
         // Include sync-originated saves: a UI edit can arrive while a request is
         // suspended and be persisted by that save. One scoped no-op pass settles
         // server acknowledgements without dropping those overlapping local edits.
-        enqueue(capturedSave)
+        let scope = capturedSave
         capturedSave = CloudSyncScope()
+        enqueue(scope)
         localSaveError = nil
+        if !scope.isEmpty { scheduleDebouncedPush() }
+    }
+
+    /// Groups a burst of saves, then uploads. Leaving the app does not wait for this delay.
+    private func scheduleDebouncedPush() {
+        debounceTask?.cancel()
+        guard isActive else {
+            beginBackgroundTaskIfNeeded()
+            startUploadIfDue(at: Date(), immediate: true, pendingOnly: true)
+            return
+        }
+        debounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.startUploadIfDue(at: Date(), immediate: false)
+        }
     }
 
     private func enqueue(_ scope: CloudSyncScope) {
@@ -530,28 +573,38 @@ final class SupabaseAutoSync: ObservableObject {
             || text.contains("cannot connect")
     }
 
+    private var canSync: Bool {
+        cloud.isSignedIn && isOnline && (isEnabled || manualSyncRequested)
+    }
+
     private func tick() {
         guard isActive else { return }
         flushLocalChanges()
         updateStatus()
-        guard cloud.isSignedIn, isOnline, isEnabled || manualSyncRequested else { return }
+        guard canSync else { return }
         if isEnabled { maintainRealtime() }
-        guard !isRunning, !cloud.isSyncing, localSaveError == nil,
-              let context, !context.hasChanges, Date() >= retryAfter else { return }
         // Recovery also covers rare missed notifications. When the live channel
         // is unavailable, fall back to a modest foreground refresh interval.
         let recoveryInterval: TimeInterval = realtimeState == .connected ? 300 : 30
         if isEnabled && Date().timeIntervalSince(lastRecovery) >= recoveryInterval {
             fullSyncRequested = true
         }
-        guard fullSyncRequested || !outbox.pending.isEmpty else { return }
-        let now = Date()
-        if !manualSyncRequested, !fullSyncRequested,
-           now.timeIntervalSince(lastEnqueue) < 0.5,
-           now.timeIntervalSince(firstEnqueue ?? now) < 2 { return }
+        startUploadIfDue(at: Date(), immediate: false)
+    }
 
-        let full = fullSyncRequested
-        fullSyncRequested = false
+    /// Uploads the durable queue. A foreground pass may also download. A background pass only pushes.
+    private func startUploadIfDue(at now: Date, immediate: Bool, pendingOnly: Bool = false, remainingPasses: Int = 3) {
+        guard canSync else { return }
+        guard !isRunning, !cloud.isSyncing, localSaveError == nil,
+              let context, !context.hasChanges, now >= retryAfter else { return }
+        let wantsFull = !pendingOnly && isActive && fullSyncRequested
+        guard wantsFull || !outbox.pending.isEmpty else { return }
+        if !immediate, !manualSyncRequested, !wantsFull,
+           now.timeIntervalSince(lastEnqueue) < 0.5,
+           now.timeIntervalSince(firstEnqueue ?? now) < 1 { return }
+
+        let full = wantsFull
+        if full { fullSyncRequested = false }
         manualSyncRequested = false
         let scope = outbox.begin()
         firstEnqueue = nil
@@ -561,7 +614,7 @@ final class SupabaseAutoSync: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             if full { await self.cloud.syncAll(in: context) }
-            else { await self.cloud.syncChanges(scope, in: context) }
+            else if !scope.isEmpty { await self.cloud.syncChanges(scope, in: context) }
             let succeeded = self.cloud.lastError == nil
             self.outbox.finish(succeeded: succeeded)
             self.recordUploadAttempt(succeeded: succeeded)
@@ -577,8 +630,44 @@ final class SupabaseAutoSync: ObservableObject {
                 self.retryAfter = Date().addingTimeInterval(self.retryDelay)
                 self.retryDelay = min(self.retryDelay * 2, 60)
             }
+            let continueNow = succeeded && !self.outbox.pending.isEmpty && self.canSync && remainingPasses > 1
+            if continueNow {
+                self.startUploadIfDue(
+                    at: Date(), immediate: true, pendingOnly: !self.isActive, remainingPasses: remainingPasses - 1
+                )
+            } else if self.isActive && self.fullSyncRequested {
+                self.startUploadIfDue(at: Date(), immediate: true, remainingPasses: remainingPasses)
+            }
+            if !self.isRunning { self.endBackgroundTaskIfIdle() }
             self.updateStatus()
         }
+    }
+
+    private func beginBackgroundTaskIfNeeded() {
+        #if os(iOS)
+        guard backgroundTask == .invalid else { return }
+        guard canSync else { return }
+        guard !outbox.pending.isEmpty || isRunning || context?.hasChanges == true else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "CoachPlanner.upload") { [weak self] in
+            Task { @MainActor in self?.endBackgroundTask() }
+        }
+        #endif
+    }
+
+    private func endBackgroundTaskIfIdle() {
+        #if os(iOS)
+        guard !isRunning else { return }
+        endBackgroundTask()
+        #endif
+    }
+
+    private func endBackgroundTask() {
+        #if os(iOS)
+        guard backgroundTask != .invalid else { return }
+        let task = backgroundTask
+        backgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(task)
+        #endif
     }
 
     private func maintainRealtime() {

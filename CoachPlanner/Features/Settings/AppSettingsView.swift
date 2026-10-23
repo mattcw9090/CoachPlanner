@@ -179,7 +179,7 @@ struct AppSettingsView: View {
             .disabled(cloud.isSyncing)
 
             Text(automaticSync.isEnabled
-                 ? "Saved changes sync automatically while the app is open. Use this button to check all cloud data now."
+                 ? "Saved changes sync shortly after you make them, including after you leave the app. Use this button to check all cloud data now."
                  : "Upload this device's saved changes and download updates from the cloud.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -221,7 +221,7 @@ struct AppSettingsView: View {
                 .tint(.blue)
 
             if automaticSync.isEnabled {
-                Text("Uploads saved edits and receives live updates from your other devices. Offline changes upload when connected; reopening the app catches up on missed updates.")
+                Text("Uploads saved edits shortly after they are made, including when you leave the app, and receives live updates while the app is open. Offline changes upload when the connection returns; reopening the app downloads updates from your other devices.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else {

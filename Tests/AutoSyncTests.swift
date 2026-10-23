@@ -315,6 +315,9 @@ private extension SupabaseAutoSync {
         try await Self.runAttentionPromptTests { condition, message in
             check(condition, message)
         }
+        try await Self.runImmediatePushTests { condition, message in
+            check(condition, message)
+        }
         print("Automatic sync: \(checks) checks passed")
     }
 
@@ -518,6 +521,121 @@ private extension SupabaseAutoSync {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         preconditionFailure("Mock sync did not finish within five seconds")
+    }
+
+    static func runImmediatePushTests(check: (Bool, String) -> Void) async throws {
+        let suite = "CoachPlanner.ImmediatePush.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.set(true, forKey: preferenceKey)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SyncMockProtocol.self]
+        let session = URLSession(configuration: config)
+        let cloud = SupabaseCloud.automaticSyncFixture(session: session, defaults: defaults)
+        SyncMockProtocol.server.lock.withLock {
+            SyncMockProtocol.server.tables["workspaces"] = [["id": SupabaseConfiguration.workspaceID.uuidString]]
+            SyncMockProtocol.server.failTable = nil
+            SyncMockProtocol.server.loseNextPOSTResponse = false
+        }
+        let schema = Schema([Student.self, StudentHiddenWeek.self, Outsider.self, CoachingSession.self,
+                             CourtBooking.self, SocialSession.self, SocialHiddenPerson.self, SocialAttendance.self, SessionStudentConfirmation.self])
+        let modelConfig = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true, cloudKitDatabase: .none)
+        let context = ModelContext(try ModelContainer(for: schema, configurations: [modelConfig]))
+        context.autosaveEnabled = false
+        let coordinator = SupabaseAutoSync(cloud: cloud, defaults: defaults)
+        coordinator.attach(to: context, active: false)
+        coordinator.timer?.invalidate()
+        coordinator.timer = nil
+        coordinator.monitor.cancel()
+        coordinator.isActive = true
+        coordinator.isOnline = true
+        coordinator.fullSyncRequested = false
+        coordinator.manualSyncRequested = false
+        defer {
+            coordinator.debounceTask?.cancel()
+            coordinator.isActive = false
+            coordinator.stopRealtime()
+            coordinator.observations.removeAll()
+            session.invalidateAndCancel()
+            defaults.removePersistentDomain(forName: suite)
+        }
+
+        func waitUntilIdle() async {
+            for _ in 0..<500 where coordinator.isRunning {
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            precondition(!coordinator.isRunning, "Immediate push did not finish")
+        }
+
+        let now = Date()
+        let student = Student(name: "Instant Ada", gender: "", contactPreference: .sms, contactDetail: "")
+        let outsider = Outsider(name: "Instant Owen", gender: "", contactPreference: .sms, contactDetail: "")
+        let coaching = CoachingSession(dayOfWeek: .monday, startTime: now, endTime: now.addingTimeInterval(3600), venue: .apex, students: [student])
+        let booking = CourtBooking(dayOfWeek: .tuesday, startTime: now, endTime: now.addingTimeInterval(3600), venue: .apex, courtNumber: "1")
+        let hidden = SocialHiddenPerson(student: student)
+        let attendance = SocialAttendance(student: student, status: .unscheduled)
+        let social = SocialSession(weekStart: now, dayOfWeek: .friday, startTime: now, endTime: now.addingTimeInterval(3600), venue: .trs, students: [student], hiddenPeople: [hidden], attendances: [attendance])
+        let confirmation = SessionStudentConfirmation(student: student)
+        confirmation.session = coaching
+        for model in [student, outsider, coaching, booking, social, hidden, attendance, confirmation] as [any PersistentModel] {
+            context.insert(model)
+        }
+        try context.save()
+        let queued = coordinator.outbox.pending
+        check(queued.students.contains(student.syncID)
+              && queued.outsiders.contains(outsider.syncID)
+              && queued.coachingSessions.contains(coaching.syncID)
+              && queued.courtBookings.contains(booking.syncID)
+              && queued.socialSessions.contains(social.syncID),
+              "A local save queues students, outsiders, sessions, bookings, socials, attendance, and hidden people")
+        SyncMockProtocol.server.clearRequests()
+        coordinator.startUploadIfDue(at: Date(), immediate: false)
+        check(!coordinator.isRunning && SyncMockProtocol.server.requests.isEmpty,
+              "A push waits about half a second after the last save")
+        coordinator.startUploadIfDue(at: coordinator.lastEnqueue.addingTimeInterval(0.6), immediate: false)
+        check(coordinator.isRunning, "A push starts once the short debounce has passed")
+        await waitUntilIdle()
+        let pushedTables = Set(SyncMockProtocol.server.writes.map(\.table))
+        check(coordinator.outbox.pending.isEmpty && coordinator.attentionPrompt == nil
+              && pushedTables.isSuperset(of: ["students", "outsiders", "coaching_sessions", "court_bookings"])
+              && pushedTables.contains { $0 == "social_sessions" || $0 == "sync_coachplanner_social" },
+              "The debounced push uploads every queued record and stays quiet")
+
+        context.delete(student)
+        try context.save()
+        check(coordinator.outbox.pending.students.contains(student.syncID), "Deleting a student queues that student immediately")
+        SyncMockProtocol.server.clearRequests()
+        coordinator.debounceTask?.cancel()
+        coordinator.setActive(false)
+        check(coordinator.isRunning, "Leaving the app uploads pending edits without waiting for the debounce")
+        await waitUntilIdle()
+        check(coordinator.outbox.pending.students.isEmpty && coordinator.attentionPrompt == nil
+              && SyncMockProtocol.server.writes.contains { $0.table == "students" },
+              "A background flush pushes the deletion and stays quiet")
+
+        coordinator.isActive = true
+        coordinator.isOnline = false
+        let laterOutsider = Outsider(name: "Offline Uma", gender: "", contactPreference: .sms, contactDetail: "")
+        context.insert(laterOutsider)
+        try context.save()
+        SyncMockProtocol.server.clearRequests()
+        coordinator.debounceTask?.cancel()
+        coordinator.setActive(false)
+        check(!coordinator.isRunning && SyncMockProtocol.server.requests.isEmpty
+              && coordinator.outbox.pending.outsiders.contains(laterOutsider.syncID),
+              "An offline edit stays in the pending queue")
+        coordinator.networkChanged(true)
+        check(coordinator.isRunning, "Connectivity returning retries the pending queue")
+        await waitUntilIdle()
+        check(coordinator.outbox.pending.outsiders.isEmpty
+              && SyncMockProtocol.server.writes.contains { $0.table == "outsiders" }
+              && coordinator.attentionPrompt == nil,
+              "The reconnect push uploads the queued outsider without a prompt")
+
+        coordinator.fullSyncRequested = false
+        coordinator.isOnline = false
+        coordinator.setActive(true)
+        check(coordinator.fullSyncRequested && !coordinator.isRunning,
+              "Returning to the foreground asks for a remote pull")
     }
 
     static func runAttentionPromptTests(check: (Bool, String) -> Void) async throws {
